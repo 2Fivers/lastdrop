@@ -1263,11 +1263,35 @@ fn flyout_height(content: f32, monitor: &MonitorInfo) -> f32 {
     content.min(max.max(100.0) as f32)
 }
 
+/// Makes Slint create the flyout's repeated items (the cards) for the current model, so that
+/// `content-height` measures them.
+///
+/// Slint instantiates `for` items lazily, when it renders the window or handles input. The
+/// flyout is shown and hidden with Win32 behind Slint's back, so nothing renders it while it is
+/// hidden, and cards set just before it opens would measure as an empty list (100 px: header,
+/// list padding, footer): the first open showed a flyout without cards. A pointer-exit is input
+/// that does exactly that instantiation; otherwise it only clears hover state left from the last
+/// time the flyout was open, which a flyout about to open should not keep anyway.
+fn instantiate_flyout_items(window: &ui::Flyout) {
+    window
+        .window()
+        .dispatch_event(slint::platform::WindowEvent::PointerExited);
+}
+
+/// The flyout's content height (logical px) for the model it holds now, with its cards laid out
+/// even when Slint has not rendered them yet ([`instantiate_flyout_items`]).
+pub fn flyout_content_height(window: &ui::Flyout) -> f32 {
+    instantiate_flyout_items(window);
+    window.get_content_height()
+}
+
 /// Sizes and places the flyout (F§1.2, F§1.3) in device px.
 fn place_flyout(app: &App, h: HWND, anchor: Anchor, monitor: &MonitorInfo, edge: TaskbarEdge) {
     let window = &app.windows.flyout;
     let scale = f64::from(monitor.dpi) / 96.0;
-    let height = flyout_height(window.get_content_height(), monitor);
+    // No resize of the previous rectangle while the cards are laid out below.
+    app.rt.flyout_rect.set(None);
+    let height = flyout_height(flyout_content_height(window), monitor);
     window.set_flyout_height(height);
     let size = Size {
         width: device(f64::from(FLYOUT_W), scale),
@@ -1370,6 +1394,14 @@ fn foreground_is_ours() -> bool {
 /// Wires the flyout's Slint callbacks to the app.
 fn connect_flyout(window: &ui::Flyout) {
     window.on_dismiss(|| with_app(|app| hide_flyout(app, false)));
+    // Cards laid out after a render (new or taller content while open): follow the content.
+    window.on_content_height_changed(|| {
+        with_app(|app| {
+            if app.state.borrow().flyout.open {
+                resize_open_flyout(app);
+            }
+        });
+    });
     window.on_refresh(|| with_app(|app| refresh_now(app, None)));
     window.on_open_settings(|| {
         with_app(|app| {

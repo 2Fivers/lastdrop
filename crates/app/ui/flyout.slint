@@ -552,6 +552,12 @@ export component Flyout inherits Window {
     in property <string> menu-readout-label: "Show in taskbar readout";
     // Header 40 + list + footer 48 (F§1.2), for Rust to size the window.
     out property <length> content-height: 40px + list.preferred-height + 48px;
+    // The content height changed (cards were laid out, a line was added): Rust resizes the open
+    // window with its bottom edge anchored (F§1.2).
+    callback content-height-changed();
+    changed content-height => {
+        root.content-height-changed();
+    }
 
     callback open-settings();
     callback refresh();

@@ -55,6 +55,23 @@ fn flyout_for(demo: &Demo) -> ui::Flyout {
 fn flyout_heights_and_keyboard() {
     slint::platform::set_platform(Box::new(Headless)).expect("platform");
 
+    // The app sizes the flyout before Slint has rendered new cards (it is shown with Win32, behind
+    // Slint's back): the measurement lays them out itself instead of seeing an empty list (100).
+    {
+        let demo = Demo::scenario(false, Scenario::Normal);
+        let flyout = ui::Flyout::new().expect("flyout");
+        wiring::set_theme(&flyout.global::<ui::Theme>(), &demo.theme);
+        wiring::set_flyout_labels(&flyout, &English);
+        let model = demo.flyout();
+        let menus: Vec<wiring::CardMenu> = model
+            .cards
+            .iter()
+            .map(|c| wiring::card_menu(c, &English, &[], true))
+            .collect();
+        wiring::set_flyout(&flyout, &model, 1.0, &menus);
+        assert_eq!(wiring::flyout_content_height(&flyout), 478.0);
+    }
+
     // F§1.2: 478 for the reference content; a trouble line adds 20; a two-line message adds 40.
     for (scenario, height) in [
         (Scenario::Normal, 478.0),
