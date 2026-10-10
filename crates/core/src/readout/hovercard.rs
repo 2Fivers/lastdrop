@@ -430,6 +430,7 @@ fn also_tracked(
         header: s.template(Msg::CardAlso).to_owned(),
         lines,
         more: (more > 0).then(|| text(s, Msg::CardAlsoMore, &[("n", &more.to_string())])),
+        more_count: more,
     })
 }
 
@@ -948,6 +949,9 @@ pub struct AlsoTracked {
     pub lines: Vec<AlsoLine>,
     /// `+N more`, when more meters exist.
     pub more: Option<String>,
+    /// The `N` of `more` (0 without it), so a window that drops lines to fit (R§8.1) can count
+    /// the dropped ones in.
+    pub more_count: usize,
 }
 
 /// The hover card (R§8). Width 320, padding 12, height = content. When the content is taller

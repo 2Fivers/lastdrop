@@ -539,7 +539,10 @@ impl Host {
 
     // ---- taskbar, hooks, occupancy -------------------------------------------------------------
 
-    /// Finds `Shell_TrayWnd`, hooks its process and asks for a first measurement.
+    /// Finds `Shell_TrayWnd`; while the readout is enabled, hooks its process and asks for a first
+    /// measurement. A readout that is off needs neither (ARCHITECTURE goal 2: no system-wide
+    /// hook and no UI Automation traffic to Explorer for nothing); the taskbar's geometry is still
+    /// gathered on each placement, for the reports the hover card and flyout are placed with.
     fn attach_taskbar(&mut self) {
         self.unhook();
         self.taskbar = gather::find_taskbar();
@@ -555,6 +558,9 @@ impl Host {
             return;
         };
         disarm(host, T_FIND_TASKBAR);
+        if !self.enabled {
+            return;
+        }
         let mut pid = 0u32;
         // SAFETY: `pid` is a valid out pointer.
         unsafe { GetWindowThreadProcessId(taskbar, Some(&mut pid)) };
@@ -593,6 +599,9 @@ impl Host {
     }
 
     fn request_measure(&self) {
+        if !self.enabled {
+            return;
+        }
         if let (Some(occupancy), Some(taskbar)) = (&self.occupancy, self.taskbar) {
             occupancy.request(raw(taskbar));
         }
@@ -798,6 +807,11 @@ impl Host {
             }
             self.last_content = Some(content);
         }
+        // Raised to the top of the topmost band only when it appears or moves; otherwise only
+        // the taskbar's own events re-raise it (R§6.1: "when the event concerns
+        // Shell_TrayWnd; never by polling"), so a redraw never jumps over other always-on-top
+        // windows or our own hover card and flyout.
+        let raise = self.last_rect != Some(shown.rect) || !self.visible;
         if redraw || self.last_rect != Some(shown.rect) || !self.visible {
             let pushed = match &self.surface {
                 Some(surface) => {
@@ -818,7 +832,9 @@ impl Host {
             self.visible = true;
             update_handles(|h| h.visible = true);
         }
-        reassert_topmost(HANDLES.with(Cell::get));
+        if raise {
+            reassert_topmost(HANDLES.with(Cell::get));
+        }
         self.update_uia(&model, &layout, shown);
     }
 
@@ -934,8 +950,19 @@ impl Host {
         if let Some(theme) = slot.theme {
             self.theme = theme;
         }
-        if let Some(enabled) = slot.enabled {
+        if let Some(enabled) = slot.enabled
+            && enabled != self.enabled
+        {
             self.enabled = enabled;
+            if enabled {
+                // Hooks and a fresh measurement for the taskbar as it is now.
+                self.attach_taskbar();
+            } else {
+                self.unhook();
+                let host = raw(self.host_hwnd);
+                disarm(host, T_MEASURE);
+                disarm(host, T_FIRST_MEASURE);
+            }
         }
         if let Some(model) = slot.model {
             if model.uia.announce {
@@ -1262,9 +1289,10 @@ unsafe extern "system" fn on_win_event(
         }
         EVENT_OBJECT_REORDER => {
             // Explorer reordered top-level windows (the taskbar raised itself) or the taskbar's
-            // children: re-check full screen, then re-assert topmost.
+            // children: re-assert topmost now, then re-check full screen.
             // SAFETY: plain query.
             if in_taskbar() || window == unsafe { GetDesktopWindow() } {
+                reassert_topmost(handles);
                 arm(handles.host, T_PLACE, ZORDER_DEBOUNCE_MS);
             }
         }

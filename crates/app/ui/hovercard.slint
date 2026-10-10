@@ -183,6 +183,10 @@ export component HoverCard inherits Window {
     in property <string> also-more;
     // UIA ToolTip name: title + sentence (R§11).
     in property <string> uia-name;
+    // Set to uia-name when the card appears and cleared when it hides, through a polite live
+    // region: screen readers hear the card as it opens. Slint 1.18 has no ToolTip role, so this
+    // stands in for R§11's ToolTipOpened.
+    in property <string> announcement;
     out property <length> content-height: content.preferred-height;
 
     // A click that reaches the card hides it (R§8.1).
@@ -213,6 +217,13 @@ export component HoverCard inherits Window {
                 line: line;
             }
         }
+    }
+    Rectangle {
+        width: 0px;
+        height: 0px;
+        accessible-role: text;
+        accessible-label: root.announcement;
+        accessible-live-region: polite;
     }
 
     content := VerticalLayout {

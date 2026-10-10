@@ -1735,6 +1735,10 @@ pub fn show_hover_card(app: &App, anchor: HoverAnchor, rect: Rect) {
     rebuild(app, Timestamp::now());
     if let Some(h) = hwnd(app.rt.hover_hwnd.get()) {
         backdrop::show_no_activate(h);
+        // The card's live region: screen readers hear it as it opens (R§11; hide clears it, so
+        // the same card shown again is heard again).
+        let card = &app.windows.hover_card;
+        card.set_announcement(card.get_uia_name());
     }
 }
 
@@ -1751,14 +1755,18 @@ fn place_hover_card(app: &App, model: &HoverCardModel, anchor: Rect) {
     let (taskbar, edge) = taskbar_of(app, &monitor);
     let gap = f64::from(CARD_TASKBAR_GAP) * scale;
     let margin = f64::from(CARD_EDGE_MARGIN) * scale;
+    // The card sits beyond the taskbar, or beyond a readout floating off it (never over it).
     let space_device = match edge {
         TaskbarEdge::Top => {
-            f64::from(monitor.work.bottom) - margin - (f64::from(taskbar.bottom) + gap)
+            f64::from(monitor.work.bottom)
+                - margin
+                - (f64::from(taskbar.bottom.max(anchor.bottom)) + gap)
         }
-        _ => f64::from(taskbar.top) - gap - (f64::from(monitor.work.top) + margin),
+        _ => f64::from(taskbar.top.min(anchor.top)) - gap - (f64::from(monitor.work.top) + margin),
     };
     let space = (space_device / scale) as f32;
     let mut visible = window.get_also_visible();
+    let also = model.also.as_ref().map(|a| (a.lines.len(), a.more_count));
     loop {
         if window.get_content_height() <= space {
             break;
@@ -1766,6 +1774,22 @@ fn place_hover_card(app: &App, model: &HoverCardModel, anchor: Rect) {
         if visible > 0 {
             visible -= 1;
             window.set_also_visible(visible);
+            // The dropped lines join `+N more` (R§8.2).
+            if let Some((lines, more)) = also {
+                let shown = usize::try_from(visible).unwrap_or(0);
+                let hidden = more + lines.saturating_sub(shown);
+                let words = if hidden > 0 {
+                    let st = app.state.borrow();
+                    text(
+                        &st.strings,
+                        Msg::CardAlsoMore,
+                        &[("n", &hidden.to_string())],
+                    )
+                } else {
+                    String::new()
+                };
+                window.set_also_more(words.into());
+            }
         } else if window.get_show_sentence() {
             window.set_show_sentence(false);
         } else {
@@ -1780,6 +1804,11 @@ fn place_hover_card(app: &App, model: &HoverCardModel, anchor: Rect) {
     };
     let rect = flyout_pos::hover_card_rect(anchor, size, &monitor, taskbar, edge);
     backdrop::set_rect(h, rect);
+    // As for the flyout: moving onto a monitor with another DPI makes winit resize the window
+    // synchronously (WM_DPICHANGED) with the old monitor's scale; place it again.
+    if (f64::from(window.window().scale_factor()) - scale).abs() > 0.01 {
+        backdrop::set_rect(h, rect);
+    }
 }
 
 /// The taskbar of `monitor`: as the readout reported it, else the strip between the work area
@@ -1809,8 +1838,9 @@ pub fn hide_hover_card(app: &App) {
     if let Some(h) = hwnd(app.rt.hover_hwnd.get()) {
         backdrop::hide(h);
     }
-    // The next show starts from the full content again.
+    // The next show starts from the full content again, and is announced again.
     app.windows.hover_card.set_show_sentence(true);
+    app.windows.hover_card.set_announcement(SharedString::new());
 }
 
 // ---- Model → Slint conversions (geometry in device px as floats, F§11) ---------------------------

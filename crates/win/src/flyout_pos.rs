@@ -120,6 +120,10 @@ pub fn monitor_for(anchor: Anchor) -> MonitorInfo {
 ///
 /// Left and right (third-party vertical) taskbars use the bottom rule. A window taller than the
 /// work area minus the margins starts `12 s` below the work area's top.
+///
+/// A rect anchor inside the work area — the readout floating above the taskbar (no room on it)
+/// — moves the flyout's edge `12 s` beyond the anchor instead, so the flyout never covers it
+/// (**not from the spec**: F§1.3 assumes the anchor is on the taskbar).
 pub fn flyout_rect(anchor: Anchor, size: Size, monitor: &MonitorInfo, edge: TaskbarEdge) -> Rect {
     let margin = scale(EDGE_MARGIN, monitor.dpi);
     let work = monitor.work;
@@ -129,10 +133,16 @@ pub fn flyout_rect(anchor: Anchor, size: Size, monitor: &MonitorInfo, edge: Task
         work.left + margin,
         work.right - margin,
     );
+    // A point anchor (the cursor, when the icon rect is unknown) may lie in the overflow popup
+    // above the taskbar; only a rect anchor (tray icon, readout slot) moves the flyout.
+    let (near_top, near_bottom) = match anchor {
+        Anchor::Rect(r) => (r.top, r.bottom),
+        Anchor::Point(_) => (work.bottom, work.top),
+    };
     let top = match edge {
-        TaskbarEdge::Top => work.top + margin,
+        TaskbarEdge::Top => work.top.max(near_bottom) + margin,
         TaskbarEdge::Bottom | TaskbarEdge::Left | TaskbarEdge::Right => {
-            (work.bottom - margin - size.height).max(work.top + margin)
+            (work.bottom.min(near_top) - margin - size.height).max(work.top + margin)
         }
     };
     Rect {
@@ -145,7 +155,8 @@ pub fn flyout_rect(anchor: Anchor, size: Size, monitor: &MonitorInfo, edge: Task
 
 /// The hover card rectangle (R§8.1): horizontally centred on `anchor`, clamped `12 s` inside the
 /// work area; bottom edge `8 s` above the taskbar's top edge (top taskbar: top edge `8 s` below
-/// its bottom).
+/// its bottom), or above the anchor when the anchor sits above the taskbar (a floating readout),
+/// so the card never overlaps it.
 ///
 /// The `12 s` clamp runs along the taskbar; across it the `8 s` gap rules. Vertical taskbars
 /// (tray icon only, the readout is hidden there): the card sits `8 s` beside the taskbar,
@@ -180,12 +191,14 @@ pub fn hover_card_rect(
     };
     let center_x = i64::from(anchor.left) + i64::from(anchor.right);
     let center_y = i64::from(anchor.top) + i64::from(anchor.bottom);
+    // A readout floating above (below) the taskbar is the nearer edge: the card never overlaps
+    // its anchor (R§8.1).
     let (left, top) = match edge {
         TaskbarEdge::Bottom => (
             along_x(center_x),
-            (taskbar.top - gap - size.height).max(work.top + margin),
+            (taskbar.top.min(anchor.top) - gap - size.height).max(work.top + margin),
         ),
-        TaskbarEdge::Top => (along_x(center_x), taskbar.bottom + gap),
+        TaskbarEdge::Top => (along_x(center_x), taskbar.bottom.max(anchor.bottom) + gap),
         TaskbarEdge::Left => (taskbar.right + gap, along_y(center_y)),
         TaskbarEdge::Right => (taskbar.left - gap - size.width, along_y(center_y)),
     };

@@ -14,7 +14,8 @@ use windows::Win32::Graphics::Gdi::{
 use windows::Win32::System::Registry::{HKEY_CURRENT_USER, RRF_RT_REG_DWORD, RegGetValueW};
 use windows::Win32::UI::HiDpi::{GetDpiForMonitor, MDT_EFFECTIVE_DPI};
 use windows::Win32::UI::WindowsAndMessaging::{
-    FindWindowExW, FindWindowW, GetClassNameW, GetForegroundWindow, GetWindowRect, IsWindowVisible,
+    FindWindowExW, FindWindowW, GWL_STYLE, GetClassNameW, GetForegroundWindow, GetWindowLongPtrW,
+    GetWindowRect, IsWindowVisible, IsZoomed, WS_CAPTION, WS_THICKFRAME,
 };
 use windows::core::w;
 
@@ -136,8 +137,26 @@ fn is_shell_window(class: &str) -> bool {
     )
 }
 
-/// A full-screen window is in the foreground on `monitor`: it covers the whole monitor rectangle
-/// (a maximized window only covers the work area) and is not the desktop or the taskbar.
+/// Whether a window with this rectangle, maximized state and `GWL_STYLE` is a full-screen app on
+/// `monitor`: it covers the whole monitor rectangle and is neither maximized nor framed (a caption
+/// or a sizing border).
+///
+/// With a normal taskbar a maximized window covers only the work area. With an auto-hide taskbar
+/// the work area is the whole monitor, and a maximized framed window covers it plus its invisible
+/// resize borders; the shell does not treat it as full screen either (the taskbar still slides in
+/// over it), so neither does the readout. Full-screen browsers, players and games drop the frame.
+pub(super) fn covers_as_full_screen(window: Rect, monitor: Rect, zoomed: bool, style: u32) -> bool {
+    let framed = style & WS_CAPTION.0 == WS_CAPTION.0 || style & WS_THICKFRAME.0 != 0;
+    !zoomed
+        && !framed
+        && window.left <= monitor.left
+        && window.top <= monitor.top
+        && window.right >= monitor.right
+        && window.bottom >= monitor.bottom
+}
+
+/// A full-screen window is in the foreground on `monitor` ([`covers_as_full_screen`]) and is not
+/// the desktop or the taskbar.
 pub(super) fn fullscreen_app_on(monitor_handle: HMONITOR, monitor: Rect) -> bool {
     // SAFETY: plain queries.
     let fg = unsafe { GetForegroundWindow() };
@@ -151,12 +170,11 @@ pub(super) fn fullscreen_app_on(monitor_handle: HMONITOR, monitor: Rect) -> bool
     if unsafe { MonitorFromWindow(fg, MONITOR_DEFAULTTONEAREST) } != monitor_handle {
         return false;
     }
-    window_rect(fg).is_some_and(|r| {
-        r.left <= monitor.left
-            && r.top <= monitor.top
-            && r.right >= monitor.right
-            && r.bottom >= monitor.bottom
-    })
+    // SAFETY: plain queries on a window handle (a stale one only gives false / 0).
+    let (zoomed, style) = unsafe { (IsZoomed(fg).as_bool(), GetWindowLongPtrW(fg, GWL_STYLE)) };
+    // The style bits are the low 32 bits of the value.
+    let style = style as u32;
+    window_rect(fg).is_some_and(|r| covers_as_full_screen(r, monitor, zoomed, style))
 }
 
 /// The notification area (`TrayNotifyWnd`) and, on Windows 10, the overflow chevron (a visible
@@ -257,6 +275,24 @@ mod tests {
             TaskbarEdge::Bottom
         ));
         assert!(auto_hidden(r(0, -46, 1920, 2), m, full, TaskbarEdge::Top));
+    }
+
+    #[test]
+    fn maximized_or_framed_windows_are_not_full_screen_apps() {
+        use windows::Win32::UI::WindowsAndMessaging::{WS_OVERLAPPEDWINDOW, WS_POPUP, WS_VISIBLE};
+        let m = r(0, 0, 1920, 1080);
+        // Auto-hide taskbar: a maximized framed window spans the monitor plus its borders.
+        let maximized = r(-8, -8, 1928, 1088);
+        let framed = (WS_OVERLAPPEDWINDOW | WS_VISIBLE).0;
+        assert!(!covers_as_full_screen(maximized, m, true, framed));
+        assert!(!covers_as_full_screen(maximized, m, false, framed));
+        // A full-screen browser, player or game: no frame, the whole monitor.
+        let popup = (WS_POPUP | WS_VISIBLE).0;
+        assert!(covers_as_full_screen(m, m, false, popup));
+        // A frameless window that does not cover the monitor.
+        assert!(!covers_as_full_screen(r(0, 0, 1920, 1032), m, false, popup));
+        // Maximized without a frame (a kiosk-like app) is not full screen either.
+        assert!(!covers_as_full_screen(m, m, true, popup));
     }
 
     #[test]

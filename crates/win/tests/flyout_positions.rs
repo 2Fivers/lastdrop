@@ -246,3 +246,61 @@ fn hover_card_beside_a_vertical_taskbar() {
     assert_eq!(r.right, 1858 - 8);
     assert_eq!(r.top, 512 - 80);
 }
+
+#[test]
+fn popups_never_cover_a_floating_readout() {
+    // No room on the taskbar: the readout floats 4 px above it (placement's floating slot).
+    for dpi in SCALES {
+        let bar = s(48, dpi);
+        let (m, taskbar) = monitor(0, 1920, 1080, bar, TaskbarEdge::Bottom, dpi);
+        let slot_top = taskbar.top - s(4, dpi) - s(40, dpi);
+        let slot = rect(1500, slot_top, 1500 + s(176, dpi), taskbar.top - s(4, dpi));
+        let card = Size {
+            width: s(320, dpi),
+            height: s(180, dpi),
+        };
+        let r = hover_card_rect(slot, card, &m, taskbar, TaskbarEdge::Bottom);
+        assert_eq!(
+            r.bottom,
+            slot.top - s(8, dpi),
+            "dpi {dpi}: card above the readout"
+        );
+        let flyout = Size {
+            width: s(360, dpi),
+            height: s(300, dpi),
+        };
+        let r = flyout_rect(Anchor::Rect(slot), flyout, &m, TaskbarEdge::Bottom);
+        assert_eq!(
+            r.bottom,
+            slot.top - s(12, dpi),
+            "dpi {dpi}: flyout above the readout"
+        );
+    }
+    // Top taskbar: the readout floats below it, the popups below the readout.
+    let (m, taskbar) = monitor(0, 1920, 1080, 48, TaskbarEdge::Top, 96);
+    let slot = rect(1500, 52, 1676, 92);
+    let size = Size {
+        width: 320,
+        height: 180,
+    };
+    assert_eq!(
+        hover_card_rect(slot, size, &m, taskbar, TaskbarEdge::Top).top,
+        92 + 8
+    );
+    assert_eq!(
+        flyout_rect(Anchor::Rect(slot), size, &m, TaskbarEdge::Top).top,
+        92 + 12
+    );
+    // A docked readout and a cursor anchor keep the F§1.3 rule.
+    let (m, taskbar) = monitor(0, 1920, 1080, 48, TaskbarEdge::Bottom, 96);
+    let docked = rect(1500, 1036, 1676, 1076);
+    assert_eq!(
+        hover_card_rect(docked, size, &m, taskbar, TaskbarEdge::Bottom).bottom,
+        1032 - 8
+    );
+    let cursor = Anchor::Point(Point { x: 1600, y: 900 });
+    assert_eq!(
+        flyout_rect(cursor, size, &m, TaskbarEdge::Bottom).bottom,
+        1032 - 12
+    );
+}

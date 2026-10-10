@@ -155,8 +155,10 @@ export component PaceBar inherits Rectangle {
     height: root.geom.height * 1phx;
     accessible-role: none;
 
-    property <color> fill-color: Theme.high-contrast && root.tone != Tone.stale ? root.calm-fill
-        : root.tone == Tone.caution ? Theme.caution
+    // High contrast needs no branch of its own: Theme.caution and Theme.critical are
+    // COLOR_HIGHLIGHT there (R§7: warning and critical fill in the hover card), and the flyout's
+    // calm fill (Theme.accent) is COLOR_HIGHLIGHT too (F§7: highlight at every severity).
+    property <color> fill-color: root.tone == Tone.caution ? Theme.caution
         : root.tone == Tone.critical ? Theme.critical
         : root.tone == Tone.stale ? Theme.stale : root.calm-fill;
 
