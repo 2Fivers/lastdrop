@@ -115,6 +115,36 @@ pub struct AppState {
     pub readout: ReadoutState,
     /// A manual refresh is running (the flyout's refresh button shows progress, F§3).
     pub refreshing: bool,
+    /// The provider instances in use. Kept across settings changes that leave a provider's
+    /// options alone ([`reuse_providers`]): their memory (the Claude OAuth source's 401 stop,
+    /// 5-minute rest and `Retry-After` back-off) must not reset on every Apply.
+    pub providers: Vec<Arc<dyn Provider>>,
+}
+
+/// The providers for `after`: the existing instance of a provider whose options did not change
+/// between `before` and `after`, else the new one from `fresh`.
+pub fn reuse_providers(
+    existing: &[Arc<dyn Provider>],
+    fresh: Vec<Arc<dyn Provider>>,
+    before: &Settings,
+    after: &Settings,
+) -> Vec<Arc<dyn Provider>> {
+    fresh
+        .into_iter()
+        .map(|p| {
+            let unchanged = match p.id() {
+                ProviderId::Claude => {
+                    before.provider_options.claude == after.provider_options.claude
+                }
+                ProviderId::Codex => before.provider_options.codex == after.provider_options.codex,
+                ProviderId::Meshy => true,
+            };
+            match existing.iter().find(|e| e.id() == p.id()) {
+                Some(kept) if unchanged => kept.clone(),
+                _ => p,
+            }
+        })
+        .collect()
 }
 
 /// Resolves an account's settings into an [`AccountSource`] (production:
@@ -315,6 +345,7 @@ impl AppState {
         let providers = lastdrop_providers::providers(&settings);
         let sources = build_sources(&settings, &providers, &resolve_real, BTreeMap::new());
         AppState {
+            providers,
             settings,
             sources,
             memory: EvalMemory::default(),
@@ -331,10 +362,16 @@ impl AppState {
 
     /// Applies new settings: adds and removes sources, keeps readings of sources that remain.
     pub fn apply_settings(&mut self, settings: Settings) {
-        let providers = lastdrop_providers::providers(&settings);
+        let providers = reuse_providers(
+            &self.providers,
+            lastdrop_providers::providers(&settings),
+            &self.settings,
+            &settings,
+        );
         let existing = std::mem::take(&mut self.sources);
         self.sources = build_sources(&settings, &providers, &resolve_real, existing);
         self.settings = settings;
+        self.providers = providers;
     }
 
     /// Records a worker's result: snapshot → `latest` and history; status and refresh memory via
@@ -557,6 +594,40 @@ pub(crate) mod tests {
             credential: Some(CredentialFingerprint("v1".to_owned())),
             internet: None,
         }
+    }
+
+    #[test]
+    fn providers_survive_an_apply_that_leaves_their_options_alone() {
+        let before = settings_of(&[ProviderId::Claude, ProviderId::Codex]);
+        let existing = lastdrop_providers::providers(&before);
+        let mut after = before.clone();
+        after.provider_options.codex.rollout_fallback =
+            !after.provider_options.codex.rollout_fallback;
+        let kept = reuse_providers(
+            &existing,
+            lastdrop_providers::providers(&after),
+            &before,
+            &after,
+        );
+        let find = |list: &[Arc<dyn Provider>], id: ProviderId| {
+            list.iter()
+                .find(|p| p.id() == id)
+                .cloned()
+                .expect("provider")
+        };
+        // Claude's memory (401 stop, back-off) is kept; Codex got its new options.
+        assert!(Arc::ptr_eq(
+            &find(&existing, ProviderId::Claude),
+            &find(&kept, ProviderId::Claude)
+        ));
+        assert!(Arc::ptr_eq(
+            &find(&existing, ProviderId::Meshy),
+            &find(&kept, ProviderId::Meshy)
+        ));
+        assert!(!Arc::ptr_eq(
+            &find(&existing, ProviderId::Codex),
+            &find(&kept, ProviderId::Codex)
+        ));
     }
 
     #[test]

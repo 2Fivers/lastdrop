@@ -324,7 +324,8 @@ pub fn run(startup: Startup) -> Result<(), AppError> {
 }
 
 /// The orderly shutdown after the event loop: windows hidden, hotkey unregistered, tray icon
-/// removed (`NIM_DELETE` on drop), readout and workers joined.
+/// removed (`NIM_DELETE` on drop), the second-instance listener closed, readout joined, queued
+/// refreshes dropped and running ones given `scheduler::SHUTDOWN_WAIT`.
 fn shutdown() {
     let Some(app) = APP.with(|a| a.borrow_mut().take()) else {
         return;
@@ -345,9 +346,13 @@ fn shutdown() {
                 readout,
                 scheduler,
                 windows,
+                listener,
                 ..
             } = app;
             drop(tray);
+            // A second launch from now on finds no listener and exits; it must not signal an
+            // instance whose event loop has ended.
+            drop(listener);
             readout.shutdown();
             scheduler.shutdown();
             drop(windows);

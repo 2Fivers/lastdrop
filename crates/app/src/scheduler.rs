@@ -9,10 +9,11 @@
 
 use std::collections::BTreeMap;
 use std::panic::{AssertUnwindSafe, catch_unwind};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use jiff::{SignedDuration, Timestamp};
 use lastdrop_core::model::{Snapshot, SourceKey};
@@ -34,6 +35,12 @@ pub const WORKERS: usize = 2;
 /// The deadline of one fetch (`FetchContext::deadline`): 20 s, enough for the app-server's 8 s
 /// start plus a call, and HTTP timeouts.
 pub const FETCH_BUDGET: Duration = Duration::from_secs(20);
+
+/// How long [`Scheduler::shutdown`] waits for fetches that are already running (**not from the
+/// spec**): long enough for a file read or an HTTP answer, short enough that a quick relaunch
+/// does not find the dying instance still holding the single-instance mutex. Workers still
+/// running after it end with the process (a `codex` child dies with its kill-on-close job).
+pub const SHUTDOWN_WAIT: Duration = Duration::from_secs(2);
 
 /// One fetch to run.
 pub struct Job {
@@ -209,6 +216,8 @@ pub fn run_job(
 pub struct Scheduler {
     workers: Vec<JoinHandle<()>>,
     queue: Option<Sender<Job>>,
+    /// Set by [`Scheduler::shutdown`]: workers start no further job.
+    stop: Arc<AtomicBool>,
 }
 
 impl Scheduler {
@@ -217,17 +226,19 @@ impl Scheduler {
     pub fn start(io: Arc<WorkerIo>, sink: ResultSink) -> std::io::Result<Scheduler> {
         let (tx, rx) = mpsc::channel::<Job>();
         let rx = Arc::new(Mutex::new(rx));
+        let stop = Arc::new(AtomicBool::new(false));
         let mut workers = Vec::with_capacity(WORKERS);
         for n in 0..WORKERS {
-            let (io, sink, rx) = (io.clone(), sink.clone(), rx.clone());
+            let (io, sink, rx, stop) = (io.clone(), sink.clone(), rx.clone(), stop.clone());
             let handle = std::thread::Builder::new()
                 .name(format!("lastdrop-refresh-{n}"))
-                .spawn(move || worker(&io, &sink, &rx))?;
+                .spawn(move || worker(&io, &sink, &rx, &stop))?;
             workers.push(handle);
         }
         Ok(Scheduler {
             workers,
             queue: Some(tx),
+            stop,
         })
     }
 
@@ -239,10 +250,22 @@ impl Scheduler {
         }
     }
 
-    /// Closes the queue and joins the workers (running fetches finish within their deadline).
+    /// Stops the workers: queued jobs are dropped without running (the channel would otherwise
+    /// deliver every buffered job before it reports closed), running fetches get
+    /// [`SHUTDOWN_WAIT`] to finish, and workers still busy after that are left to end with the
+    /// process.
     pub fn shutdown(mut self) {
+        self.stop.store(true, Ordering::Release);
         self.queue = None;
+        let deadline = Instant::now() + SHUTDOWN_WAIT;
+        while self.workers.iter().any(|h| !h.is_finished()) && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(10));
+        }
         for handle in self.workers.drain(..) {
+            if !handle.is_finished() {
+                log::info!("a refresh worker is still fetching; it ends with the process");
+                continue;
+            }
             if handle.join().is_err() {
                 log::error!("a refresh worker panicked");
             }
@@ -250,8 +273,8 @@ impl Scheduler {
     }
 }
 
-/// One worker: takes jobs until the queue closes.
-fn worker(io: &WorkerIo, sink: &ResultSink, rx: &Mutex<Receiver<Job>>) {
+/// One worker: takes jobs until the queue closes or the scheduler stops.
+fn worker(io: &WorkerIo, sink: &ResultSink, rx: &Mutex<Receiver<Job>>, stop: &AtomicBool) {
     // SAFETY: called once at the start of this thread, before any COM use on it; balanced by
     // CoUninitialize below when it succeeded.
     let com = unsafe { CoInitializeEx(None, COINIT_MULTITHREADED) }.is_ok();
@@ -273,6 +296,10 @@ fn worker(io: &WorkerIo, sink: &ResultSink, rx: &Mutex<Receiver<Job>>) {
         let Ok(job) = job else {
             break;
         };
+        if stop.load(Ordering::Acquire) {
+            // Shutting down: a queued job is dropped, not run.
+            break;
+        }
         let result = run_job(&job, &io.clock, &ctx, &|| {
             catch_unwind(lastdrop_win::network::connected_to_internet)
                 .ok()
@@ -522,5 +549,97 @@ mod tests {
         let done = rx.recv_timeout(Duration::from_secs(10)).expect("result");
         assert_eq!(done.provider, ProviderId::Codex);
         scheduler.shutdown();
+    }
+
+    /// A provider whose fetch takes `delay` and counts its calls.
+    struct SlowProvider {
+        delay: Duration,
+        calls: Arc<std::sync::atomic::AtomicUsize>,
+    }
+
+    impl Provider for SlowProvider {
+        fn id(&self) -> ProviderId {
+            ProviderId::Codex
+        }
+
+        fn fetch(
+            &self,
+            _ctx: &FetchContext<'_>,
+            _account: &AccountSource,
+        ) -> Result<Snapshot, FetchError> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            std::thread::sleep(self.delay);
+            Err(FetchError::Unavailable {
+                detail: "slow test provider".to_owned(),
+            })
+        }
+
+        fn min_interval(&self) -> Duration {
+            Duration::from_secs(60)
+        }
+
+        fn credential_fingerprint(
+            &self,
+            _ctx: &FetchContext<'_>,
+            _account: &AccountSource,
+        ) -> Option<CredentialFingerprint> {
+            None
+        }
+    }
+
+    #[test]
+    fn shutdown_drops_queued_jobs_and_does_not_wait_for_long_fetches() {
+        let sink: ResultSink = Arc::new(|_: JobResult| {});
+        let scheduler = Scheduler::start(Arc::new(WorkerIo::new()), sink).expect("threads");
+        let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let provider: Arc<dyn Provider> = Arc::new(SlowProvider {
+            delay: Duration::from_millis(300),
+            calls: calls.clone(),
+        });
+        let source = crate::state::tests::source_of(ProviderId::Codex);
+        for _ in 0..6 {
+            scheduler.submit(Job {
+                source: SourceKey {
+                    provider: ProviderId::Codex,
+                    account: lastdrop_core::model::AccountKey::primary(),
+                },
+                provider: provider.clone(),
+                account: source.clone(),
+                manual: false,
+                probe: None,
+            });
+        }
+        // Let both workers pick up a job, then quit.
+        std::thread::sleep(Duration::from_millis(50));
+        let started = Instant::now();
+        scheduler.shutdown();
+        assert!(started.elapsed() < SHUTDOWN_WAIT + Duration::from_secs(1));
+        assert!(
+            calls.load(Ordering::SeqCst) <= WORKERS,
+            "only the running fetches ran, not the queue: {}",
+            calls.load(Ordering::SeqCst)
+        );
+
+        // A fetch longer than the wait is left behind instead of holding up the quit.
+        let sink: ResultSink = Arc::new(|_: JobResult| {});
+        let scheduler = Scheduler::start(Arc::new(WorkerIo::new()), sink).expect("threads");
+        let stuck: Arc<dyn Provider> = Arc::new(SlowProvider {
+            delay: SHUTDOWN_WAIT + Duration::from_secs(2),
+            calls: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+        });
+        scheduler.submit(Job {
+            source: SourceKey {
+                provider: ProviderId::Codex,
+                account: lastdrop_core::model::AccountKey::primary(),
+            },
+            provider: stuck,
+            account: source,
+            manual: false,
+            probe: None,
+        });
+        std::thread::sleep(Duration::from_millis(50));
+        let started = Instant::now();
+        scheduler.shutdown();
+        assert!(started.elapsed() < SHUTDOWN_WAIT + Duration::from_secs(1));
     }
 }
