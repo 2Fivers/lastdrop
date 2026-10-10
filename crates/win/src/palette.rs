@@ -1,6 +1,10 @@
 //! Colour roles to colours (R§7, F§7). The WinUI 3 theme resources
 //! (`Common_themeresources_any.xaml`) win if a value here disagrees with them.
 //!
+//! Checked against the theme resources Windows ships (`Microsoft.UI.Xaml` in `SystemApps`): every
+//! value of the R§7 and F§7 tables matches except DividerStrokeColorDefault in light mode, which
+//! is `#0F000000` there and `#14000000` in the spec; the file wins.
+//!
 //! Draw the ARGB tokens with their alpha on the transparent layer and let DWM blend; never
 //! hard-code blended values (R§7).
 //!
@@ -135,7 +139,9 @@ pub fn resolve(role: ColorRole, theme: &ThemeInfo) -> Argb {
         R::SubtleTertiary => pick(0x0600_0000, 0x0AFF_FFFF),
         R::CardBackground => pick(0xFFF9_F9F9, 0xFF2C_2C2C),
         R::CardBorder => pick(0x0F00_0000, 0x3300_0000),
-        R::Divider => pick(0x1400_0000, 0x15FF_FFFF),
+        // DividerStrokeColorDefault: the theme resources say #0F000000 in light mode (the spec
+        // tables say #14000000; R§7 "if a value disagrees with that file, the file wins").
+        R::Divider => pick(0x0F00_0000, 0x15FF_FFFF),
         R::FlyoutCardBackground => pick(0xB3FF_FFFF, 0x0DFF_FFFF),
         R::FlyoutCardStroke => pick(0x0F00_0000, 0x1900_0000),
         R::BadgeFill => pick(0x0F00_0000, 0x0FFF_FFFF),
