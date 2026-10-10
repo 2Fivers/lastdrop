@@ -1,0 +1,582 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Lastdrop — Ring gauges</title>
+<style>
+/* Windows 11 taskbar mock at 1:1 (100 % scale). Shared by every readout variant so they
+   compare fairly. Transparency effects off = solid taskbar colours, as on the owner's PC. */
+:root {
+  --font: "Segoe UI Variable Text", "Segoe UI Variable", "Segoe UI", sans-serif;
+  --icons: "Segoe Fluent Icons", "Segoe MDL2 Assets";
+  --accent-light: #8e3aa7;   /* owner's accent, darker shade WinUI uses on light */
+  --accent-dark: #d58ae8;    /* lighter shade WinUI uses on dark */
+}
+* { box-sizing: border-box; }
+body { margin: 0; padding: 24px; background: #6b6f78; font-family: var(--font); }
+h2 { font: 600 14px var(--font); color: #fff; margin: 28px 0 8px; }
+p.note { font: 12px var(--font); color: #e6e6e6; margin: 0 0 10px; max-width: 900px; }
+
+.taskbar {
+  position: relative; height: 48px; width: 1100px; display: flex; align-items: center;
+  font-family: var(--font); user-select: none;
+}
+.taskbar.light { background: #eeeeee; color: #1a1a1a; border-top: 1px solid #d9d9d9; --tb-fg: #1a1a1a; --tb-fg2: #5c5c5c; --tb-hover: rgba(0,0,0,.05); --accent: var(--accent-light); }
+.taskbar.dark  { background: #1c1c1c; color: #ffffff; border-top: 1px solid #2e2e2e; --tb-fg: #ffffff; --tb-fg2: #c5c5c5; --tb-hover: rgba(255,255,255,.07); --accent: var(--accent-dark); }
+
+/* centred app buttons (Windows 11 default alignment) */
+.taskbar .apps { position: absolute; left: 50%; transform: translateX(-50%); display: flex; gap: 4px; }
+.taskbar .app { width: 40px; height: 40px; border-radius: 4px; display: grid; place-items: center; }
+.taskbar .app i { width: 24px; height: 24px; border-radius: 5px; display: block; }
+.taskbar .app:nth-child(1) i { background: linear-gradient(135deg,#0a84ff,#4cc2ff); }
+.taskbar .app:nth-child(2) i { background: #f2c94c; }
+.taskbar .app:nth-child(3) i { background: linear-gradient(135deg,#e34c26,#f06529); }
+.taskbar .app:nth-child(4) i { background: #2d2d2d; outline: 1px solid #555; }
+.taskbar .app:nth-child(5) i { background: linear-gradient(135deg,#7b2ff7,#f107a3); }
+
+/* right side: readout slot, overflow chevron, tray icons, clock, bell */
+.taskbar .tray { margin-left: auto; display: flex; align-items: center; height: 100%; padding-right: 8px; }
+.taskbar .readout { height: 40px; display: flex; align-items: center; margin-right: 4px; border-radius: 4px; padding: 0 6px; }
+.taskbar .readout:hover { background: var(--tb-hover); }
+.taskbar .glyph { font-family: var(--icons); font-size: 16px; width: 32px; height: 40px; display: grid; place-items: center; color: var(--tb-fg); }
+.taskbar .glyph.small { font-size: 12px; width: 24px; }
+.taskbar .clock { text-align: right; font-size: 12px; line-height: 16px; padding: 0 8px 0 6px; color: var(--tb-fg); }
+
+/* the tray icon of Lastdrop itself, 16x16 at 100 % */
+.taskbar .ld-icon { width: 32px; height: 40px; display: grid; place-items: center; }
+
+</style>
+<style>
+:root { --ld-w: 137.80px; }
+:root { --ok-l:#0F7B0F; --ok-d:#6CCB5F; --warn-l:#9D5D00; --warn-d:#FCE100; --crit-l:#C42B1C; --crit-d:#FF99A4; }
+/* --trk = WinUI ControlStrongStroke (#72000000 light / #8BFFFFFF dark), the ProgressBar track colour */
+.taskbar.light { --tb-bg:#eeeeee; --trk: rgba(0,0,0,.447); --ok: var(--ok-l); --warn: var(--warn-l); --crit: var(--crit-l); --stale:#767676; }
+.taskbar.dark  { --tb-bg:#1c1c1c; --trk: rgba(255,255,255,.545); --ok: var(--ok-d); --warn: var(--warn-d); --crit: var(--crit-d); --stale:#9a9a9a; }
+
+/* ring anatomy */
+svg.ring { display:block; }
+.ring .trk { fill:none; stroke: var(--trk); }
+.ring .arc { fill:none; stroke-linecap: round; }
+.ring.st-ok .arc   { stroke: var(--ok); }
+.ring.st-warn .arc { stroke: var(--warn); }
+.ring.st-crit .arc { stroke: var(--crit); }
+.ring.st-stale .arc { stroke: var(--stale); }
+.ring.st-ok .arcdot { fill: var(--ok); }
+.ring .alert { fill: var(--tb-fg); }
+.ring .q { fill:none; stroke: var(--tb-fg); stroke-linecap: round; stroke-linejoin: round; }
+.ring .hand { stroke: var(--tb-fg); stroke-linecap: round; }
+.ring .pivot { fill: var(--tb-fg); }
+
+/* readout: two 16 px rows with no gap = the clock's own line grid, so both lines share its baselines */
+.ld { display:grid; align-items:center; grid-auto-rows:16px; row-gap:0; column-gap:6px;
+      font-family:"Segoe UI Variable Small","Segoe UI Variable","Segoe UI",sans-serif; font-size:12px; line-height:16px;
+      font-variant-numeric: tabular-nums; color: var(--tb-fg); white-space:nowrap; }
+.ld.cols-3 { grid-template-columns: 16px max-content max-content; grid-template-rows: 16px 16px 0; }
+.ld.cols-4 { grid-template-columns: 16px max-content max-content max-content; grid-template-rows: 16px 16px 0; }
+.ld .c-ring { height:16px; width:16px; }
+/* the ring keeps a 1 px clear margin inside its 16 px box, so 5 px to the text reads as the same 6 px as the other gaps */
+.ld .c-ring + span, .ld .sz-ring + span { margin-left:-1px; }
+.ld .c-lab { color: var(--tb-fg2); }
+.ld .c-val b { font-weight:600; }
+.ld .c-time { color: var(--tb-fg2); display:flex; align-items:center; gap:2px; }
+.ld .gl { font-family: var(--icons); font-style:normal; font-size:11px; line-height:12px; }
+.ld .v-crit, .ld .v-crit b { color: var(--crit); }      /* critical = WinUI error-text treatment; caution stays in text colour */
+.ld .v-stale { color: var(--tb-fg2); }
+.ld .v-stale b { font-weight:400; }
+/* hidden sizer row: reserves the widest format of each column, zero height */
+.ld .sz { visibility:hidden; height:0; overflow:hidden; line-height:0; }
+/* stale: same outer width as the live layout (measured), the age takes the reset column and the slack */
+.ld.stale { grid-template-columns: 16px max-content 1fr; grid-template-rows: 16px 16px; width: var(--ld-w); }
+.ld.stale .c-stale { grid-column:3; grid-row: 1 / span 2; color: var(--tb-fg2); line-height:16px; }
+.ld.tight { grid-template-columns: 16px max-content; grid-template-rows: 16px 0; }
+
+/* Windows contrast themes: system colours replace the palette; fill vs track still reads by thickness */
+@media (forced-colors: active) {
+  .ring .trk { stroke: CanvasText; }
+  .ring .arc { stroke: Highlight !important; } .ring .arcdot { fill: Highlight; }
+  .ring .hand { stroke: CanvasText; } .ring .pivot, .ring .alert { fill: CanvasText; } .ring .q { stroke: CanvasText; }
+  .ld .v-crit, .ld .v-crit b { color: CanvasText; }
+}
+
+/* tray icon */
+.ld-icon svg.trayicon { width:16px; height:16px; }
+
+/* page chrome (outside the taskbar) */
+.page-head { color:#fff; max-width:1100px; }
+.page-head h1 { font: 600 20px var(--font); margin:0 0 6px; }
+.page-head p { font: 13px/1.5 var(--font); color:#eef0f3; margin:0 0 10px; }
+table.widths { border-collapse:collapse; font: 12px var(--font); color:#fff; margin:6px 0 4px; font-variant-numeric: tabular-nums; }
+table.widths td, table.widths th { padding:3px 14px 3px 0; text-align:left; border-bottom:1px solid rgba(255,255,255,.15); }
+table.widths th { font-weight:600; color:#dfe3ea; }
+.pair { display:flex; flex-direction:column; gap:10px; }
+.lab-row { font: 600 11px var(--font); color:#dfe3ea; letter-spacing:.02em; margin: 0 0 3px; text-transform: uppercase; }
+
+/* how-to-read key */
+.key { display:flex; gap:28px; align-items:flex-start; background:#eeeeee; color:#1a1a1a; padding:14px 18px; border-radius:6px; width:1100px; --tb-fg:#1a1a1a; --tb-fg2:#5c5c5c; --trk: rgba(0,0,0,.447); --ok:#0F7B0F; --warn:#9D5D00; --crit:#C42B1C; --stale:#767676; }
+.key figure { margin:0; display:flex; gap:10px; align-items:center; font: 12px/1.45 var(--font); width: 250px; }
+.key figure .z { zoom:3; flex:none; }
+.key figure b { font-weight:600; display:block; }
+
+/* hover card */
+.hover-stage { position:relative; padding-top: 262px; }
+.hover-stage.tall { padding-top: 330px; }
+.taskbar .readout { position:relative; }
+.taskbar .readout.is-hover { background: var(--tb-hover); }
+.card { position:absolute; bottom: calc(100% + 12px); left: 50%; transform: translateX(-50%); width: 320px; border-radius:8px; padding: 12px 14px 10px;
+        font-family:"Segoe UI Variable Small","Segoe UI Variable","Segoe UI",sans-serif; font-size:12px; line-height:16px; font-variant-numeric: tabular-nums; text-align:left; cursor:default; }
+.taskbar.light .card { background:#F9F9F9; color:#1a1a1a; border:1px solid rgba(0,0,0,.10); box-shadow: 0 8px 16px rgba(0,0,0,.14); --c2:#5c5c5c; --div: rgba(0,0,0,.08); }
+.taskbar.dark  .card { background:#2C2C2C; color:#ffffff; border:1px solid rgba(255,255,255,.09); box-shadow: 0 8px 16px rgba(0,0,0,.36); --c2:#c5c5c5; --div: rgba(255,255,255,.08); }
+.card .hd { display:flex; align-items:baseline; justify-content:space-between; margin-bottom:10px; }
+.card .hd .prov { font-family:"Segoe UI Variable Text","Segoe UI",sans-serif; font-weight:600; font-size:14px; line-height:20px; }
+.card .hd .plan { color: var(--c2); }
+.card .m { display:grid; grid-template-columns: 32px 1fr; column-gap:12px; padding: 2px 0 10px; }
+.card .m + .m { border-top:1px solid var(--div); padding-top:10px; }
+.card .m .ring { grid-row: 1 / span 3; margin-top:2px; }
+.card .m .t { font-family:"Segoe UI Variable Text","Segoe UI",sans-serif; display:flex; justify-content:space-between; font-weight:600; font-size:13px; line-height:18px; }
+.card .m .t .v { font-weight:600; }
+.card .m .s { color: var(--c2); }
+.card .m .p { margin-top:4px; }
+.card .m .p .gl { font-family: var(--icons); font-style:normal; font-size:12px; vertical-align:-2px; margin-right:4px; }
+.card .p .k-ok { color: var(--ok); font-weight:600; }
+.card .p .k-warn { color: var(--warn); font-weight:600; }
+.card .p .k-crit { color: var(--crit); font-weight:600; }
+.card .tip { color: var(--c2); margin-top:3px; }
+.card .ft { display:flex; justify-content:space-between; color: var(--c2); border-top:1px solid var(--div); padding-top:8px; margin-top:0; }
+.card .ft .gl { font-family: var(--icons); font-style:normal; font-size:12px; vertical-align:-2px; margin-right:4px; }
+/* tray icon inspection */
+.icons { display:grid; grid-template-columns: repeat(4, 1fr); gap:14px; width:1100px; }
+.icon-cell { display:flex; flex-direction:column; gap:6px; }
+.strip.taskbar { width: 100%; }
+.strip.taskbar .apps, .strip.taskbar .readout { display:none; }
+.zoomrow { display:flex; gap:8px; }
+.zoombox { padding:8px; border-radius:4px; display:grid; place-items:center; }
+.zoombox.light { background:#eeeeee; --tb-fg:#1a1a1a; --trk: rgba(0,0,0,.447); --ok:#0F7B0F; --warn:#9D5D00; --crit:#C42B1C; --stale:#767676; }
+.zoombox.dark  { background:#1c1c1c; --tb-fg:#ffffff; --trk: rgba(255,255,255,.545); --ok:#6CCB5F; --warn:#FCE100; --crit:#FF99A4; --stale:#9a9a9a; }
+.zoombox .z4 { zoom:4; }
+.icon-cell .cap { font: 12px var(--font); color:#eef0f3; }
+</style>
+</head>
+<body>
+<div class="page-head">
+<h1>Lastdrop taskbar readout — concept: Ring gauges (“race the hand”)</h1>
+<p>Each meter is a <b>clock face of its own window</b>: 12 o’clock is the reset, the thick coloured arc is what you have used, and the hand is <i>now</i>, the share of the window already gone. The ring is built like a WinUI progress ring, a <b>thick indicator over a 1 px track</b>, so “Will I make it to the reset?” is a question of shape: <b>the hand resting on the thin track = you will make it; the hand cutting through the colour = you are spending faster than time</b>. That reads in greyscale, at 16 px. The centre carries the state without colour: a hand while the reading is live, “!” when the meter is nearly empty, “?” when the reading is stale. The same 16 px ring is the tray icon, so readout and icon are one symbol. The text beside each ring says the one thing you would act on, and every time it shows is a clock time you can hold against the clock next to it: “58% left”, “empty 15:20”, and in the right-hand column the reset (↻ 14:56, or the weekday when it is more than a day away). No bare durations anywhere, so nothing reads as “2 h used or left?”. The two rows sit exactly on the clock’s 16 px line grid. Each column is sized once for its widest format, so the readout keeps one width in every state. Text uses the taskbar’s own colours; amber lives in the ring and only the critical forecast turns red.</p>
+<table class="widths"><tr><th>Scenario</th><th>Readout width at 100 % (incl. 6 px slot padding each side) — fixed per form</th><th>Budget</th></tr>
+<tr><td>1 · Normal</td><td>149.8 px</td><td>≤ 150 px</td></tr>
+<tr><td>2 · Ahead of pace</td><td>149.8 px</td><td>≤ 150 px</td></tr>
+<tr><td>3 · Critical</td><td>149.8 px</td><td>≤ 150 px</td></tr>
+<tr><td>4 · Stale</td><td>149.8 px</td><td>≤ 150 px</td></tr>
+<tr><td>5 · Two services</td><td>193.7 px</td><td>≤ 230 px</td></tr>
+<tr><td>6 · Tight — normal</td><td>101.5 px</td><td>as small as possible</td></tr>
+<tr><td>6 · Tight — ahead</td><td>101.5 px</td><td>as small as possible</td></tr>
+<tr><td>6 · Tight — critical</td><td>101.5 px</td><td>as small as possible</td></tr>
+<tr><td>6 · Tight — stale</td><td>101.5 px</td><td>as small as possible</td></tr>
+</table>
+</div>
+
+<h2>How to read a ring</h2>
+<div class="key">
+  <figure><span class="z"><svg class="ring st-ok" width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><defs><mask id="m1" maskUnits="userSpaceOnUse" x="0" y="0" width="16" height="16"><rect width="16" height="16" fill="#fff"/><line x1="8" y1="8" x2="8" y2="-2" stroke="#000" stroke-width="3.5" transform="rotate(194.4 8 8)"/></mask></defs><g mask="url(#m1)"><circle class="trk" cx="8" cy="8" r="5.75" stroke-width="1"/><path class="arc" d="M9.24 2.385A5.75 5.75 0 0 1 11.792 12.323" stroke-width="2.5"/></g><line class="hand" x1="8" y1="8" x2="8" y2="2" stroke-width="2" transform="rotate(194.4 8 8)"/><circle class="pivot" cx="8" cy="8" r="1.5"/></svg></span><span><b>Hand on the thin track</b>You have used less than the time that has passed. You will make it to the reset.</span></figure>
+  <figure><span class="z"><svg class="ring st-warn" width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><defs><mask id="m2" maskUnits="userSpaceOnUse" x="0" y="0" width="16" height="16"><rect width="16" height="16" fill="#fff"/><line x1="8" y1="8" x2="8" y2="-2" stroke="#000" stroke-width="3.5" transform="rotate(162 8 8)"/></mask></defs><g mask="url(#m2)"><circle class="trk" cx="8" cy="8" r="5.75" stroke-width="1"/><path class="arc" d="M9.24 2.385A5.75 5.75 0 1 1 2.252 8.166" stroke-width="2.5"/></g><line class="hand" x1="8" y1="8" x2="8" y2="2" stroke-width="2" transform="rotate(162 8 8)"/><circle class="pivot" cx="8" cy="8" r="1.5"/></svg></span><span><b>Hand cuts through the colour</b>You are spending faster than the window runs. At this rate you run out before the reset.</span></figure>
+  <figure><span class="z"><svg class="ring st-crit" width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><g><circle class="trk" cx="8" cy="8" r="5.75" stroke-width="1"/><path class="arc" d="M9.24 2.385A5.75 5.75 0 1 1 4.78 3.236" stroke-width="2.5"/></g><rect class="alert" x="7" y="4.67" width="2" height="4.14" rx="0.7"/><circle class="alert" cx="8" cy="10.7" r="1.1"/></svg></span><span><b>“!” replaces the hand</b>Nearly empty: minutes of use left. The forecast turns red; the hover card counts down.</span></figure>
+  <figure><span class="z"><svg class="ring st-stale" width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><g><circle class="trk" cx="8" cy="8" r="5.75" stroke-width="1"/><path class="arc" d="M9.24 2.385A5.75 5.75 0 0 1 11.792 12.323" stroke-width="2.5"/></g><path class="q" d="M6.2 6.286A1.8 1.8 0 1 1 8.9 7.845L8 8.6V9.286" stroke-width="1.5"/><circle class="alert" cx="8" cy="11.086" r="0.95"/></svg></span><span><b>Grey with “?”</b>No live reading (Fluent’s “unknown” mark). The fill is the last known value; the age is spelled out beside it.</span></figure>
+</div>
+<h2>1 · Normal — under pace</h2><p class="note">5-hour: 42 % used, 54 % of the window gone, resets 14:56. Weekly: 61 % used, 70 % gone, resets Thu 09:00. Both hands rest on the thin track, clear of the colour: both rings say “you will make it”.</p><div class="pair"><div class="lab-row">Light taskbar</div><div class="taskbar light " data-tag="s1">
+  <div class="apps"><div class="app"><i></i></div><div class="app"><i></i></div><div class="app"><i></i></div><div class="app"><i></i></div><div class="app"><i></i></div></div>
+  <div class="tray">
+    <div class="readout"><div class="ld cols-3 " role="group" aria-label="Claude. 5-hour: 58% left, on pace, resets 14:56. Weekly: 39% left, on pace, resets Thursday 09:00."><span class="c-ring"><svg class="ring st-ok" width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><defs><mask id="m5" maskUnits="userSpaceOnUse" x="0" y="0" width="16" height="16"><rect width="16" height="16" fill="#fff"/><line x1="8" y1="8" x2="8" y2="-2" stroke="#000" stroke-width="3.5" transform="rotate(194.4 8 8)"/></mask></defs><g mask="url(#m5)"><circle class="trk" cx="8" cy="8" r="5.75" stroke-width="1"/><path class="arc" d="M9.24 2.385A5.75 5.75 0 0 1 11.792 12.323" stroke-width="2.5"/></g><line class="hand" x1="8" y1="8" x2="8" y2="2" stroke-width="2" transform="rotate(194.4 8 8)"/><circle class="pivot" cx="8" cy="8" r="1.5"/></svg></span><span class="c-val "><b>58%</b> left</span><span class="c-time "><i class="gl ">&#xE72C;</i><span>14:56</span></span><span class="c-ring"><svg class="ring st-ok" width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><defs><mask id="m6" maskUnits="userSpaceOnUse" x="0" y="0" width="16" height="16"><rect width="16" height="16" fill="#fff"/><line x1="8" y1="8" x2="8" y2="-2" stroke="#000" stroke-width="3.5" transform="rotate(252 8 8)"/></mask></defs><g mask="url(#m6)"><circle class="trk" cx="8" cy="8" r="5.75" stroke-width="1"/><path class="arc" d="M9.24 2.385A5.75 5.75 0 1 1 5.377 13.117" stroke-width="2.5"/></g><line class="hand" x1="8" y1="8" x2="8" y2="2" stroke-width="2" transform="rotate(252 8 8)"/><circle class="pivot" cx="8" cy="8" r="1.5"/></svg></span><span class="c-val "><b>39%</b> left</span><span class="c-time "><i class="gl ">&#xE72C;</i><span>Thu</span></span><span class="sz sz-ring"></span><span class="sz c-val">empty <b>00:00</b></span><span class="sz c-time"><i class="gl ">&#xE72C;</i><span>00:00</span></span></div></div>
+    <span class="glyph small">&#xE70E;</span>
+    <span class="ld-icon"><svg class="ring trayicon st-ok" width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><defs><mask id="m7" maskUnits="userSpaceOnUse" x="0" y="0" width="16" height="16"><rect width="16" height="16" fill="#fff"/><line x1="8" y1="8" x2="8" y2="-2" stroke="#000" stroke-width="3.5" transform="rotate(252 8 8)"/></mask></defs><g mask="url(#m7)"><circle class="trk" cx="8" cy="8" r="5.75" stroke-width="1"/><path class="arc" d="M9.24 2.385A5.75 5.75 0 1 1 5.377 13.117" stroke-width="2.5"/></g><line class="hand" x1="8" y1="8" x2="8" y2="2" stroke-width="2" transform="rotate(252 8 8)"/><circle class="pivot" cx="8" cy="8" r="1.5"/></svg></span>
+    <span class="glyph">&#xE701;</span><span class="glyph">&#xE995;</span>
+    <div class="clock">12:42<br>2026-10-06</div>
+    <span class="glyph small">&#xEA8F;</span>
+  </div>
+</div><div class="lab-row">Dark taskbar</div><div class="taskbar dark " data-tag="s1d">
+  <div class="apps"><div class="app"><i></i></div><div class="app"><i></i></div><div class="app"><i></i></div><div class="app"><i></i></div><div class="app"><i></i></div></div>
+  <div class="tray">
+    <div class="readout"><div class="ld cols-3 " role="group" aria-label="Claude. 5-hour: 58% left, on pace, resets 14:56. Weekly: 39% left, on pace, resets Thursday 09:00."><span class="c-ring"><svg class="ring st-ok" width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><defs><mask id="m8" maskUnits="userSpaceOnUse" x="0" y="0" width="16" height="16"><rect width="16" height="16" fill="#fff"/><line x1="8" y1="8" x2="8" y2="-2" stroke="#000" stroke-width="3.5" transform="rotate(194.4 8 8)"/></mask></defs><g mask="url(#m8)"><circle class="trk" cx="8" cy="8" r="5.75" stroke-width="1"/><path class="arc" d="M9.24 2.385A5.75 5.75 0 0 1 11.792 12.323" stroke-width="2.5"/></g><line class="hand" x1="8" y1="8" x2="8" y2="2" stroke-width="2" transform="rotate(194.4 8 8)"/><circle class="pivot" cx="8" cy="8" r="1.5"/></svg></span><span class="c-val "><b>58%</b> left</span><span class="c-time "><i class="gl ">&#xE72C;</i><span>14:56</span></span><span class="c-ring"><svg class="ring st-ok" width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><defs><mask id="m9" maskUnits="userSpaceOnUse" x="0" y="0" width="16" height="16"><rect width="16" height="16" fill="#fff"/><line x1="8" y1="8" x2="8" y2="-2" stroke="#000" stroke-width="3.5" transform="rotate(252 8 8)"/></mask></defs><g mask="url(#m9)"><circle class="trk" cx="8" cy="8" r="5.75" stroke-width="1"/><path class="arc" d="M9.24 2.385A5.75 5.75 0 1 1 5.377 13.117" stroke-width="2.5"/></g><line class="hand" x1="8" y1="8" x2="8" y2="2" stroke-width="2" transform="rotate(252 8 8)"/><circle class="pivot" cx="8" cy="8" r="1.5"/></svg></span><span class="c-val "><b>39%</b> left</span><span class="c-time "><i class="gl ">&#xE72C;</i><span>Thu</span></span><span class="sz sz-ring"></span><span class="sz c-val">empty <b>00:00</b></span><span class="sz c-time"><i class="gl ">&#xE72C;</i><span>00:00</span></span></div></div>
+    <span class="glyph small">&#xE70E;</span>
+    <span class="ld-icon"><svg class="ring trayicon st-ok" width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><defs><mask id="m10" maskUnits="userSpaceOnUse" x="0" y="0" width="16" height="16"><rect width="16" height="16" fill="#fff"/><line x1="8" y1="8" x2="8" y2="-2" stroke="#000" stroke-width="3.5" transform="rotate(252 8 8)"/></mask></defs><g mask="url(#m10)"><circle class="trk" cx="8" cy="8" r="5.75" stroke-width="1"/><path class="arc" d="M9.24 2.385A5.75 5.75 0 1 1 5.377 13.117" stroke-width="2.5"/></g><line class="hand" x1="8" y1="8" x2="8" y2="2" stroke-width="2" transform="rotate(252 8 8)"/><circle class="pivot" cx="8" cy="8" r="1.5"/></svg></span>
+    <span class="glyph">&#xE701;</span><span class="glyph">&#xE995;</span>
+    <div class="clock">12:42<br>2026-10-06</div>
+    <span class="glyph small">&#xEA8F;</span>
+  </div>
+</div></div><h2>2 · Ahead of pace — warning</h2><p class="note">5-hour: 78 % used at 45 % of the window. The fill has overtaken the hand, so the hand now cuts through the colour. The row switches from “% left” to the forecast: empty at 15:20, reset at 16:30. Two clock times side by side, so “before the reset” needs no arithmetic. Text stays in the taskbar’s text colour (as WinUI does for caution); the amber lives in the ring.</p><div class="pair"><div class="lab-row">Light taskbar</div><div class="taskbar light " data-tag="s2">
+  <div class="apps"><div class="app"><i></i></div><div class="app"><i></i></div><div class="app"><i></i></div><div class="app"><i></i></div><div class="app"><i></i></div></div>
+  <div class="tray">
+    <div class="readout"><div class="ld cols-3 " role="group" aria-label="Claude. 5-hour: ahead of pace, runs out about 15:20, resets 16:30. Weekly: 39% left, on pace, resets Thursday 09:00."><span class="c-ring"><svg class="ring st-warn" width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><defs><mask id="m11" maskUnits="userSpaceOnUse" x="0" y="0" width="16" height="16"><rect width="16" height="16" fill="#fff"/><line x1="8" y1="8" x2="8" y2="-2" stroke="#000" stroke-width="3.5" transform="rotate(162 8 8)"/></mask></defs><g mask="url(#m11)"><circle class="trk" cx="8" cy="8" r="5.75" stroke-width="1"/><path class="arc" d="M9.24 2.385A5.75 5.75 0 1 1 2.252 8.166" stroke-width="2.5"/></g><line class="hand" x1="8" y1="8" x2="8" y2="2" stroke-width="2" transform="rotate(162 8 8)"/><circle class="pivot" cx="8" cy="8" r="1.5"/></svg></span><span class="c-val ">empty <b>15:20</b></span><span class="c-time "><i class="gl ">&#xE72C;</i><span>16:30</span></span><span class="c-ring"><svg class="ring st-ok" width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><defs><mask id="m12" maskUnits="userSpaceOnUse" x="0" y="0" width="16" height="16"><rect width="16" height="16" fill="#fff"/><line x1="8" y1="8" x2="8" y2="-2" stroke="#000" stroke-width="3.5" transform="rotate(252 8 8)"/></mask></defs><g mask="url(#m12)"><circle class="trk" cx="8" cy="8" r="5.75" stroke-width="1"/><path class="arc" d="M9.24 2.385A5.75 5.75 0 1 1 5.377 13.117" stroke-width="2.5"/></g><line class="hand" x1="8" y1="8" x2="8" y2="2" stroke-width="2" transform="rotate(252 8 8)"/><circle class="pivot" cx="8" cy="8" r="1.5"/></svg></span><span class="c-val "><b>39%</b> left</span><span class="c-time "><i class="gl ">&#xE72C;</i><span>Thu</span></span><span class="sz sz-ring"></span><span class="sz c-val">empty <b>00:00</b></span><span class="sz c-time"><i class="gl ">&#xE72C;</i><span>00:00</span></span></div></div>
+    <span class="glyph small">&#xE70E;</span>
+    <span class="ld-icon"><svg class="ring trayicon st-warn" width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><defs><mask id="m13" maskUnits="userSpaceOnUse" x="0" y="0" width="16" height="16"><rect width="16" height="16" fill="#fff"/><line x1="8" y1="8" x2="8" y2="-2" stroke="#000" stroke-width="3.5" transform="rotate(162 8 8)"/></mask></defs><g mask="url(#m13)"><circle class="trk" cx="8" cy="8" r="5.75" stroke-width="1"/><path class="arc" d="M9.24 2.385A5.75 5.75 0 1 1 2.252 8.166" stroke-width="2.5"/></g><line class="hand" x1="8" y1="8" x2="8" y2="2" stroke-width="2" transform="rotate(162 8 8)"/><circle class="pivot" cx="8" cy="8" r="1.5"/></svg></span>
+    <span class="glyph">&#xE701;</span><span class="glyph">&#xE995;</span>
+    <div class="clock">13:45<br>2026-10-06</div>
+    <span class="glyph small">&#xEA8F;</span>
+  </div>
+</div><div class="lab-row">Dark taskbar</div><div class="taskbar dark " data-tag="s2d">
+  <div class="apps"><div class="app"><i></i></div><div class="app"><i></i></div><div class="app"><i></i></div><div class="app"><i></i></div><div class="app"><i></i></div></div>
+  <div class="tray">
+    <div class="readout"><div class="ld cols-3 " role="group" aria-label="Claude. 5-hour: ahead of pace, runs out about 15:20, resets 16:30. Weekly: 39% left, on pace, resets Thursday 09:00."><span class="c-ring"><svg class="ring st-warn" width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><defs><mask id="m14" maskUnits="userSpaceOnUse" x="0" y="0" width="16" height="16"><rect width="16" height="16" fill="#fff"/><line x1="8" y1="8" x2="8" y2="-2" stroke="#000" stroke-width="3.5" transform="rotate(162 8 8)"/></mask></defs><g mask="url(#m14)"><circle class="trk" cx="8" cy="8" r="5.75" stroke-width="1"/><path class="arc" d="M9.24 2.385A5.75 5.75 0 1 1 2.252 8.166" stroke-width="2.5"/></g><line class="hand" x1="8" y1="8" x2="8" y2="2" stroke-width="2" transform="rotate(162 8 8)"/><circle class="pivot" cx="8" cy="8" r="1.5"/></svg></span><span class="c-val ">empty <b>15:20</b></span><span class="c-time "><i class="gl ">&#xE72C;</i><span>16:30</span></span><span class="c-ring"><svg class="ring st-ok" width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><defs><mask id="m15" maskUnits="userSpaceOnUse" x="0" y="0" width="16" height="16"><rect width="16" height="16" fill="#fff"/><line x1="8" y1="8" x2="8" y2="-2" stroke="#000" stroke-width="3.5" transform="rotate(252 8 8)"/></mask></defs><g mask="url(#m15)"><circle class="trk" cx="8" cy="8" r="5.75" stroke-width="1"/><path class="arc" d="M9.24 2.385A5.75 5.75 0 1 1 5.377 13.117" stroke-width="2.5"/></g><line class="hand" x1="8" y1="8" x2="8" y2="2" stroke-width="2" transform="rotate(252 8 8)"/><circle class="pivot" cx="8" cy="8" r="1.5"/></svg></span><span class="c-val "><b>39%</b> left</span><span class="c-time "><i class="gl ">&#xE72C;</i><span>Thu</span></span><span class="sz sz-ring"></span><span class="sz c-val">empty <b>00:00</b></span><span class="sz c-time"><i class="gl ">&#xE72C;</i><span>00:00</span></span></div></div>
+    <span class="glyph small">&#xE70E;</span>
+    <span class="ld-icon"><svg class="ring trayicon st-warn" width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><defs><mask id="m16" maskUnits="userSpaceOnUse" x="0" y="0" width="16" height="16"><rect width="16" height="16" fill="#fff"/><line x1="8" y1="8" x2="8" y2="-2" stroke="#000" stroke-width="3.5" transform="rotate(162 8 8)"/></mask></defs><g mask="url(#m16)"><circle class="trk" cx="8" cy="8" r="5.75" stroke-width="1"/><path class="arc" d="M9.24 2.385A5.75 5.75 0 1 1 2.252 8.166" stroke-width="2.5"/></g><line class="hand" x1="8" y1="8" x2="8" y2="2" stroke-width="2" transform="rotate(162 8 8)"/><circle class="pivot" cx="8" cy="8" r="1.5"/></svg></span>
+    <span class="glyph">&#xE701;</span><span class="glyph">&#xE995;</span>
+    <div class="clock">13:45<br>2026-10-06</div>
+    <span class="glyph small">&#xEA8F;</span>
+  </div>
+</div></div><h2>3 · Critical</h2><p class="note">5-hour: 94 % used, about 12 minutes of use left at the current rate (empty ≈ 15:21); resets 16:30. The ring closes in red and the hand gives way to “!”; the forecast turns critical red (WinUI’s error-text treatment). It keeps the same grammar as the warning, a clock time, rather than switching to “12 min left”, which next to a reset column reads as “12 min until the reset”, the opposite meaning. The clock beside it already shows “now”, and the text does not tick every minute. The countdown is in the hover card and the toast.</p><div class="pair"><div class="lab-row">Light taskbar</div><div class="taskbar light " data-tag="s3">
+  <div class="apps"><div class="app"><i></i></div><div class="app"><i></i></div><div class="app"><i></i></div><div class="app"><i></i></div><div class="app"><i></i></div></div>
+  <div class="tray">
+    <div class="readout"><div class="ld cols-3 " role="group" aria-label="Claude. 5-hour: nearly empty, runs out about 15:21, resets 16:30. Weekly: 39% left, on pace, resets Thursday 09:00."><span class="c-ring"><svg class="ring st-crit" width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><g><circle class="trk" cx="8" cy="8" r="5.75" stroke-width="1"/><path class="arc" d="M9.24 2.385A5.75 5.75 0 1 1 4.78 3.236" stroke-width="2.5"/></g><rect class="alert" x="7" y="4.67" width="2" height="4.14" rx="0.7"/><circle class="alert" cx="8" cy="10.7" r="1.1"/></svg></span><span class="c-val v-crit">empty <b>15:21</b></span><span class="c-time "><i class="gl ">&#xE72C;</i><span>16:30</span></span><span class="c-ring"><svg class="ring st-ok" width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><defs><mask id="m18" maskUnits="userSpaceOnUse" x="0" y="0" width="16" height="16"><rect width="16" height="16" fill="#fff"/><line x1="8" y1="8" x2="8" y2="-2" stroke="#000" stroke-width="3.5" transform="rotate(252 8 8)"/></mask></defs><g mask="url(#m18)"><circle class="trk" cx="8" cy="8" r="5.75" stroke-width="1"/><path class="arc" d="M9.24 2.385A5.75 5.75 0 1 1 5.377 13.117" stroke-width="2.5"/></g><line class="hand" x1="8" y1="8" x2="8" y2="2" stroke-width="2" transform="rotate(252 8 8)"/><circle class="pivot" cx="8" cy="8" r="1.5"/></svg></span><span class="c-val "><b>39%</b> left</span><span class="c-time "><i class="gl ">&#xE72C;</i><span>Thu</span></span><span class="sz sz-ring"></span><span class="sz c-val">empty <b>00:00</b></span><span class="sz c-time"><i class="gl ">&#xE72C;</i><span>00:00</span></span></div></div>
+    <span class="glyph small">&#xE70E;</span>
+    <span class="ld-icon"><svg class="ring trayicon st-crit" width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><g><circle class="trk" cx="8" cy="8" r="5.75" stroke-width="1"/><path class="arc" d="M9.24 2.385A5.75 5.75 0 1 1 4.78 3.236" stroke-width="2.5"/></g><rect class="alert" x="7" y="4.67" width="2" height="4.14" rx="0.7"/><circle class="alert" cx="8" cy="10.7" r="1.1"/></svg></span>
+    <span class="glyph">&#xE701;</span><span class="glyph">&#xE995;</span>
+    <div class="clock">15:09<br>2026-10-06</div>
+    <span class="glyph small">&#xEA8F;</span>
+  </div>
+</div><div class="lab-row">Dark taskbar</div><div class="taskbar dark " data-tag="s3d">
+  <div class="apps"><div class="app"><i></i></div><div class="app"><i></i></div><div class="app"><i></i></div><div class="app"><i></i></div><div class="app"><i></i></div></div>
+  <div class="tray">
+    <div class="readout"><div class="ld cols-3 " role="group" aria-label="Claude. 5-hour: nearly empty, runs out about 15:21, resets 16:30. Weekly: 39% left, on pace, resets Thursday 09:00."><span class="c-ring"><svg class="ring st-crit" width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><g><circle class="trk" cx="8" cy="8" r="5.75" stroke-width="1"/><path class="arc" d="M9.24 2.385A5.75 5.75 0 1 1 4.78 3.236" stroke-width="2.5"/></g><rect class="alert" x="7" y="4.67" width="2" height="4.14" rx="0.7"/><circle class="alert" cx="8" cy="10.7" r="1.1"/></svg></span><span class="c-val v-crit">empty <b>15:21</b></span><span class="c-time "><i class="gl ">&#xE72C;</i><span>16:30</span></span><span class="c-ring"><svg class="ring st-ok" width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><defs><mask id="m21" maskUnits="userSpaceOnUse" x="0" y="0" width="16" height="16"><rect width="16" height="16" fill="#fff"/><line x1="8" y1="8" x2="8" y2="-2" stroke="#000" stroke-width="3.5" transform="rotate(252 8 8)"/></mask></defs><g mask="url(#m21)"><circle class="trk" cx="8" cy="8" r="5.75" stroke-width="1"/><path class="arc" d="M9.24 2.385A5.75 5.75 0 1 1 5.377 13.117" stroke-width="2.5"/></g><line class="hand" x1="8" y1="8" x2="8" y2="2" stroke-width="2" transform="rotate(252 8 8)"/><circle class="pivot" cx="8" cy="8" r="1.5"/></svg></span><span class="c-val "><b>39%</b> left</span><span class="c-time "><i class="gl ">&#xE72C;</i><span>Thu</span></span><span class="sz sz-ring"></span><span class="sz c-val">empty <b>00:00</b></span><span class="sz c-time"><i class="gl ">&#xE72C;</i><span>00:00</span></span></div></div>
+    <span class="glyph small">&#xE70E;</span>
+    <span class="ld-icon"><svg class="ring trayicon st-crit" width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><g><circle class="trk" cx="8" cy="8" r="5.75" stroke-width="1"/><path class="arc" d="M9.24 2.385A5.75 5.75 0 1 1 4.78 3.236" stroke-width="2.5"/></g><rect class="alert" x="7" y="4.67" width="2" height="4.14" rx="0.7"/><circle class="alert" cx="8" cy="10.7" r="1.1"/></svg></span>
+    <span class="glyph">&#xE701;</span><span class="glyph">&#xE995;</span>
+    <div class="clock">15:09<br>2026-10-06</div>
+    <span class="glyph small">&#xEA8F;</span>
+  </div>
+</div></div><h2>4 · Stale data — last reading 47 min old</h2><p class="note">Same numbers as 1. With no live reading the rings lose their colour, and the hand gives way to a “?” — Fluent’s own “unknown” mark — while the fills keep the last known values. The reset column gives way to the reason and the age. When the cause is an expired sign-in, line one reads “Sign in” and a click opens it. The readout keeps exactly the width of the live layout.</p><div class="pair"><div class="lab-row">Light taskbar</div><div class="taskbar light " data-tag="s4">
+  <div class="apps"><div class="app"><i></i></div><div class="app"><i></i></div><div class="app"><i></i></div><div class="app"><i></i></div><div class="app"><i></i></div></div>
+  <div class="tray">
+    <div class="readout"><div class="ld cols-3 stale " role="group" aria-label="Claude. Offline, last reading 47 minutes ago: 5-hour 58% left, weekly 39% left."><span class="c-ring"><svg class="ring st-stale" width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><g><circle class="trk" cx="8" cy="8" r="5.75" stroke-width="1"/><path class="arc" d="M9.24 2.385A5.75 5.75 0 0 1 11.792 12.323" stroke-width="2.5"/></g><path class="q" d="M6.2 6.286A1.8 1.8 0 1 1 8.9 7.845L8 8.6V9.286" stroke-width="1.5"/><circle class="alert" cx="8" cy="11.086" r="0.95"/></svg></span><span class="c-val v-stale"><b>58%</b> left</span><span class="c-ring"><svg class="ring st-stale" width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><g><circle class="trk" cx="8" cy="8" r="5.75" stroke-width="1"/><path class="arc" d="M9.24 2.385A5.75 5.75 0 1 1 5.377 13.117" stroke-width="2.5"/></g><path class="q" d="M6.2 6.286A1.8 1.8 0 1 1 8.9 7.845L8 8.6V9.286" stroke-width="1.5"/><circle class="alert" cx="8" cy="11.086" r="0.95"/></svg></span><span class="c-val v-stale"><b>39%</b> left</span><span class="c-stale">Offline<br>47 min ago</span></div></div>
+    <span class="glyph small">&#xE70E;</span>
+    <span class="ld-icon"><svg class="ring trayicon st-stale" width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><g><circle class="trk" cx="8" cy="8" r="5.75" stroke-width="1"/><path class="arc" d="M9.24 2.385A5.75 5.75 0 1 1 5.377 13.117" stroke-width="2.5"/></g><path class="q" d="M6.2 6.286A1.8 1.8 0 1 1 8.9 7.845L8 8.6V9.286" stroke-width="1.5"/><circle class="alert" cx="8" cy="11.086" r="0.95"/></svg></span>
+    <span class="glyph">&#xE701;</span><span class="glyph">&#xE995;</span>
+    <div class="clock">13:29<br>2026-10-06</div>
+    <span class="glyph small">&#xEA8F;</span>
+  </div>
+</div><div class="lab-row">Dark taskbar</div><div class="taskbar dark " data-tag="s4d">
+  <div class="apps"><div class="app"><i></i></div><div class="app"><i></i></div><div class="app"><i></i></div><div class="app"><i></i></div><div class="app"><i></i></div></div>
+  <div class="tray">
+    <div class="readout"><div class="ld cols-3 stale " role="group" aria-label="Claude. Offline, last reading 47 minutes ago: 5-hour 58% left, weekly 39% left."><span class="c-ring"><svg class="ring st-stale" width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><g><circle class="trk" cx="8" cy="8" r="5.75" stroke-width="1"/><path class="arc" d="M9.24 2.385A5.75 5.75 0 0 1 11.792 12.323" stroke-width="2.5"/></g><path class="q" d="M6.2 6.286A1.8 1.8 0 1 1 8.9 7.845L8 8.6V9.286" stroke-width="1.5"/><circle class="alert" cx="8" cy="11.086" r="0.95"/></svg></span><span class="c-val v-stale"><b>58%</b> left</span><span class="c-ring"><svg class="ring st-stale" width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><g><circle class="trk" cx="8" cy="8" r="5.75" stroke-width="1"/><path class="arc" d="M9.24 2.385A5.75 5.75 0 1 1 5.377 13.117" stroke-width="2.5"/></g><path class="q" d="M6.2 6.286A1.8 1.8 0 1 1 8.9 7.845L8 8.6V9.286" stroke-width="1.5"/><circle class="alert" cx="8" cy="11.086" r="0.95"/></svg></span><span class="c-val v-stale"><b>39%</b> left</span><span class="c-stale">Offline<br>47 min ago</span></div></div>
+    <span class="glyph small">&#xE70E;</span>
+    <span class="ld-icon"><svg class="ring trayicon st-stale" width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><g><circle class="trk" cx="8" cy="8" r="5.75" stroke-width="1"/><path class="arc" d="M9.24 2.385A5.75 5.75 0 1 1 5.377 13.117" stroke-width="2.5"/></g><path class="q" d="M6.2 6.286A1.8 1.8 0 1 1 8.9 7.845L8 8.6V9.286" stroke-width="1.5"/><circle class="alert" cx="8" cy="11.086" r="0.95"/></svg></span>
+    <span class="glyph">&#xE701;</span><span class="glyph">&#xE995;</span>
+    <div class="clock">13:29<br>2026-10-06</div>
+    <span class="glyph small">&#xEA8F;</span>
+  </div>
+</div></div><h2>5 · Two services pinned</h2><p class="note">Claude 5-hour (as in 1) + Codex weekly: 5 % used, 30 % of the week gone, resets Fri 14:26. A provider label column appears only when more than one service is pinned.</p><div class="pair"><div class="lab-row">Light taskbar</div><div class="taskbar light " data-tag="s5">
+  <div class="apps"><div class="app"><i></i></div><div class="app"><i></i></div><div class="app"><i></i></div><div class="app"><i></i></div><div class="app"><i></i></div></div>
+  <div class="tray">
+    <div class="readout"><div class="ld cols-4 " role="group" aria-label="Claude 5-hour: 58% left, on pace, resets 14:56. Codex weekly: 95% left, on pace, resets Friday 14:26."><span class="c-ring"><svg class="ring st-ok" width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><defs><mask id="m29" maskUnits="userSpaceOnUse" x="0" y="0" width="16" height="16"><rect width="16" height="16" fill="#fff"/><line x1="8" y1="8" x2="8" y2="-2" stroke="#000" stroke-width="3.5" transform="rotate(194.4 8 8)"/></mask></defs><g mask="url(#m29)"><circle class="trk" cx="8" cy="8" r="5.75" stroke-width="1"/><path class="arc" d="M9.24 2.385A5.75 5.75 0 0 1 11.792 12.323" stroke-width="2.5"/></g><line class="hand" x1="8" y1="8" x2="8" y2="2" stroke-width="2" transform="rotate(194.4 8 8)"/><circle class="pivot" cx="8" cy="8" r="1.5"/></svg></span><span class="c-lab">Claude</span><span class="c-val "><b>58%</b> left</span><span class="c-time "><i class="gl ">&#xE72C;</i><span>14:56</span></span><span class="c-ring"><svg class="ring st-ok" width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><defs><mask id="m30" maskUnits="userSpaceOnUse" x="0" y="0" width="16" height="16"><rect width="16" height="16" fill="#fff"/><line x1="8" y1="8" x2="8" y2="-2" stroke="#000" stroke-width="3.5" transform="rotate(108 8 8)"/></mask></defs><g mask="url(#m30)"><circle class="trk" cx="8" cy="8" r="5.75" stroke-width="1"/><circle class="arcdot" cx="8.899" cy="2.321" r="1.25"/></g><line class="hand" x1="8" y1="8" x2="8" y2="2" stroke-width="2" transform="rotate(108 8 8)"/><circle class="pivot" cx="8" cy="8" r="1.5"/></svg></span><span class="c-lab">Codex</span><span class="c-val "><b>95%</b> left</span><span class="c-time "><i class="gl ">&#xE72C;</i><span>Fri</span></span><span class="sz sz-ring"></span><span class="sz">Claude</span><span class="sz c-val">empty <b>00:00</b></span><span class="sz c-time"><i class="gl ">&#xE72C;</i><span>00:00</span></span></div></div>
+    <span class="glyph small">&#xE70E;</span>
+    <span class="ld-icon"><svg class="ring trayicon st-ok" width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><defs><mask id="m31" maskUnits="userSpaceOnUse" x="0" y="0" width="16" height="16"><rect width="16" height="16" fill="#fff"/><line x1="8" y1="8" x2="8" y2="-2" stroke="#000" stroke-width="3.5" transform="rotate(194.4 8 8)"/></mask></defs><g mask="url(#m31)"><circle class="trk" cx="8" cy="8" r="5.75" stroke-width="1"/><path class="arc" d="M9.24 2.385A5.75 5.75 0 0 1 11.792 12.323" stroke-width="2.5"/></g><line class="hand" x1="8" y1="8" x2="8" y2="2" stroke-width="2" transform="rotate(194.4 8 8)"/><circle class="pivot" cx="8" cy="8" r="1.5"/></svg></span>
+    <span class="glyph">&#xE701;</span><span class="glyph">&#xE995;</span>
+    <div class="clock">12:42<br>2026-10-06</div>
+    <span class="glyph small">&#xEA8F;</span>
+  </div>
+</div><div class="lab-row">Dark taskbar</div><div class="taskbar dark " data-tag="s5d">
+  <div class="apps"><div class="app"><i></i></div><div class="app"><i></i></div><div class="app"><i></i></div><div class="app"><i></i></div><div class="app"><i></i></div></div>
+  <div class="tray">
+    <div class="readout"><div class="ld cols-4 " role="group" aria-label="Claude 5-hour: 58% left, on pace, resets 14:56. Codex weekly: 95% left, on pace, resets Friday 14:26."><span class="c-ring"><svg class="ring st-ok" width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><defs><mask id="m32" maskUnits="userSpaceOnUse" x="0" y="0" width="16" height="16"><rect width="16" height="16" fill="#fff"/><line x1="8" y1="8" x2="8" y2="-2" stroke="#000" stroke-width="3.5" transform="rotate(194.4 8 8)"/></mask></defs><g mask="url(#m32)"><circle class="trk" cx="8" cy="8" r="5.75" stroke-width="1"/><path class="arc" d="M9.24 2.385A5.75 5.75 0 0 1 11.792 12.323" stroke-width="2.5"/></g><line class="hand" x1="8" y1="8" x2="8" y2="2" stroke-width="2" transform="rotate(194.4 8 8)"/><circle class="pivot" cx="8" cy="8" r="1.5"/></svg></span><span class="c-lab">Claude</span><span class="c-val "><b>58%</b> left</span><span class="c-time "><i class="gl ">&#xE72C;</i><span>14:56</span></span><span class="c-ring"><svg class="ring st-ok" width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><defs><mask id="m33" maskUnits="userSpaceOnUse" x="0" y="0" width="16" height="16"><rect width="16" height="16" fill="#fff"/><line x1="8" y1="8" x2="8" y2="-2" stroke="#000" stroke-width="3.5" transform="rotate(108 8 8)"/></mask></defs><g mask="url(#m33)"><circle class="trk" cx="8" cy="8" r="5.75" stroke-width="1"/><circle class="arcdot" cx="8.899" cy="2.321" r="1.25"/></g><line class="hand" x1="8" y1="8" x2="8" y2="2" stroke-width="2" transform="rotate(108 8 8)"/><circle class="pivot" cx="8" cy="8" r="1.5"/></svg></span><span class="c-lab">Codex</span><span class="c-val "><b>95%</b> left</span><span class="c-time "><i class="gl ">&#xE72C;</i><span>Fri</span></span><span class="sz sz-ring"></span><span class="sz">Claude</span><span class="sz c-val">empty <b>00:00</b></span><span class="sz c-time"><i class="gl ">&#xE72C;</i><span>00:00</span></span></div></div>
+    <span class="glyph small">&#xE70E;</span>
+    <span class="ld-icon"><svg class="ring trayicon st-ok" width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><defs><mask id="m34" maskUnits="userSpaceOnUse" x="0" y="0" width="16" height="16"><rect width="16" height="16" fill="#fff"/><line x1="8" y1="8" x2="8" y2="-2" stroke="#000" stroke-width="3.5" transform="rotate(194.4 8 8)"/></mask></defs><g mask="url(#m34)"><circle class="trk" cx="8" cy="8" r="5.75" stroke-width="1"/><path class="arc" d="M9.24 2.385A5.75 5.75 0 0 1 11.792 12.323" stroke-width="2.5"/></g><line class="hand" x1="8" y1="8" x2="8" y2="2" stroke-width="2" transform="rotate(194.4 8 8)"/><circle class="pivot" cx="8" cy="8" r="1.5"/></svg></span>
+    <span class="glyph">&#xE701;</span><span class="glyph">&#xE995;</span>
+    <div class="clock">12:42<br>2026-10-06</div>
+    <span class="glyph small">&#xEA8F;</span>
+  </div>
+</div></div><h2>6 · Tight space — collapsed one-row form</h2><p class="note">When the taskbar is crowded the readout keeps only the most constrained meter (the one forecast to finish with the least to spare — here the weekly in the normal case) and its headline. The reset and the second meter move to the hover card. Like the full form it has one fixed width, sized for “empty 00:00”, so it never jitters.</p><div class="pair"><div class="lab-row">Normal</div><div class="taskbar light " data-tag="t1">
+  <div class="apps"><div class="app"><i></i></div><div class="app"><i></i></div><div class="app"><i></i></div><div class="app"><i></i></div><div class="app"><i></i></div></div>
+  <div class="tray">
+    <div class="readout"><div class="ld cols-3 tight "><span class="c-ring"><svg class="ring st-ok" width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><defs><mask id="m35" maskUnits="userSpaceOnUse" x="0" y="0" width="16" height="16"><rect width="16" height="16" fill="#fff"/><line x1="8" y1="8" x2="8" y2="-2" stroke="#000" stroke-width="3.5" transform="rotate(252 8 8)"/></mask></defs><g mask="url(#m35)"><circle class="trk" cx="8" cy="8" r="5.75" stroke-width="1"/><path class="arc" d="M9.24 2.385A5.75 5.75 0 1 1 5.377 13.117" stroke-width="2.5"/></g><line class="hand" x1="8" y1="8" x2="8" y2="2" stroke-width="2" transform="rotate(252 8 8)"/><circle class="pivot" cx="8" cy="8" r="1.5"/></svg></span><span class="c-val "><b>39%</b> left</span><span class="sz sz-ring"></span><span class="sz c-val">empty <b>00:00</b></span></div></div>
+    <span class="glyph small">&#xE70E;</span>
+    <span class="ld-icon"><svg class="ring trayicon st-ok" width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><defs><mask id="m36" maskUnits="userSpaceOnUse" x="0" y="0" width="16" height="16"><rect width="16" height="16" fill="#fff"/><line x1="8" y1="8" x2="8" y2="-2" stroke="#000" stroke-width="3.5" transform="rotate(252 8 8)"/></mask></defs><g mask="url(#m36)"><circle class="trk" cx="8" cy="8" r="5.75" stroke-width="1"/><path class="arc" d="M9.24 2.385A5.75 5.75 0 1 1 5.377 13.117" stroke-width="2.5"/></g><line class="hand" x1="8" y1="8" x2="8" y2="2" stroke-width="2" transform="rotate(252 8 8)"/><circle class="pivot" cx="8" cy="8" r="1.5"/></svg></span>
+    <span class="glyph">&#xE701;</span><span class="glyph">&#xE995;</span>
+    <div class="clock">12:42<br>2026-10-06</div>
+    <span class="glyph small">&#xEA8F;</span>
+  </div>
+</div><div class="taskbar dark " data-tag="t1d">
+  <div class="apps"><div class="app"><i></i></div><div class="app"><i></i></div><div class="app"><i></i></div><div class="app"><i></i></div><div class="app"><i></i></div></div>
+  <div class="tray">
+    <div class="readout"><div class="ld cols-3 tight "><span class="c-ring"><svg class="ring st-ok" width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><defs><mask id="m37" maskUnits="userSpaceOnUse" x="0" y="0" width="16" height="16"><rect width="16" height="16" fill="#fff"/><line x1="8" y1="8" x2="8" y2="-2" stroke="#000" stroke-width="3.5" transform="rotate(252 8 8)"/></mask></defs><g mask="url(#m37)"><circle class="trk" cx="8" cy="8" r="5.75" stroke-width="1"/><path class="arc" d="M9.24 2.385A5.75 5.75 0 1 1 5.377 13.117" stroke-width="2.5"/></g><line class="hand" x1="8" y1="8" x2="8" y2="2" stroke-width="2" transform="rotate(252 8 8)"/><circle class="pivot" cx="8" cy="8" r="1.5"/></svg></span><span class="c-val "><b>39%</b> left</span><span class="sz sz-ring"></span><span class="sz c-val">empty <b>00:00</b></span></div></div>
+    <span class="glyph small">&#xE70E;</span>
+    <span class="ld-icon"><svg class="ring trayicon st-ok" width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><defs><mask id="m38" maskUnits="userSpaceOnUse" x="0" y="0" width="16" height="16"><rect width="16" height="16" fill="#fff"/><line x1="8" y1="8" x2="8" y2="-2" stroke="#000" stroke-width="3.5" transform="rotate(252 8 8)"/></mask></defs><g mask="url(#m38)"><circle class="trk" cx="8" cy="8" r="5.75" stroke-width="1"/><path class="arc" d="M9.24 2.385A5.75 5.75 0 1 1 5.377 13.117" stroke-width="2.5"/></g><line class="hand" x1="8" y1="8" x2="8" y2="2" stroke-width="2" transform="rotate(252 8 8)"/><circle class="pivot" cx="8" cy="8" r="1.5"/></svg></span>
+    <span class="glyph">&#xE701;</span><span class="glyph">&#xE995;</span>
+    <div class="clock">12:42<br>2026-10-06</div>
+    <span class="glyph small">&#xEA8F;</span>
+  </div>
+</div><div class="lab-row">Ahead of pace</div><div class="taskbar light " data-tag="t2">
+  <div class="apps"><div class="app"><i></i></div><div class="app"><i></i></div><div class="app"><i></i></div><div class="app"><i></i></div><div class="app"><i></i></div></div>
+  <div class="tray">
+    <div class="readout"><div class="ld cols-3 tight "><span class="c-ring"><svg class="ring st-warn" width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><defs><mask id="m39" maskUnits="userSpaceOnUse" x="0" y="0" width="16" height="16"><rect width="16" height="16" fill="#fff"/><line x1="8" y1="8" x2="8" y2="-2" stroke="#000" stroke-width="3.5" transform="rotate(162 8 8)"/></mask></defs><g mask="url(#m39)"><circle class="trk" cx="8" cy="8" r="5.75" stroke-width="1"/><path class="arc" d="M9.24 2.385A5.75 5.75 0 1 1 2.252 8.166" stroke-width="2.5"/></g><line class="hand" x1="8" y1="8" x2="8" y2="2" stroke-width="2" transform="rotate(162 8 8)"/><circle class="pivot" cx="8" cy="8" r="1.5"/></svg></span><span class="c-val ">empty <b>15:20</b></span><span class="sz sz-ring"></span><span class="sz c-val">empty <b>00:00</b></span></div></div>
+    <span class="glyph small">&#xE70E;</span>
+    <span class="ld-icon"><svg class="ring trayicon st-warn" width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><defs><mask id="m40" maskUnits="userSpaceOnUse" x="0" y="0" width="16" height="16"><rect width="16" height="16" fill="#fff"/><line x1="8" y1="8" x2="8" y2="-2" stroke="#000" stroke-width="3.5" transform="rotate(162 8 8)"/></mask></defs><g mask="url(#m40)"><circle class="trk" cx="8" cy="8" r="5.75" stroke-width="1"/><path class="arc" d="M9.24 2.385A5.75 5.75 0 1 1 2.252 8.166" stroke-width="2.5"/></g><line class="hand" x1="8" y1="8" x2="8" y2="2" stroke-width="2" transform="rotate(162 8 8)"/><circle class="pivot" cx="8" cy="8" r="1.5"/></svg></span>
+    <span class="glyph">&#xE701;</span><span class="glyph">&#xE995;</span>
+    <div class="clock">13:45<br>2026-10-06</div>
+    <span class="glyph small">&#xEA8F;</span>
+  </div>
+</div><div class="taskbar dark " data-tag="t2d">
+  <div class="apps"><div class="app"><i></i></div><div class="app"><i></i></div><div class="app"><i></i></div><div class="app"><i></i></div><div class="app"><i></i></div></div>
+  <div class="tray">
+    <div class="readout"><div class="ld cols-3 tight "><span class="c-ring"><svg class="ring st-warn" width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><defs><mask id="m41" maskUnits="userSpaceOnUse" x="0" y="0" width="16" height="16"><rect width="16" height="16" fill="#fff"/><line x1="8" y1="8" x2="8" y2="-2" stroke="#000" stroke-width="3.5" transform="rotate(162 8 8)"/></mask></defs><g mask="url(#m41)"><circle class="trk" cx="8" cy="8" r="5.75" stroke-width="1"/><path class="arc" d="M9.24 2.385A5.75 5.75 0 1 1 2.252 8.166" stroke-width="2.5"/></g><line class="hand" x1="8" y1="8" x2="8" y2="2" stroke-width="2" transform="rotate(162 8 8)"/><circle class="pivot" cx="8" cy="8" r="1.5"/></svg></span><span class="c-val ">empty <b>15:20</b></span><span class="sz sz-ring"></span><span class="sz c-val">empty <b>00:00</b></span></div></div>
+    <span class="glyph small">&#xE70E;</span>
+    <span class="ld-icon"><svg class="ring trayicon st-warn" width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><defs><mask id="m42" maskUnits="userSpaceOnUse" x="0" y="0" width="16" height="16"><rect width="16" height="16" fill="#fff"/><line x1="8" y1="8" x2="8" y2="-2" stroke="#000" stroke-width="3.5" transform="rotate(162 8 8)"/></mask></defs><g mask="url(#m42)"><circle class="trk" cx="8" cy="8" r="5.75" stroke-width="1"/><path class="arc" d="M9.24 2.385A5.75 5.75 0 1 1 2.252 8.166" stroke-width="2.5"/></g><line class="hand" x1="8" y1="8" x2="8" y2="2" stroke-width="2" transform="rotate(162 8 8)"/><circle class="pivot" cx="8" cy="8" r="1.5"/></svg></span>
+    <span class="glyph">&#xE701;</span><span class="glyph">&#xE995;</span>
+    <div class="clock">13:45<br>2026-10-06</div>
+    <span class="glyph small">&#xEA8F;</span>
+  </div>
+</div><div class="lab-row">Critical</div><div class="taskbar light " data-tag="t3">
+  <div class="apps"><div class="app"><i></i></div><div class="app"><i></i></div><div class="app"><i></i></div><div class="app"><i></i></div><div class="app"><i></i></div></div>
+  <div class="tray">
+    <div class="readout"><div class="ld cols-3 tight "><span class="c-ring"><svg class="ring st-crit" width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><g><circle class="trk" cx="8" cy="8" r="5.75" stroke-width="1"/><path class="arc" d="M9.24 2.385A5.75 5.75 0 1 1 4.78 3.236" stroke-width="2.5"/></g><rect class="alert" x="7" y="4.67" width="2" height="4.14" rx="0.7"/><circle class="alert" cx="8" cy="10.7" r="1.1"/></svg></span><span class="c-val v-crit">empty <b>15:21</b></span><span class="sz sz-ring"></span><span class="sz c-val">empty <b>00:00</b></span></div></div>
+    <span class="glyph small">&#xE70E;</span>
+    <span class="ld-icon"><svg class="ring trayicon st-crit" width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><g><circle class="trk" cx="8" cy="8" r="5.75" stroke-width="1"/><path class="arc" d="M9.24 2.385A5.75 5.75 0 1 1 4.78 3.236" stroke-width="2.5"/></g><rect class="alert" x="7" y="4.67" width="2" height="4.14" rx="0.7"/><circle class="alert" cx="8" cy="10.7" r="1.1"/></svg></span>
+    <span class="glyph">&#xE701;</span><span class="glyph">&#xE995;</span>
+    <div class="clock">15:09<br>2026-10-06</div>
+    <span class="glyph small">&#xEA8F;</span>
+  </div>
+</div><div class="taskbar dark " data-tag="t3d">
+  <div class="apps"><div class="app"><i></i></div><div class="app"><i></i></div><div class="app"><i></i></div><div class="app"><i></i></div><div class="app"><i></i></div></div>
+  <div class="tray">
+    <div class="readout"><div class="ld cols-3 tight "><span class="c-ring"><svg class="ring st-crit" width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><g><circle class="trk" cx="8" cy="8" r="5.75" stroke-width="1"/><path class="arc" d="M9.24 2.385A5.75 5.75 0 1 1 4.78 3.236" stroke-width="2.5"/></g><rect class="alert" x="7" y="4.67" width="2" height="4.14" rx="0.7"/><circle class="alert" cx="8" cy="10.7" r="1.1"/></svg></span><span class="c-val v-crit">empty <b>15:21</b></span><span class="sz sz-ring"></span><span class="sz c-val">empty <b>00:00</b></span></div></div>
+    <span class="glyph small">&#xE70E;</span>
+    <span class="ld-icon"><svg class="ring trayicon st-crit" width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><g><circle class="trk" cx="8" cy="8" r="5.75" stroke-width="1"/><path class="arc" d="M9.24 2.385A5.75 5.75 0 1 1 4.78 3.236" stroke-width="2.5"/></g><rect class="alert" x="7" y="4.67" width="2" height="4.14" rx="0.7"/><circle class="alert" cx="8" cy="10.7" r="1.1"/></svg></span>
+    <span class="glyph">&#xE701;</span><span class="glyph">&#xE995;</span>
+    <div class="clock">15:09<br>2026-10-06</div>
+    <span class="glyph small">&#xEA8F;</span>
+  </div>
+</div><div class="lab-row">Stale</div><div class="taskbar light " data-tag="t4">
+  <div class="apps"><div class="app"><i></i></div><div class="app"><i></i></div><div class="app"><i></i></div><div class="app"><i></i></div><div class="app"><i></i></div></div>
+  <div class="tray">
+    <div class="readout"><div class="ld cols-3 tight "><span class="c-ring"><svg class="ring st-stale" width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><g><circle class="trk" cx="8" cy="8" r="5.75" stroke-width="1"/><path class="arc" d="M9.24 2.385A5.75 5.75 0 1 1 5.377 13.117" stroke-width="2.5"/></g><path class="q" d="M6.2 6.286A1.8 1.8 0 1 1 8.9 7.845L8 8.6V9.286" stroke-width="1.5"/><circle class="alert" cx="8" cy="11.086" r="0.95"/></svg></span><span class="c-val v-stale">47 min old</span><span class="sz sz-ring"></span><span class="sz c-val">empty <b>00:00</b></span></div></div>
+    <span class="glyph small">&#xE70E;</span>
+    <span class="ld-icon"><svg class="ring trayicon st-stale" width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><g><circle class="trk" cx="8" cy="8" r="5.75" stroke-width="1"/><path class="arc" d="M9.24 2.385A5.75 5.75 0 1 1 5.377 13.117" stroke-width="2.5"/></g><path class="q" d="M6.2 6.286A1.8 1.8 0 1 1 8.9 7.845L8 8.6V9.286" stroke-width="1.5"/><circle class="alert" cx="8" cy="11.086" r="0.95"/></svg></span>
+    <span class="glyph">&#xE701;</span><span class="glyph">&#xE995;</span>
+    <div class="clock">13:29<br>2026-10-06</div>
+    <span class="glyph small">&#xEA8F;</span>
+  </div>
+</div><div class="taskbar dark " data-tag="t4d">
+  <div class="apps"><div class="app"><i></i></div><div class="app"><i></i></div><div class="app"><i></i></div><div class="app"><i></i></div><div class="app"><i></i></div></div>
+  <div class="tray">
+    <div class="readout"><div class="ld cols-3 tight "><span class="c-ring"><svg class="ring st-stale" width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><g><circle class="trk" cx="8" cy="8" r="5.75" stroke-width="1"/><path class="arc" d="M9.24 2.385A5.75 5.75 0 1 1 5.377 13.117" stroke-width="2.5"/></g><path class="q" d="M6.2 6.286A1.8 1.8 0 1 1 8.9 7.845L8 8.6V9.286" stroke-width="1.5"/><circle class="alert" cx="8" cy="11.086" r="0.95"/></svg></span><span class="c-val v-stale">47 min old</span><span class="sz sz-ring"></span><span class="sz c-val">empty <b>00:00</b></span></div></div>
+    <span class="glyph small">&#xE70E;</span>
+    <span class="ld-icon"><svg class="ring trayicon st-stale" width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><g><circle class="trk" cx="8" cy="8" r="5.75" stroke-width="1"/><path class="arc" d="M9.24 2.385A5.75 5.75 0 1 1 5.377 13.117" stroke-width="2.5"/></g><path class="q" d="M6.2 6.286A1.8 1.8 0 1 1 8.9 7.845L8 8.6V9.286" stroke-width="1.5"/><circle class="alert" cx="8" cy="11.086" r="0.95"/></svg></span>
+    <span class="glyph">&#xE701;</span><span class="glyph">&#xE995;</span>
+    <div class="clock">13:29<br>2026-10-06</div>
+    <span class="glyph small">&#xEA8F;</span>
+  </div>
+</div></div><h2>7 · Hover card — scenarios 1, 2 and 3</h2><p class="note">Windows 11 tooltip / teaching-tip style: 8 px radius, 1 px stroke, flyout shadow, solid fallback #F9F9F9 / #2C2C2C, centred above the readout (no tail, like taskbar hover cards). Rings grow to the WinUI ProgressRing size (32 px, 4 px indicator over the same 1 px track). Every window, the pace sentence, the forecast, data age, provider and plan.</p><div class="pair"><div class="hover-stage"><div class="taskbar light ">
+  <div class="apps"><div class="app"><i></i></div><div class="app"><i></i></div><div class="app"><i></i></div><div class="app"><i></i></div><div class="app"><i></i></div></div>
+  <div class="tray">
+    <div class="readout is-hover"><div class="ld cols-3 "><span class="c-ring"><svg class="ring st-ok" width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><defs><mask id="m51" maskUnits="userSpaceOnUse" x="0" y="0" width="16" height="16"><rect width="16" height="16" fill="#fff"/><line x1="8" y1="8" x2="8" y2="-2" stroke="#000" stroke-width="3.5" transform="rotate(194.4 8 8)"/></mask></defs><g mask="url(#m51)"><circle class="trk" cx="8" cy="8" r="5.75" stroke-width="1"/><path class="arc" d="M9.24 2.385A5.75 5.75 0 0 1 11.792 12.323" stroke-width="2.5"/></g><line class="hand" x1="8" y1="8" x2="8" y2="2" stroke-width="2" transform="rotate(194.4 8 8)"/><circle class="pivot" cx="8" cy="8" r="1.5"/></svg></span><span class="c-val "><b>58%</b> left</span><span class="c-time "><i class="gl ">&#xE72C;</i><span>14:56</span></span><span class="c-ring"><svg class="ring st-ok" width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><defs><mask id="m52" maskUnits="userSpaceOnUse" x="0" y="0" width="16" height="16"><rect width="16" height="16" fill="#fff"/><line x1="8" y1="8" x2="8" y2="-2" stroke="#000" stroke-width="3.5" transform="rotate(252 8 8)"/></mask></defs><g mask="url(#m52)"><circle class="trk" cx="8" cy="8" r="5.75" stroke-width="1"/><path class="arc" d="M9.24 2.385A5.75 5.75 0 1 1 5.377 13.117" stroke-width="2.5"/></g><line class="hand" x1="8" y1="8" x2="8" y2="2" stroke-width="2" transform="rotate(252 8 8)"/><circle class="pivot" cx="8" cy="8" r="1.5"/></svg></span><span class="c-val "><b>39%</b> left</span><span class="c-time "><i class="gl ">&#xE72C;</i><span>Thu</span></span><span class="sz sz-ring"></span><span class="sz c-val">empty <b>00:00</b></span><span class="sz c-time"><i class="gl ">&#xE72C;</i><span>00:00</span></span></div><div class="card" role="tooltip">
+    <div class="hd"><span class="prov">Claude</span><span class="plan">Max 5x plan</span></div>
+    <div class="m"><svg class="ring st-ok" width="32" height="32" viewBox="0 0 32 32" aria-hidden="true"><defs><mask id="m54" maskUnits="userSpaceOnUse" x="0" y="0" width="32" height="32"><rect width="32" height="32" fill="#fff"/><line x1="16" y1="16" x2="16" y2="-2" stroke="#000" stroke-width="3.5" transform="rotate(194.4 16 16)"/></mask></defs><g mask="url(#m54)"><circle class="trk" cx="16" cy="16" r="13" stroke-width="1"/><path class="arc" d="M17.992 3.154A13 13 0 0 1 23.935 26.298" stroke-width="4"/></g><line class="hand" x1="16" y1="16" x2="16" y2="2" stroke-width="2" transform="rotate(194.4 16 16)"/><circle class="pivot" cx="16" cy="16" r="2.5"/></svg>
+      <div class="t"><span>5-hour session</span><span class="v">58% left</span></div>
+      <div class="s">Resets 14:56 · in 2 h 14 min</div>
+      <div class="p"><span class="k-ok"><i class="gl ">&#xE930;</i>On pace</span> · 42% used with 54% of the window gone. At this rate about 22% is still left at the reset.</div></div><div class="m"><svg class="ring st-ok" width="32" height="32" viewBox="0 0 32 32" aria-hidden="true"><defs><mask id="m55" maskUnits="userSpaceOnUse" x="0" y="0" width="32" height="32"><rect width="32" height="32" fill="#fff"/><line x1="16" y1="16" x2="16" y2="-2" stroke="#000" stroke-width="3.5" transform="rotate(252 16 16)"/></mask></defs><g mask="url(#m55)"><circle class="trk" cx="16" cy="16" r="13" stroke-width="1"/><path class="arc" d="M17.992 3.154A13 13 0 1 1 9.346 27.168" stroke-width="4"/></g><line class="hand" x1="16" y1="16" x2="16" y2="2" stroke-width="2" transform="rotate(252 16 16)"/><circle class="pivot" cx="16" cy="16" r="2.5"/></svg>
+      <div class="t"><span>Weekly · all models</span><span class="v">39% left</span></div>
+      <div class="s">Resets Thu 09:00 · in 1 d 20 h</div>
+      <div class="p"><span class="k-ok"><i class="gl ">&#xE930;</i>On pace</span> · 61% used with 70% of the week gone. About 13% to spare at the reset.</div></div>
+    <div class="ft"><span><i class="gl ">&#xE81C;</i>Updated 1 min ago</span><span>Lastdrop</span></div>
+  </div></div>
+    <span class="glyph small">&#xE70E;</span>
+    <span class="ld-icon"><svg class="ring trayicon st-ok" width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><defs><mask id="m53" maskUnits="userSpaceOnUse" x="0" y="0" width="16" height="16"><rect width="16" height="16" fill="#fff"/><line x1="8" y1="8" x2="8" y2="-2" stroke="#000" stroke-width="3.5" transform="rotate(252 8 8)"/></mask></defs><g mask="url(#m53)"><circle class="trk" cx="8" cy="8" r="5.75" stroke-width="1"/><path class="arc" d="M9.24 2.385A5.75 5.75 0 1 1 5.377 13.117" stroke-width="2.5"/></g><line class="hand" x1="8" y1="8" x2="8" y2="2" stroke-width="2" transform="rotate(252 8 8)"/><circle class="pivot" cx="8" cy="8" r="1.5"/></svg></span>
+    <span class="glyph">&#xE701;</span><span class="glyph">&#xE995;</span>
+    <div class="clock">12:42<br>2026-10-06</div>
+    <span class="glyph small">&#xEA8F;</span>
+  </div>
+</div></div><div class="hover-stage"><div class="taskbar dark ">
+  <div class="apps"><div class="app"><i></i></div><div class="app"><i></i></div><div class="app"><i></i></div><div class="app"><i></i></div><div class="app"><i></i></div></div>
+  <div class="tray">
+    <div class="readout is-hover"><div class="ld cols-3 "><span class="c-ring"><svg class="ring st-ok" width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><defs><mask id="m56" maskUnits="userSpaceOnUse" x="0" y="0" width="16" height="16"><rect width="16" height="16" fill="#fff"/><line x1="8" y1="8" x2="8" y2="-2" stroke="#000" stroke-width="3.5" transform="rotate(194.4 8 8)"/></mask></defs><g mask="url(#m56)"><circle class="trk" cx="8" cy="8" r="5.75" stroke-width="1"/><path class="arc" d="M9.24 2.385A5.75 5.75 0 0 1 11.792 12.323" stroke-width="2.5"/></g><line class="hand" x1="8" y1="8" x2="8" y2="2" stroke-width="2" transform="rotate(194.4 8 8)"/><circle class="pivot" cx="8" cy="8" r="1.5"/></svg></span><span class="c-val "><b>58%</b> left</span><span class="c-time "><i class="gl ">&#xE72C;</i><span>14:56</span></span><span class="c-ring"><svg class="ring st-ok" width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><defs><mask id="m57" maskUnits="userSpaceOnUse" x="0" y="0" width="16" height="16"><rect width="16" height="16" fill="#fff"/><line x1="8" y1="8" x2="8" y2="-2" stroke="#000" stroke-width="3.5" transform="rotate(252 8 8)"/></mask></defs><g mask="url(#m57)"><circle class="trk" cx="8" cy="8" r="5.75" stroke-width="1"/><path class="arc" d="M9.24 2.385A5.75 5.75 0 1 1 5.377 13.117" stroke-width="2.5"/></g><line class="hand" x1="8" y1="8" x2="8" y2="2" stroke-width="2" transform="rotate(252 8 8)"/><circle class="pivot" cx="8" cy="8" r="1.5"/></svg></span><span class="c-val "><b>39%</b> left</span><span class="c-time "><i class="gl ">&#xE72C;</i><span>Thu</span></span><span class="sz sz-ring"></span><span class="sz c-val">empty <b>00:00</b></span><span class="sz c-time"><i class="gl ">&#xE72C;</i><span>00:00</span></span></div><div class="card" role="tooltip">
+    <div class="hd"><span class="prov">Claude</span><span class="plan">Max 5x plan</span></div>
+    <div class="m"><svg class="ring st-ok" width="32" height="32" viewBox="0 0 32 32" aria-hidden="true"><defs><mask id="m59" maskUnits="userSpaceOnUse" x="0" y="0" width="32" height="32"><rect width="32" height="32" fill="#fff"/><line x1="16" y1="16" x2="16" y2="-2" stroke="#000" stroke-width="3.5" transform="rotate(194.4 16 16)"/></mask></defs><g mask="url(#m59)"><circle class="trk" cx="16" cy="16" r="13" stroke-width="1"/><path class="arc" d="M17.992 3.154A13 13 0 0 1 23.935 26.298" stroke-width="4"/></g><line class="hand" x1="16" y1="16" x2="16" y2="2" stroke-width="2" transform="rotate(194.4 16 16)"/><circle class="pivot" cx="16" cy="16" r="2.5"/></svg>
+      <div class="t"><span>5-hour session</span><span class="v">58% left</span></div>
+      <div class="s">Resets 14:56 · in 2 h 14 min</div>
+      <div class="p"><span class="k-ok"><i class="gl ">&#xE930;</i>On pace</span> · 42% used with 54% of the window gone. At this rate about 22% is still left at the reset.</div></div><div class="m"><svg class="ring st-ok" width="32" height="32" viewBox="0 0 32 32" aria-hidden="true"><defs><mask id="m60" maskUnits="userSpaceOnUse" x="0" y="0" width="32" height="32"><rect width="32" height="32" fill="#fff"/><line x1="16" y1="16" x2="16" y2="-2" stroke="#000" stroke-width="3.5" transform="rotate(252 16 16)"/></mask></defs><g mask="url(#m60)"><circle class="trk" cx="16" cy="16" r="13" stroke-width="1"/><path class="arc" d="M17.992 3.154A13 13 0 1 1 9.346 27.168" stroke-width="4"/></g><line class="hand" x1="16" y1="16" x2="16" y2="2" stroke-width="2" transform="rotate(252 16 16)"/><circle class="pivot" cx="16" cy="16" r="2.5"/></svg>
+      <div class="t"><span>Weekly · all models</span><span class="v">39% left</span></div>
+      <div class="s">Resets Thu 09:00 · in 1 d 20 h</div>
+      <div class="p"><span class="k-ok"><i class="gl ">&#xE930;</i>On pace</span> · 61% used with 70% of the week gone. About 13% to spare at the reset.</div></div>
+    <div class="ft"><span><i class="gl ">&#xE81C;</i>Updated 1 min ago</span><span>Lastdrop</span></div>
+  </div></div>
+    <span class="glyph small">&#xE70E;</span>
+    <span class="ld-icon"><svg class="ring trayicon st-ok" width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><defs><mask id="m58" maskUnits="userSpaceOnUse" x="0" y="0" width="16" height="16"><rect width="16" height="16" fill="#fff"/><line x1="8" y1="8" x2="8" y2="-2" stroke="#000" stroke-width="3.5" transform="rotate(252 8 8)"/></mask></defs><g mask="url(#m58)"><circle class="trk" cx="8" cy="8" r="5.75" stroke-width="1"/><path class="arc" d="M9.24 2.385A5.75 5.75 0 1 1 5.377 13.117" stroke-width="2.5"/></g><line class="hand" x1="8" y1="8" x2="8" y2="2" stroke-width="2" transform="rotate(252 8 8)"/><circle class="pivot" cx="8" cy="8" r="1.5"/></svg></span>
+    <span class="glyph">&#xE701;</span><span class="glyph">&#xE995;</span>
+    <div class="clock">12:42<br>2026-10-06</div>
+    <span class="glyph small">&#xEA8F;</span>
+  </div>
+</div></div><div class="hover-stage tall"><div class="taskbar light ">
+  <div class="apps"><div class="app"><i></i></div><div class="app"><i></i></div><div class="app"><i></i></div><div class="app"><i></i></div><div class="app"><i></i></div></div>
+  <div class="tray">
+    <div class="readout is-hover"><div class="ld cols-3 "><span class="c-ring"><svg class="ring st-warn" width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><defs><mask id="m61" maskUnits="userSpaceOnUse" x="0" y="0" width="16" height="16"><rect width="16" height="16" fill="#fff"/><line x1="8" y1="8" x2="8" y2="-2" stroke="#000" stroke-width="3.5" transform="rotate(162 8 8)"/></mask></defs><g mask="url(#m61)"><circle class="trk" cx="8" cy="8" r="5.75" stroke-width="1"/><path class="arc" d="M9.24 2.385A5.75 5.75 0 1 1 2.252 8.166" stroke-width="2.5"/></g><line class="hand" x1="8" y1="8" x2="8" y2="2" stroke-width="2" transform="rotate(162 8 8)"/><circle class="pivot" cx="8" cy="8" r="1.5"/></svg></span><span class="c-val ">empty <b>15:20</b></span><span class="c-time "><i class="gl ">&#xE72C;</i><span>16:30</span></span><span class="c-ring"><svg class="ring st-ok" width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><defs><mask id="m62" maskUnits="userSpaceOnUse" x="0" y="0" width="16" height="16"><rect width="16" height="16" fill="#fff"/><line x1="8" y1="8" x2="8" y2="-2" stroke="#000" stroke-width="3.5" transform="rotate(252 8 8)"/></mask></defs><g mask="url(#m62)"><circle class="trk" cx="8" cy="8" r="5.75" stroke-width="1"/><path class="arc" d="M9.24 2.385A5.75 5.75 0 1 1 5.377 13.117" stroke-width="2.5"/></g><line class="hand" x1="8" y1="8" x2="8" y2="2" stroke-width="2" transform="rotate(252 8 8)"/><circle class="pivot" cx="8" cy="8" r="1.5"/></svg></span><span class="c-val "><b>39%</b> left</span><span class="c-time "><i class="gl ">&#xE72C;</i><span>Thu</span></span><span class="sz sz-ring"></span><span class="sz c-val">empty <b>00:00</b></span><span class="sz c-time"><i class="gl ">&#xE72C;</i><span>00:00</span></span></div><div class="card" role="tooltip">
+    <div class="hd"><span class="prov">Claude</span><span class="plan">Max 5x plan</span></div>
+    <div class="m"><svg class="ring st-warn" width="32" height="32" viewBox="0 0 32 32" aria-hidden="true"><defs><mask id="m64" maskUnits="userSpaceOnUse" x="0" y="0" width="32" height="32"><rect width="32" height="32" fill="#fff"/><line x1="16" y1="16" x2="16" y2="-2" stroke="#000" stroke-width="3.5" transform="rotate(162 16 16)"/></mask></defs><g mask="url(#m64)"><circle class="trk" cx="16" cy="16" r="13" stroke-width="1"/><path class="arc" d="M17.992 3.154A13 13 0 1 1 3.008 15.55" stroke-width="4"/></g><line class="hand" x1="16" y1="16" x2="16" y2="2" stroke-width="2" transform="rotate(162 16 16)"/><circle class="pivot" cx="16" cy="16" r="2.5"/></svg>
+      <div class="t"><span>5-hour session</span><span class="v">22% left</span></div>
+      <div class="s">Resets 16:30 · in 2 h 45 min</div>
+      <div class="p"><span class="k-warn"><i class="gl ">&#xE7BA;</i>Ahead of pace</span> · 78% used with 45% of the window gone. At this rate it runs out at <b>15:20</b>, 1 h 10 min before the reset.<div class="tip">About half your recent pace would last until 16:30.</div></div></div><div class="m"><svg class="ring st-ok" width="32" height="32" viewBox="0 0 32 32" aria-hidden="true"><defs><mask id="m65" maskUnits="userSpaceOnUse" x="0" y="0" width="32" height="32"><rect width="32" height="32" fill="#fff"/><line x1="16" y1="16" x2="16" y2="-2" stroke="#000" stroke-width="3.5" transform="rotate(252 16 16)"/></mask></defs><g mask="url(#m65)"><circle class="trk" cx="16" cy="16" r="13" stroke-width="1"/><path class="arc" d="M17.992 3.154A13 13 0 1 1 9.346 27.168" stroke-width="4"/></g><line class="hand" x1="16" y1="16" x2="16" y2="2" stroke-width="2" transform="rotate(252 16 16)"/><circle class="pivot" cx="16" cy="16" r="2.5"/></svg>
+      <div class="t"><span>Weekly · all models</span><span class="v">39% left</span></div>
+      <div class="s">Resets Thu 09:00 · in 1 d 19 h</div>
+      <div class="p"><span class="k-ok"><i class="gl ">&#xE930;</i>On pace</span> · 61% used with 70% of the week gone. About 13% to spare at the reset.</div></div>
+    <div class="ft"><span><i class="gl ">&#xE81C;</i>Updated 1 min ago</span><span>Lastdrop</span></div>
+  </div></div>
+    <span class="glyph small">&#xE70E;</span>
+    <span class="ld-icon"><svg class="ring trayicon st-warn" width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><defs><mask id="m63" maskUnits="userSpaceOnUse" x="0" y="0" width="16" height="16"><rect width="16" height="16" fill="#fff"/><line x1="8" y1="8" x2="8" y2="-2" stroke="#000" stroke-width="3.5" transform="rotate(162 8 8)"/></mask></defs><g mask="url(#m63)"><circle class="trk" cx="8" cy="8" r="5.75" stroke-width="1"/><path class="arc" d="M9.24 2.385A5.75 5.75 0 1 1 2.252 8.166" stroke-width="2.5"/></g><line class="hand" x1="8" y1="8" x2="8" y2="2" stroke-width="2" transform="rotate(162 8 8)"/><circle class="pivot" cx="8" cy="8" r="1.5"/></svg></span>
+    <span class="glyph">&#xE701;</span><span class="glyph">&#xE995;</span>
+    <div class="clock">13:45<br>2026-10-06</div>
+    <span class="glyph small">&#xEA8F;</span>
+  </div>
+</div></div><div class="hover-stage tall"><div class="taskbar dark ">
+  <div class="apps"><div class="app"><i></i></div><div class="app"><i></i></div><div class="app"><i></i></div><div class="app"><i></i></div><div class="app"><i></i></div></div>
+  <div class="tray">
+    <div class="readout is-hover"><div class="ld cols-3 "><span class="c-ring"><svg class="ring st-warn" width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><defs><mask id="m66" maskUnits="userSpaceOnUse" x="0" y="0" width="16" height="16"><rect width="16" height="16" fill="#fff"/><line x1="8" y1="8" x2="8" y2="-2" stroke="#000" stroke-width="3.5" transform="rotate(162 8 8)"/></mask></defs><g mask="url(#m66)"><circle class="trk" cx="8" cy="8" r="5.75" stroke-width="1"/><path class="arc" d="M9.24 2.385A5.75 5.75 0 1 1 2.252 8.166" stroke-width="2.5"/></g><line class="hand" x1="8" y1="8" x2="8" y2="2" stroke-width="2" transform="rotate(162 8 8)"/><circle class="pivot" cx="8" cy="8" r="1.5"/></svg></span><span class="c-val ">empty <b>15:20</b></span><span class="c-time "><i class="gl ">&#xE72C;</i><span>16:30</span></span><span class="c-ring"><svg class="ring st-ok" width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><defs><mask id="m67" maskUnits="userSpaceOnUse" x="0" y="0" width="16" height="16"><rect width="16" height="16" fill="#fff"/><line x1="8" y1="8" x2="8" y2="-2" stroke="#000" stroke-width="3.5" transform="rotate(252 8 8)"/></mask></defs><g mask="url(#m67)"><circle class="trk" cx="8" cy="8" r="5.75" stroke-width="1"/><path class="arc" d="M9.24 2.385A5.75 5.75 0 1 1 5.377 13.117" stroke-width="2.5"/></g><line class="hand" x1="8" y1="8" x2="8" y2="2" stroke-width="2" transform="rotate(252 8 8)"/><circle class="pivot" cx="8" cy="8" r="1.5"/></svg></span><span class="c-val "><b>39%</b> left</span><span class="c-time "><i class="gl ">&#xE72C;</i><span>Thu</span></span><span class="sz sz-ring"></span><span class="sz c-val">empty <b>00:00</b></span><span class="sz c-time"><i class="gl ">&#xE72C;</i><span>00:00</span></span></div><div class="card" role="tooltip">
+    <div class="hd"><span class="prov">Claude</span><span class="plan">Max 5x plan</span></div>
+    <div class="m"><svg class="ring st-warn" width="32" height="32" viewBox="0 0 32 32" aria-hidden="true"><defs><mask id="m69" maskUnits="userSpaceOnUse" x="0" y="0" width="32" height="32"><rect width="32" height="32" fill="#fff"/><line x1="16" y1="16" x2="16" y2="-2" stroke="#000" stroke-width="3.5" transform="rotate(162 16 16)"/></mask></defs><g mask="url(#m69)"><circle class="trk" cx="16" cy="16" r="13" stroke-width="1"/><path class="arc" d="M17.992 3.154A13 13 0 1 1 3.008 15.55" stroke-width="4"/></g><line class="hand" x1="16" y1="16" x2="16" y2="2" stroke-width="2" transform="rotate(162 16 16)"/><circle class="pivot" cx="16" cy="16" r="2.5"/></svg>
+      <div class="t"><span>5-hour session</span><span class="v">22% left</span></div>
+      <div class="s">Resets 16:30 · in 2 h 45 min</div>
+      <div class="p"><span class="k-warn"><i class="gl ">&#xE7BA;</i>Ahead of pace</span> · 78% used with 45% of the window gone. At this rate it runs out at <b>15:20</b>, 1 h 10 min before the reset.<div class="tip">About half your recent pace would last until 16:30.</div></div></div><div class="m"><svg class="ring st-ok" width="32" height="32" viewBox="0 0 32 32" aria-hidden="true"><defs><mask id="m70" maskUnits="userSpaceOnUse" x="0" y="0" width="32" height="32"><rect width="32" height="32" fill="#fff"/><line x1="16" y1="16" x2="16" y2="-2" stroke="#000" stroke-width="3.5" transform="rotate(252 16 16)"/></mask></defs><g mask="url(#m70)"><circle class="trk" cx="16" cy="16" r="13" stroke-width="1"/><path class="arc" d="M17.992 3.154A13 13 0 1 1 9.346 27.168" stroke-width="4"/></g><line class="hand" x1="16" y1="16" x2="16" y2="2" stroke-width="2" transform="rotate(252 16 16)"/><circle class="pivot" cx="16" cy="16" r="2.5"/></svg>
+      <div class="t"><span>Weekly · all models</span><span class="v">39% left</span></div>
+      <div class="s">Resets Thu 09:00 · in 1 d 19 h</div>
+      <div class="p"><span class="k-ok"><i class="gl ">&#xE930;</i>On pace</span> · 61% used with 70% of the week gone. About 13% to spare at the reset.</div></div>
+    <div class="ft"><span><i class="gl ">&#xE81C;</i>Updated 1 min ago</span><span>Lastdrop</span></div>
+  </div></div>
+    <span class="glyph small">&#xE70E;</span>
+    <span class="ld-icon"><svg class="ring trayicon st-warn" width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><defs><mask id="m68" maskUnits="userSpaceOnUse" x="0" y="0" width="16" height="16"><rect width="16" height="16" fill="#fff"/><line x1="8" y1="8" x2="8" y2="-2" stroke="#000" stroke-width="3.5" transform="rotate(162 8 8)"/></mask></defs><g mask="url(#m68)"><circle class="trk" cx="8" cy="8" r="5.75" stroke-width="1"/><path class="arc" d="M9.24 2.385A5.75 5.75 0 1 1 2.252 8.166" stroke-width="2.5"/></g><line class="hand" x1="8" y1="8" x2="8" y2="2" stroke-width="2" transform="rotate(162 8 8)"/><circle class="pivot" cx="8" cy="8" r="1.5"/></svg></span>
+    <span class="glyph">&#xE701;</span><span class="glyph">&#xE995;</span>
+    <div class="clock">13:45<br>2026-10-06</div>
+    <span class="glyph small">&#xEA8F;</span>
+  </div>
+</div></div><div class="hover-stage tall"><div class="taskbar light ">
+  <div class="apps"><div class="app"><i></i></div><div class="app"><i></i></div><div class="app"><i></i></div><div class="app"><i></i></div><div class="app"><i></i></div></div>
+  <div class="tray">
+    <div class="readout is-hover"><div class="ld cols-3 "><span class="c-ring"><svg class="ring st-crit" width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><g><circle class="trk" cx="8" cy="8" r="5.75" stroke-width="1"/><path class="arc" d="M9.24 2.385A5.75 5.75 0 1 1 4.78 3.236" stroke-width="2.5"/></g><rect class="alert" x="7" y="4.67" width="2" height="4.14" rx="0.7"/><circle class="alert" cx="8" cy="10.7" r="1.1"/></svg></span><span class="c-val v-crit">empty <b>15:21</b></span><span class="c-time "><i class="gl ">&#xE72C;</i><span>16:30</span></span><span class="c-ring"><svg class="ring st-ok" width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><defs><mask id="m72" maskUnits="userSpaceOnUse" x="0" y="0" width="16" height="16"><rect width="16" height="16" fill="#fff"/><line x1="8" y1="8" x2="8" y2="-2" stroke="#000" stroke-width="3.5" transform="rotate(252 8 8)"/></mask></defs><g mask="url(#m72)"><circle class="trk" cx="8" cy="8" r="5.75" stroke-width="1"/><path class="arc" d="M9.24 2.385A5.75 5.75 0 1 1 5.377 13.117" stroke-width="2.5"/></g><line class="hand" x1="8" y1="8" x2="8" y2="2" stroke-width="2" transform="rotate(252 8 8)"/><circle class="pivot" cx="8" cy="8" r="1.5"/></svg></span><span class="c-val "><b>39%</b> left</span><span class="c-time "><i class="gl ">&#xE72C;</i><span>Thu</span></span><span class="sz sz-ring"></span><span class="sz c-val">empty <b>00:00</b></span><span class="sz c-time"><i class="gl ">&#xE72C;</i><span>00:00</span></span></div><div class="card" role="tooltip">
+    <div class="hd"><span class="prov">Claude</span><span class="plan">Max 5x plan</span></div>
+    <div class="m"><svg class="ring st-crit" width="32" height="32" viewBox="0 0 32 32" aria-hidden="true"><g><circle class="trk" cx="16" cy="16" r="13" stroke-width="1"/><path class="arc" d="M17.992 3.154A13 13 0 1 1 9.419 4.789" stroke-width="4"/></g><rect class="alert" x="14.5" y="7.86" width="3" height="10.12" rx="1.2"/><circle class="alert" cx="16" cy="22.6" r="1.6"/></svg>
+      <div class="t"><span>5-hour session</span><span class="v">6% left</span></div>
+      <div class="s">Resets 16:30 · in 1 h 21 min</div>
+      <div class="p"><span class="k-crit"><i class="gl ">&#xE783;</i>Nearly empty</span> · about <b>12 min</b> of use left at your current pace (empty ≈ 15:21), then 1 h 9 min until the reset.<div class="tip">Weekly still has 39% left, so after 16:30 you are fine.</div></div></div><div class="m"><svg class="ring st-ok" width="32" height="32" viewBox="0 0 32 32" aria-hidden="true"><defs><mask id="m75" maskUnits="userSpaceOnUse" x="0" y="0" width="32" height="32"><rect width="32" height="32" fill="#fff"/><line x1="16" y1="16" x2="16" y2="-2" stroke="#000" stroke-width="3.5" transform="rotate(252 16 16)"/></mask></defs><g mask="url(#m75)"><circle class="trk" cx="16" cy="16" r="13" stroke-width="1"/><path class="arc" d="M17.992 3.154A13 13 0 1 1 9.346 27.168" stroke-width="4"/></g><line class="hand" x1="16" y1="16" x2="16" y2="2" stroke-width="2" transform="rotate(252 16 16)"/><circle class="pivot" cx="16" cy="16" r="2.5"/></svg>
+      <div class="t"><span>Weekly · all models</span><span class="v">39% left</span></div>
+      <div class="s">Resets Thu 09:00 · in 1 d 17 h</div>
+      <div class="p"><span class="k-ok"><i class="gl ">&#xE930;</i>On pace</span> · 61% used with 70% of the week gone. About 13% to spare at the reset.</div></div>
+    <div class="ft"><span><i class="gl ">&#xE81C;</i>Updated 1 min ago</span><span>Lastdrop</span></div>
+  </div></div>
+    <span class="glyph small">&#xE70E;</span>
+    <span class="ld-icon"><svg class="ring trayicon st-crit" width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><g><circle class="trk" cx="8" cy="8" r="5.75" stroke-width="1"/><path class="arc" d="M9.24 2.385A5.75 5.75 0 1 1 4.78 3.236" stroke-width="2.5"/></g><rect class="alert" x="7" y="4.67" width="2" height="4.14" rx="0.7"/><circle class="alert" cx="8" cy="10.7" r="1.1"/></svg></span>
+    <span class="glyph">&#xE701;</span><span class="glyph">&#xE995;</span>
+    <div class="clock">15:09<br>2026-10-06</div>
+    <span class="glyph small">&#xEA8F;</span>
+  </div>
+</div></div><div class="hover-stage tall"><div class="taskbar dark ">
+  <div class="apps"><div class="app"><i></i></div><div class="app"><i></i></div><div class="app"><i></i></div><div class="app"><i></i></div><div class="app"><i></i></div></div>
+  <div class="tray">
+    <div class="readout is-hover"><div class="ld cols-3 "><span class="c-ring"><svg class="ring st-crit" width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><g><circle class="trk" cx="8" cy="8" r="5.75" stroke-width="1"/><path class="arc" d="M9.24 2.385A5.75 5.75 0 1 1 4.78 3.236" stroke-width="2.5"/></g><rect class="alert" x="7" y="4.67" width="2" height="4.14" rx="0.7"/><circle class="alert" cx="8" cy="10.7" r="1.1"/></svg></span><span class="c-val v-crit">empty <b>15:21</b></span><span class="c-time "><i class="gl ">&#xE72C;</i><span>16:30</span></span><span class="c-ring"><svg class="ring st-ok" width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><defs><mask id="m77" maskUnits="userSpaceOnUse" x="0" y="0" width="16" height="16"><rect width="16" height="16" fill="#fff"/><line x1="8" y1="8" x2="8" y2="-2" stroke="#000" stroke-width="3.5" transform="rotate(252 8 8)"/></mask></defs><g mask="url(#m77)"><circle class="trk" cx="8" cy="8" r="5.75" stroke-width="1"/><path class="arc" d="M9.24 2.385A5.75 5.75 0 1 1 5.377 13.117" stroke-width="2.5"/></g><line class="hand" x1="8" y1="8" x2="8" y2="2" stroke-width="2" transform="rotate(252 8 8)"/><circle class="pivot" cx="8" cy="8" r="1.5"/></svg></span><span class="c-val "><b>39%</b> left</span><span class="c-time "><i class="gl ">&#xE72C;</i><span>Thu</span></span><span class="sz sz-ring"></span><span class="sz c-val">empty <b>00:00</b></span><span class="sz c-time"><i class="gl ">&#xE72C;</i><span>00:00</span></span></div><div class="card" role="tooltip">
+    <div class="hd"><span class="prov">Claude</span><span class="plan">Max 5x plan</span></div>
+    <div class="m"><svg class="ring st-crit" width="32" height="32" viewBox="0 0 32 32" aria-hidden="true"><g><circle class="trk" cx="16" cy="16" r="13" stroke-width="1"/><path class="arc" d="M17.992 3.154A13 13 0 1 1 9.419 4.789" stroke-width="4"/></g><rect class="alert" x="14.5" y="7.86" width="3" height="10.12" rx="1.2"/><circle class="alert" cx="16" cy="22.6" r="1.6"/></svg>
+      <div class="t"><span>5-hour session</span><span class="v">6% left</span></div>
+      <div class="s">Resets 16:30 · in 1 h 21 min</div>
+      <div class="p"><span class="k-crit"><i class="gl ">&#xE783;</i>Nearly empty</span> · about <b>12 min</b> of use left at your current pace (empty ≈ 15:21), then 1 h 9 min until the reset.<div class="tip">Weekly still has 39% left, so after 16:30 you are fine.</div></div></div><div class="m"><svg class="ring st-ok" width="32" height="32" viewBox="0 0 32 32" aria-hidden="true"><defs><mask id="m80" maskUnits="userSpaceOnUse" x="0" y="0" width="32" height="32"><rect width="32" height="32" fill="#fff"/><line x1="16" y1="16" x2="16" y2="-2" stroke="#000" stroke-width="3.5" transform="rotate(252 16 16)"/></mask></defs><g mask="url(#m80)"><circle class="trk" cx="16" cy="16" r="13" stroke-width="1"/><path class="arc" d="M17.992 3.154A13 13 0 1 1 9.346 27.168" stroke-width="4"/></g><line class="hand" x1="16" y1="16" x2="16" y2="2" stroke-width="2" transform="rotate(252 16 16)"/><circle class="pivot" cx="16" cy="16" r="2.5"/></svg>
+      <div class="t"><span>Weekly · all models</span><span class="v">39% left</span></div>
+      <div class="s">Resets Thu 09:00 · in 1 d 17 h</div>
+      <div class="p"><span class="k-ok"><i class="gl ">&#xE930;</i>On pace</span> · 61% used with 70% of the week gone. About 13% to spare at the reset.</div></div>
+    <div class="ft"><span><i class="gl ">&#xE81C;</i>Updated 1 min ago</span><span>Lastdrop</span></div>
+  </div></div>
+    <span class="glyph small">&#xE70E;</span>
+    <span class="ld-icon"><svg class="ring trayicon st-crit" width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><g><circle class="trk" cx="8" cy="8" r="5.75" stroke-width="1"/><path class="arc" d="M9.24 2.385A5.75 5.75 0 1 1 4.78 3.236" stroke-width="2.5"/></g><rect class="alert" x="7" y="4.67" width="2" height="4.14" rx="0.7"/><circle class="alert" cx="8" cy="10.7" r="1.1"/></svg></span>
+    <span class="glyph">&#xE701;</span><span class="glyph">&#xE995;</span>
+    <div class="clock">15:09<br>2026-10-06</div>
+    <span class="glyph small">&#xEA8F;</span>
+  </div>
+</div></div></div><h2>8 · Tray icon — 16 × 16 at 100 %, and 4× for inspection</h2><p class="note">The tray icon is the same ring at 16 px for the most constrained meter: thick fill = used, thin track = what is left, hand = now. It is shown live in the .ld-icon slot of every taskbar above; here in isolation. 1 px clear margin all round, as Windows tray icons have.</p><div class="pair"><div class="icons"><div class="icon-cell"><div class="lab-row">Normal</div>
+    <div class="taskbar light strip">
+  <div class="apps"><div class="app"><i></i></div><div class="app"><i></i></div><div class="app"><i></i></div><div class="app"><i></i></div><div class="app"><i></i></div></div>
+  <div class="tray">
+    <div class="readout"></div>
+    <span class="glyph small">&#xE70E;</span>
+    <span class="ld-icon"><svg class="ring trayicon st-ok" width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><defs><mask id="m81" maskUnits="userSpaceOnUse" x="0" y="0" width="16" height="16"><rect width="16" height="16" fill="#fff"/><line x1="8" y1="8" x2="8" y2="-2" stroke="#000" stroke-width="3.5" transform="rotate(252 8 8)"/></mask></defs><g mask="url(#m81)"><circle class="trk" cx="8" cy="8" r="5.75" stroke-width="1"/><path class="arc" d="M9.24 2.385A5.75 5.75 0 1 1 5.377 13.117" stroke-width="2.5"/></g><line class="hand" x1="8" y1="8" x2="8" y2="2" stroke-width="2" transform="rotate(252 8 8)"/><circle class="pivot" cx="8" cy="8" r="1.5"/></svg></span>
+    <span class="glyph">&#xE701;</span><span class="glyph">&#xE995;</span>
+    <div class="clock">12:42<br>2026-10-06</div>
+    <span class="glyph small">&#xEA8F;</span>
+  </div>
+</div>
+    <div class="taskbar dark strip">
+  <div class="apps"><div class="app"><i></i></div><div class="app"><i></i></div><div class="app"><i></i></div><div class="app"><i></i></div><div class="app"><i></i></div></div>
+  <div class="tray">
+    <div class="readout"></div>
+    <span class="glyph small">&#xE70E;</span>
+    <span class="ld-icon"><svg class="ring trayicon st-ok" width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><defs><mask id="m82" maskUnits="userSpaceOnUse" x="0" y="0" width="16" height="16"><rect width="16" height="16" fill="#fff"/><line x1="8" y1="8" x2="8" y2="-2" stroke="#000" stroke-width="3.5" transform="rotate(252 8 8)"/></mask></defs><g mask="url(#m82)"><circle class="trk" cx="8" cy="8" r="5.75" stroke-width="1"/><path class="arc" d="M9.24 2.385A5.75 5.75 0 1 1 5.377 13.117" stroke-width="2.5"/></g><line class="hand" x1="8" y1="8" x2="8" y2="2" stroke-width="2" transform="rotate(252 8 8)"/><circle class="pivot" cx="8" cy="8" r="1.5"/></svg></span>
+    <span class="glyph">&#xE701;</span><span class="glyph">&#xE995;</span>
+    <div class="clock">12:42<br>2026-10-06</div>
+    <span class="glyph small">&#xEA8F;</span>
+  </div>
+</div>
+    <div class="zoomrow"><div class="zoombox light"><span class="z4"><svg class="ring trayicon st-ok" width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><defs><mask id="m83" maskUnits="userSpaceOnUse" x="0" y="0" width="16" height="16"><rect width="16" height="16" fill="#fff"/><line x1="8" y1="8" x2="8" y2="-2" stroke="#000" stroke-width="3.5" transform="rotate(252 8 8)"/></mask></defs><g mask="url(#m83)"><circle class="trk" cx="8" cy="8" r="5.75" stroke-width="1"/><path class="arc" d="M9.24 2.385A5.75 5.75 0 1 1 5.377 13.117" stroke-width="2.5"/></g><line class="hand" x1="8" y1="8" x2="8" y2="2" stroke-width="2" transform="rotate(252 8 8)"/><circle class="pivot" cx="8" cy="8" r="1.5"/></svg></span></div><div class="zoombox dark"><span class="z4"><svg class="ring trayicon st-ok" width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><defs><mask id="m84" maskUnits="userSpaceOnUse" x="0" y="0" width="16" height="16"><rect width="16" height="16" fill="#fff"/><line x1="8" y1="8" x2="8" y2="-2" stroke="#000" stroke-width="3.5" transform="rotate(252 8 8)"/></mask></defs><g mask="url(#m84)"><circle class="trk" cx="8" cy="8" r="5.75" stroke-width="1"/><path class="arc" d="M9.24 2.385A5.75 5.75 0 1 1 5.377 13.117" stroke-width="2.5"/></g><line class="hand" x1="8" y1="8" x2="8" y2="2" stroke-width="2" transform="rotate(252 8 8)"/><circle class="pivot" cx="8" cy="8" r="1.5"/></svg></span></div></div>
+    <div class="cap">Weekly is the most constrained: hand on the thin track, clear of the green.</div></div><div class="icon-cell"><div class="lab-row">Ahead of pace</div>
+    <div class="taskbar light strip">
+  <div class="apps"><div class="app"><i></i></div><div class="app"><i></i></div><div class="app"><i></i></div><div class="app"><i></i></div><div class="app"><i></i></div></div>
+  <div class="tray">
+    <div class="readout"></div>
+    <span class="glyph small">&#xE70E;</span>
+    <span class="ld-icon"><svg class="ring trayicon st-warn" width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><defs><mask id="m85" maskUnits="userSpaceOnUse" x="0" y="0" width="16" height="16"><rect width="16" height="16" fill="#fff"/><line x1="8" y1="8" x2="8" y2="-2" stroke="#000" stroke-width="3.5" transform="rotate(162 8 8)"/></mask></defs><g mask="url(#m85)"><circle class="trk" cx="8" cy="8" r="5.75" stroke-width="1"/><path class="arc" d="M9.24 2.385A5.75 5.75 0 1 1 2.252 8.166" stroke-width="2.5"/></g><line class="hand" x1="8" y1="8" x2="8" y2="2" stroke-width="2" transform="rotate(162 8 8)"/><circle class="pivot" cx="8" cy="8" r="1.5"/></svg></span>
+    <span class="glyph">&#xE701;</span><span class="glyph">&#xE995;</span>
+    <div class="clock">12:42<br>2026-10-06</div>
+    <span class="glyph small">&#xEA8F;</span>
+  </div>
+</div>
+    <div class="taskbar dark strip">
+  <div class="apps"><div class="app"><i></i></div><div class="app"><i></i></div><div class="app"><i></i></div><div class="app"><i></i></div><div class="app"><i></i></div></div>
+  <div class="tray">
+    <div class="readout"></div>
+    <span class="glyph small">&#xE70E;</span>
+    <span class="ld-icon"><svg class="ring trayicon st-warn" width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><defs><mask id="m86" maskUnits="userSpaceOnUse" x="0" y="0" width="16" height="16"><rect width="16" height="16" fill="#fff"/><line x1="8" y1="8" x2="8" y2="-2" stroke="#000" stroke-width="3.5" transform="rotate(162 8 8)"/></mask></defs><g mask="url(#m86)"><circle class="trk" cx="8" cy="8" r="5.75" stroke-width="1"/><path class="arc" d="M9.24 2.385A5.75 5.75 0 1 1 2.252 8.166" stroke-width="2.5"/></g><line class="hand" x1="8" y1="8" x2="8" y2="2" stroke-width="2" transform="rotate(162 8 8)"/><circle class="pivot" cx="8" cy="8" r="1.5"/></svg></span>
+    <span class="glyph">&#xE701;</span><span class="glyph">&#xE995;</span>
+    <div class="clock">12:42<br>2026-10-06</div>
+    <span class="glyph small">&#xEA8F;</span>
+  </div>
+</div>
+    <div class="zoomrow"><div class="zoombox light"><span class="z4"><svg class="ring trayicon st-warn" width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><defs><mask id="m87" maskUnits="userSpaceOnUse" x="0" y="0" width="16" height="16"><rect width="16" height="16" fill="#fff"/><line x1="8" y1="8" x2="8" y2="-2" stroke="#000" stroke-width="3.5" transform="rotate(162 8 8)"/></mask></defs><g mask="url(#m87)"><circle class="trk" cx="8" cy="8" r="5.75" stroke-width="1"/><path class="arc" d="M9.24 2.385A5.75 5.75 0 1 1 2.252 8.166" stroke-width="2.5"/></g><line class="hand" x1="8" y1="8" x2="8" y2="2" stroke-width="2" transform="rotate(162 8 8)"/><circle class="pivot" cx="8" cy="8" r="1.5"/></svg></span></div><div class="zoombox dark"><span class="z4"><svg class="ring trayicon st-warn" width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><defs><mask id="m88" maskUnits="userSpaceOnUse" x="0" y="0" width="16" height="16"><rect width="16" height="16" fill="#fff"/><line x1="8" y1="8" x2="8" y2="-2" stroke="#000" stroke-width="3.5" transform="rotate(162 8 8)"/></mask></defs><g mask="url(#m88)"><circle class="trk" cx="8" cy="8" r="5.75" stroke-width="1"/><path class="arc" d="M9.24 2.385A5.75 5.75 0 1 1 2.252 8.166" stroke-width="2.5"/></g><line class="hand" x1="8" y1="8" x2="8" y2="2" stroke-width="2" transform="rotate(162 8 8)"/><circle class="pivot" cx="8" cy="8" r="1.5"/></svg></span></div></div>
+    <div class="cap">5-hour: the hand cuts through the amber fill.</div></div><div class="icon-cell"><div class="lab-row">Critical</div>
+    <div class="taskbar light strip">
+  <div class="apps"><div class="app"><i></i></div><div class="app"><i></i></div><div class="app"><i></i></div><div class="app"><i></i></div><div class="app"><i></i></div></div>
+  <div class="tray">
+    <div class="readout"></div>
+    <span class="glyph small">&#xE70E;</span>
+    <span class="ld-icon"><svg class="ring trayicon st-crit" width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><g><circle class="trk" cx="8" cy="8" r="5.75" stroke-width="1"/><path class="arc" d="M9.24 2.385A5.75 5.75 0 1 1 4.78 3.236" stroke-width="2.5"/></g><rect class="alert" x="7" y="4.67" width="2" height="4.14" rx="0.7"/><circle class="alert" cx="8" cy="10.7" r="1.1"/></svg></span>
+    <span class="glyph">&#xE701;</span><span class="glyph">&#xE995;</span>
+    <div class="clock">12:42<br>2026-10-06</div>
+    <span class="glyph small">&#xEA8F;</span>
+  </div>
+</div>
+    <div class="taskbar dark strip">
+  <div class="apps"><div class="app"><i></i></div><div class="app"><i></i></div><div class="app"><i></i></div><div class="app"><i></i></div><div class="app"><i></i></div></div>
+  <div class="tray">
+    <div class="readout"></div>
+    <span class="glyph small">&#xE70E;</span>
+    <span class="ld-icon"><svg class="ring trayicon st-crit" width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><g><circle class="trk" cx="8" cy="8" r="5.75" stroke-width="1"/><path class="arc" d="M9.24 2.385A5.75 5.75 0 1 1 4.78 3.236" stroke-width="2.5"/></g><rect class="alert" x="7" y="4.67" width="2" height="4.14" rx="0.7"/><circle class="alert" cx="8" cy="10.7" r="1.1"/></svg></span>
+    <span class="glyph">&#xE701;</span><span class="glyph">&#xE995;</span>
+    <div class="clock">12:42<br>2026-10-06</div>
+    <span class="glyph small">&#xEA8F;</span>
+  </div>
+</div>
+    <div class="zoomrow"><div class="zoombox light"><span class="z4"><svg class="ring trayicon st-crit" width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><g><circle class="trk" cx="8" cy="8" r="5.75" stroke-width="1"/><path class="arc" d="M9.24 2.385A5.75 5.75 0 1 1 4.78 3.236" stroke-width="2.5"/></g><rect class="alert" x="7" y="4.67" width="2" height="4.14" rx="0.7"/><circle class="alert" cx="8" cy="10.7" r="1.1"/></svg></span></div><div class="zoombox dark"><span class="z4"><svg class="ring trayicon st-crit" width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><g><circle class="trk" cx="8" cy="8" r="5.75" stroke-width="1"/><path class="arc" d="M9.24 2.385A5.75 5.75 0 1 1 4.78 3.236" stroke-width="2.5"/></g><rect class="alert" x="7" y="4.67" width="2" height="4.14" rx="0.7"/><circle class="alert" cx="8" cy="10.7" r="1.1"/></svg></span></div></div>
+    <div class="cap">5-hour: ring almost closed, alert mark instead of the hand.</div></div><div class="icon-cell"><div class="lab-row">Stale</div>
+    <div class="taskbar light strip">
+  <div class="apps"><div class="app"><i></i></div><div class="app"><i></i></div><div class="app"><i></i></div><div class="app"><i></i></div><div class="app"><i></i></div></div>
+  <div class="tray">
+    <div class="readout"></div>
+    <span class="glyph small">&#xE70E;</span>
+    <span class="ld-icon"><svg class="ring trayicon st-stale" width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><g><circle class="trk" cx="8" cy="8" r="5.75" stroke-width="1"/><path class="arc" d="M9.24 2.385A5.75 5.75 0 1 1 5.377 13.117" stroke-width="2.5"/></g><path class="q" d="M6.2 6.286A1.8 1.8 0 1 1 8.9 7.845L8 8.6V9.286" stroke-width="1.5"/><circle class="alert" cx="8" cy="11.086" r="0.95"/></svg></span>
+    <span class="glyph">&#xE701;</span><span class="glyph">&#xE995;</span>
+    <div class="clock">12:42<br>2026-10-06</div>
+    <span class="glyph small">&#xEA8F;</span>
+  </div>
+</div>
+    <div class="taskbar dark strip">
+  <div class="apps"><div class="app"><i></i></div><div class="app"><i></i></div><div class="app"><i></i></div><div class="app"><i></i></div><div class="app"><i></i></div></div>
+  <div class="tray">
+    <div class="readout"></div>
+    <span class="glyph small">&#xE70E;</span>
+    <span class="ld-icon"><svg class="ring trayicon st-stale" width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><g><circle class="trk" cx="8" cy="8" r="5.75" stroke-width="1"/><path class="arc" d="M9.24 2.385A5.75 5.75 0 1 1 5.377 13.117" stroke-width="2.5"/></g><path class="q" d="M6.2 6.286A1.8 1.8 0 1 1 8.9 7.845L8 8.6V9.286" stroke-width="1.5"/><circle class="alert" cx="8" cy="11.086" r="0.95"/></svg></span>
+    <span class="glyph">&#xE701;</span><span class="glyph">&#xE995;</span>
+    <div class="clock">12:42<br>2026-10-06</div>
+    <span class="glyph small">&#xEA8F;</span>
+  </div>
+</div>
+    <div class="zoomrow"><div class="zoombox light"><span class="z4"><svg class="ring trayicon st-stale" width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><g><circle class="trk" cx="8" cy="8" r="5.75" stroke-width="1"/><path class="arc" d="M9.24 2.385A5.75 5.75 0 1 1 5.377 13.117" stroke-width="2.5"/></g><path class="q" d="M6.2 6.286A1.8 1.8 0 1 1 8.9 7.845L8 8.6V9.286" stroke-width="1.5"/><circle class="alert" cx="8" cy="11.086" r="0.95"/></svg></span></div><div class="zoombox dark"><span class="z4"><svg class="ring trayicon st-stale" width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><g><circle class="trk" cx="8" cy="8" r="5.75" stroke-width="1"/><path class="arc" d="M9.24 2.385A5.75 5.75 0 1 1 5.377 13.117" stroke-width="2.5"/></g><path class="q" d="M6.2 6.286A1.8 1.8 0 1 1 8.9 7.845L8 8.6V9.286" stroke-width="1.5"/><circle class="alert" cx="8" cy="11.086" r="0.95"/></svg></span></div></div>
+    <div class="cap">Grey with “?”: last known value, current value unknown.</div></div></div></div>
+<div style="height:24px"></div>
+</body>
+</html>

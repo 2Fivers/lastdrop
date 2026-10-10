@@ -1,0 +1,507 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Runway Text Readout</title>
+<style>
+/* Windows 11 taskbar mock at 1:1 (100 % scale). Shared by every readout variant so they
+   compare fairly. Transparency effects off = solid taskbar colours, as on the owner's PC. */
+:root {
+  --font: "Segoe UI Variable Text", "Segoe UI Variable", "Segoe UI", sans-serif;
+  --icons: "Segoe Fluent Icons", "Segoe MDL2 Assets";
+  --accent-light: #8e3aa7;   /* owner's accent, darker shade WinUI uses on light */
+  --accent-dark: #d58ae8;    /* lighter shade WinUI uses on dark */
+}
+* { box-sizing: border-box; }
+body { margin: 0; padding: 24px; background: #6b6f78; font-family: var(--font); }
+h2 { font: 600 14px var(--font); color: #fff; margin: 28px 0 8px; }
+p.note { font: 12px var(--font); color: #e6e6e6; margin: 0 0 10px; max-width: 900px; }
+
+.taskbar {
+  position: relative; height: 48px; width: 1100px; display: flex; align-items: center;
+  font-family: var(--font); user-select: none;
+}
+.taskbar.light { background: #eeeeee; color: #1a1a1a; border-top: 1px solid #d9d9d9; --tb-fg: #1a1a1a; --tb-fg2: #5c5c5c; --tb-hover: rgba(0,0,0,.05); --accent: var(--accent-light); }
+.taskbar.dark  { background: #1c1c1c; color: #ffffff; border-top: 1px solid #2e2e2e; --tb-fg: #ffffff; --tb-fg2: #c5c5c5; --tb-hover: rgba(255,255,255,.07); --accent: var(--accent-dark); }
+
+/* centred app buttons (Windows 11 default alignment) */
+.taskbar .apps { position: absolute; left: 50%; transform: translateX(-50%); display: flex; gap: 4px; }
+.taskbar .app { width: 40px; height: 40px; border-radius: 4px; display: grid; place-items: center; }
+.taskbar .app i { width: 24px; height: 24px; border-radius: 5px; display: block; }
+.taskbar .app:nth-child(1) i { background: linear-gradient(135deg,#0a84ff,#4cc2ff); }
+.taskbar .app:nth-child(2) i { background: #f2c94c; }
+.taskbar .app:nth-child(3) i { background: linear-gradient(135deg,#e34c26,#f06529); }
+.taskbar .app:nth-child(4) i { background: #2d2d2d; outline: 1px solid #555; }
+.taskbar .app:nth-child(5) i { background: linear-gradient(135deg,#7b2ff7,#f107a3); }
+
+/* right side: readout slot, overflow chevron, tray icons, clock, bell */
+.taskbar .tray { margin-left: auto; display: flex; align-items: center; height: 100%; padding-right: 8px; }
+.taskbar .readout { height: 40px; display: flex; align-items: center; margin-right: 4px; border-radius: 4px; padding: 0 6px; }
+.taskbar .readout:hover { background: var(--tb-hover); }
+.taskbar .glyph { font-family: var(--icons); font-size: 16px; width: 32px; height: 40px; display: grid; place-items: center; color: var(--tb-fg); }
+.taskbar .glyph.small { font-size: 12px; width: 24px; }
+.taskbar .clock { text-align: right; font-size: 12px; line-height: 16px; padding: 0 8px 0 6px; color: var(--tb-fg); }
+
+/* the tray icon of Lastdrop itself, 16x16 at 100 % */
+.taskbar .ld-icon { width: 32px; height: 40px; display: grid; place-items: center; }
+
+</style>
+<style>
+/* ===== Runway text: tokens layered on the shared harness ===== */
+:root {
+  --small: "Segoe UI Variable Small", "Segoe UI Variable Text", "Segoe UI", sans-serif;
+  --text: "Segoe UI Variable Text", "Segoe UI Variable", "Segoe UI", sans-serif;
+}
+.taskbar.light {
+  --tb-bg: #eeeeee;
+  --ok: #0F7B0F; --warn: #9D5D00; --crit: #C42B1C; --on-badge: #ffffff;
+  --crit-text: #B8291B; /* one shade darker than the #C42B1C fill (as WinUI does for accent text): 4.8:1 even on the hover fill #E2E2E2, where #C42B1C drops to 4.37:1 */
+  --card-bg: #F9F9F9; --card-stroke: rgba(0,0,0,.0578); --card-shadow: 0 8px 16px rgba(0,0,0,.14);
+  --card-fg: #1a1a1a; --card-fg2: #5c5c5c; --track: rgba(0,0,0,.11); --divider: rgba(0,0,0,.08);
+}
+.taskbar.dark {
+  --tb-bg: #1c1c1c;
+  --ok: #6CCB5F; --warn: #FCE100; --crit: #FF99A4; --on-badge: #000000;
+  --crit-text: #FF99A4;
+  --card-bg: #2C2C2C; --card-stroke: rgba(0,0,0,.2); --card-shadow: 0 8px 16px rgba(0,0,0,.26);
+  --card-fg: #ffffff; --card-fg2: #c5c5c5; --track: rgba(255,255,255,.16); --divider: rgba(255,255,255,.08);
+}
+
+/* ===== the readout: a fixed 4-column table on the clock's 12/16 grid =====
+   window | badge | verdict | fact. Columns align across rows, so both facts start on one edge. */
+.rw {
+  display: grid; grid-template-columns: auto 12px auto auto; align-items: center;
+  font: 400 12px/16px var(--small); font-variant-numeric: tabular-nums;
+  color: var(--tb-fg); white-space: nowrap;
+}
+.rw .w { color: var(--tb-fg2); padding-right: 5px; }
+.rw .v { padding-left: 4px; }                 /* "Lasts": regular weight, as calm as the clock */
+.rw .v.hot { font-weight: 600; }              /* escalation: only a failing verdict goes semibold */
+.rw .v.crit, b.crit { color: var(--crit-text); }  /* critical also turns the verdict text red */
+.rw .s { padding-left: 6px; color: var(--tb-fg2); }
+
+/* state badges: WinUI InfoBar construction (filled shape + knocked-out mark), 12 px */
+.bd { position: relative; display: block; width: 12px; height: 12px; font: 12px/12px var(--icons); flex: none; }
+.bd i { position: absolute; inset: 0; font-style: normal; text-align: center; }
+.bd.ok i:first-child { color: var(--ok); }
+.bd.warn i:first-child { color: var(--warn); }
+.bd.crit i:first-child { color: var(--crit); }
+.bd i + i { color: var(--on-badge); }
+.bd.old i { color: var(--tb-fg); }
+
+/* stale: age leads, last-known verdicts in secondary grey */
+.rw.stale { display: block; }
+.sl1, .sl2 { display: flex; align-items: center; height: 16px; }
+.sl1 .bd { margin-right: 4px; }
+.sl1 b { font-weight: 600; }
+.sl1 .why { color: var(--tb-fg2); margin-left: 4px; }
+.sl2 { color: var(--tb-fg2); padding-left: 16px; }
+
+/* tight: one row, same type */
+.rw.one { display: flex; align-items: center; }
+.rw.one .v { padding-left: 4px; }
+
+/* hover state of the slot (static stand-in for :hover) */
+.readout { position: relative; }
+.readout.is-hover { background: var(--tb-hover); }
+
+/* ===== hover card (Windows 11 tooltip / teaching-tip surface) ===== */
+.hoverstage { width: 1100px; position: relative; border-radius: 6px 6px 0 0; }
+.hoverstage:has(.light) { background: linear-gradient(160deg, #e3e9f1 0%, #cfd8e3 100%); }
+.hoverstage:has(.dark) { background: linear-gradient(160deg, #2b3341 0%, #1d222c 100%); }
+.hoverstage + .hoverstage { margin-top: 16px; }
+.card {
+  position: absolute; bottom: calc(100% + 12px); right: -76px; width: 344px; z-index: 2;
+  background: var(--card-bg); border: 1px solid var(--card-stroke); border-radius: 8px; box-shadow: var(--card-shadow);
+  padding: 12px 14px 10px; color: var(--card-fg); text-align: left; white-space: normal;
+  font: 400 12px/16px var(--small); font-variant-numeric: tabular-nums;
+}
+.card b { font-weight: 600; color: var(--card-fg); }
+.ch { display: flex; align-items: baseline; gap: 6px; padding-bottom: 10px; }
+.ch .prov { font: 600 14px/20px var(--text); }
+.ch .plan, .ch .age { color: var(--card-fg2); }
+.ch .age { margin-left: auto; }
+.m { border-top: 1px solid var(--divider); padding: 10px 0 12px; }
+.mh { display: flex; align-items: center; gap: 6px; font: 600 14px/20px var(--text); }
+.mv { margin-left: auto; }
+.mv.crit { color: var(--crit-text); }
+.ml { margin: 2px 0 8px 18px; color: var(--card-fg2); }
+/* pace bar = the runway: fill is quota LEFT (same unit as the readout and the drop icon),
+   tick is TIME left. Fill reaching past the tick = you make it; the gap before the tick = the shortfall. */
+.pace { position: relative; margin-left: 18px; height: 10px; }
+.trk { position: absolute; left: 0; right: 0; top: 3px; height: 4px; border-radius: 2px; background: var(--track); overflow: hidden; }
+.use { height: 100%; background: var(--accent); }
+.use.warn { background: var(--warn); }
+.use.crit { background: var(--crit); }
+.now { position: absolute; top: 0; width: 2px; height: 10px; margin-left: -1px; border-radius: 1px; background: var(--card-fg); box-shadow: 0 0 0 1px var(--card-bg); }
+.legend { margin: 5px 0 0 18px; display: flex; gap: 14px; color: var(--card-fg2); }
+.legend > span { white-space: nowrap; }
+.legend .k { display: inline-block; vertical-align: middle; margin: -2px 5px 0 0; }
+.legend .k.use { width: 10px; height: 4px; border-radius: 2px; }
+.legend .k.tick { width: 2px; height: 10px; border-radius: 1px; background: var(--card-fg); }
+.mp { margin: 6px 0 0 18px; color: var(--card-fg2); }
+.cf { border-top: 1px solid var(--divider); padding-top: 8px; color: var(--card-fg2); }
+
+/* ===== tray icon ===== */
+.ldi { display: block; }
+.icongrid { display: grid; grid-template-columns: 76px 140px 140px 88px 88px 1fr; gap: 10px 14px; align-items: center; width: 1100px; }
+.icongrid .ih { font: 600 12px var(--small); color: #fff; }
+.icongrid .iname { font: 600 13px var(--text); color: #fff; }
+.icongrid .idesc { font: 12px/16px var(--small); color: #e6e6e6; }
+.taskbar.strip { width: auto; display: inline-flex; }
+.taskbar.strip .tray { margin-left: 0; padding: 0 6px; }
+.taskbar.zoomwrap { width: auto; height: auto; display: inline-flex; padding: 8px; border-radius: 4px; }
+.z4 { zoom: 4; }
+
+/* ===== page chrome ===== */
+.intro { width: 1100px; }
+.intro h1 { font: 600 22px/28px var(--text); color: #fff; margin: 0 0 8px; }
+.intro h1 span { font-weight: 400; color: #dfe1e6; font-size: 16px; }
+.rationale { font: 14px/21px var(--text); color: #f2f3f5; margin: 0 0 14px; }
+.rationale b { font-weight: 600; color: #fff; }
+.facts { display: flex; gap: 20px; align-items: flex-start; }
+.widths { border-collapse: collapse; font: 12px/16px var(--small); color: #fff; font-variant-numeric: tabular-nums; flex: 1; }
+.widths caption { text-align: left; color: #e6e6e6; padding-bottom: 6px; }
+.widths th { font-weight: 600; text-align: left; padding: 6px 10px; background: rgba(0,0,0,.18); }
+.widths td { padding: 6px 10px; background: rgba(0,0,0,.08); font-size: 14px; font-weight: 600; vertical-align: top; }
+.widths td small { display: block; font-size: 11px; font-weight: 400; color: #e0e2e6; white-space: nowrap; }
+.build { font: 12px/17px var(--small); color: #e6e6e6; margin: 12px 0 0; max-width: 1100px; }
+.build b { color: #fff; font-weight: 600; }
+.vocabbar { width: auto; height: auto; display: block; padding: 10px 14px; border-radius: 4px; border-top: 0; }
+.vgrid { display: grid; grid-template-columns: auto auto; gap: 6px 14px; font: 12px/16px var(--small); color: var(--tb-fg2); }
+.vgrid > span:nth-child(odd) { display: flex; align-items: center; gap: 4px; color: var(--tb-fg); }
+.vgrid b { font-weight: 600; }
+.vgrid > span.sf { padding-left: 16px; color: var(--tb-fg2); }
+.sc { margin-top: 26px; }
+.sc h2 { display: flex; align-items: center; gap: 8px; margin: 0 0 4px; }
+.sc h2 .n { display: inline-grid; place-items: center; width: 20px; height: 20px; border-radius: 10px; background: rgba(255,255,255,.18); font-size: 12px; }
+.sc .taskbar + .taskbar { margin-top: 8px; }
+.sc .sub { font: 600 12px/16px var(--small); color: #fff; margin: 14px 0 6px; }
+.sc.tight .taskbar.dark + .taskbar.light { margin-top: 16px; }
+</style>
+</head>
+<body>
+<header class="intro">
+<h1>Runway text <span>· Lastdrop taskbar readout, concept (reviewed)</span></h1>
+<p class="rationale">Every limit is a runway, and the readout asks one thing: does it reach the reset? Each row is a short sentence that reads like
+the clock beside it: <b>window</b>, <b>verdict</b>, <b>one fact</b>. The verdict is the answer itself (<b>Lasts</b>, <b>Out 15:20</b>,
+<b>12 min left</b>). Pace decides it (share used against share of the window gone), so nothing has to be held against the time. Run-out is a
+clock time you can compare with the clock at a glance; under 30 min it becomes a countdown. The fact is always a labelled word:
+<b>58% left</b> when you make it, <b>back 16:30</b> when you don't. Together they read like a door sign, “Out 15:20 · back 16:30”, with no
+glyph that could be read as “refreshed”. The rows form a fixed four-column table, so the facts line up. Escalation is coded three ways:
+badge shape (circle-check, triangle, circle-!), weight (only a failing verdict goes semibold) and, for critical, red text. The all-clear state
+is as quiet as the clock. The hover card and the drop icon count in the same unit, quota <b>left</b>. The card's pace bar is the runway itself:
+fill = quota left, tick = time left, and a fill that passes the tick means you make it.</p>
+<div class="facts">
+  <table class="widths">
+    <caption>Measured readout width at 100 %: the <code>.readout</code> slot incl. the harness's 2 × 6 px padding, and below it the text alone</caption>
+    <tr><th>1 Normal</th><th>2 Ahead of pace</th><th>3 Critical</th><th>4 Stale</th><th>5 Two services</th><th>6 Tight (normal / warn / crit / stale)</th></tr>
+    <tr><td>124.6 px<small>text 112.6 px</small></td><td>165.8 px<small>text 153.8 px</small></td><td>171.8 px<small>text 159.8 px</small></td><td>133 px<small>text 121 px</small></td><td>165.5 px<small>text 153.5 px</small></td><td>43.1 / 89.2 / 95.2 / 75.8 px<small>text only; slot +12 px</small></td></tr>
+  </table>
+  <div class="vocab">
+    <div class="taskbar light vocabbar"><div class="vgrid">
+      <span><span class="bd ok" aria-hidden="true"><i>&#xF136;</i><i>&#xF13E;</i></span><span>Lasts</span></span><span>you reach the reset at this pace</span>
+      <span><span class="bd warn" aria-hidden="true"><i>&#xF139;</i><i>&#xF13B;</i></span><b>Out 15:20</b></span><span>runs out before the reset (clock time)</span>
+      <span><span class="bd crit" aria-hidden="true"><i>&#xF136;</i><i>&#xF13C;</i></span><b class="crit">12 min left</b></span><span>runs out in under 30 min (countdown)</span>
+      <span><span class="bd old" aria-hidden="true"><i>&#xE81C;</i></span><b>47 min old</b></span><span>no fresh reading; last values greyed</span>
+      <span class="sf">58% left</span><span>fact when it lasts: quota left</span>
+      <span class="sf">back 16:30</span><span>fact when it doesn't: when the limit resets</span>
+    </div></div>
+  </div>
+</div>
+<p class="build"><b>Build notes.</b> Badges are two stacked <code>FontIcon</code>s, as in WinUI InfoBar (F136/F139 shape + F13E/F13B/F13C mark).
+  The readout is a 4-column Grid with Auto columns, so its width follows the content and it grows to the left only (tray and clock never move).
+  Numbers use tabular figures, so a countdown ticking from 12 to 11 min does not jitter. Durations and rates are formatted with no-break spaces
+  (<code>1&nbsp;h&nbsp;10&nbsp;min</code>, <code>8%/h</code>), so the card never wraps inside them. The tray icon is rendered per DPI from the same geometry and is not scaled from 16 px. <b>Contrast</b> (on the taskbar / on its hover fill): secondary text 5.8 / 5.2 light and 9.9 / 8.1 dark; critical text 5.4 / 4.8 light (#B8291B, a text shade of the #C42B1C fill) and 8.4 / 6.9 dark; badge shapes are at least 4.5 against the taskbar, where 3 is the non-text minimum.</p>
+</header>
+<section class="sc"><h2><span class="n">1</span>Normal · under pace</h2><p class="note">Claude 5-hour 42 % used at 54 % of the window; weekly 61 % at 70 %. Both last, so the fact is the quota left. Everything is regular weight: nothing to look at. Tray icon shows the tightest window (weekly).</p>
+<div class="taskbar light">
+  <div class="apps"><div class="app"><i></i></div><div class="app"><i></i></div><div class="app"><i></i></div><div class="app"><i></i></div><div class="app"><i></i></div></div>
+  <div class="tray">
+    <div class="readout" role="img" aria-label="Claude: 5-hour window lasts, 58 percent left. Weekly lasts, 39 percent left." data-m="s1"><div class="rw"><span class="w">5h</span><span class="bd ok" aria-hidden="true"><i>&#xF136;</i><i>&#xF13E;</i></span><span class="v">Lasts</span><span class="s">58% left</span><span class="w">7d</span><span class="bd ok" aria-hidden="true"><i>&#xF136;</i><i>&#xF13E;</i></span><span class="v">Lasts</span><span class="s">39% left</span></div></div>
+    <span class="glyph small">&#xE70E;</span>
+    <span class="ld-icon"><svg class="ldi" width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><defs><clipPath id="dc1"><path d="M8 0.8C6.1 3.2 2.5 6.9 2.5 10a5.5 5.5 0 0 0 11 0C13.5 6.9 9.9 3.2 8 0.8Z"/></clipPath></defs><rect x="0" y="10.44" width="16" height="8" fill="var(--tb-fg)" clip-path="url(#dc1)"/><path d="M8 0.8C6.1 3.2 2.5 6.9 2.5 10a5.5 5.5 0 0 0 11 0C13.5 6.9 9.9 3.2 8 0.8Z" fill="none" stroke="var(--tb-fg)" stroke-width="1"/></svg></span>
+    <span class="glyph">&#xE701;</span><span class="glyph">&#xE995;</span>
+    <div class="clock">12:42<br>2026-10-06</div>
+    <span class="glyph small">&#xEA8F;</span>
+  </div>
+</div>
+<div class="taskbar dark">
+  <div class="apps"><div class="app"><i></i></div><div class="app"><i></i></div><div class="app"><i></i></div><div class="app"><i></i></div><div class="app"><i></i></div></div>
+  <div class="tray">
+    <div class="readout" role="img" aria-label="Claude: 5-hour window lasts, 58 percent left. Weekly lasts, 39 percent left."><div class="rw"><span class="w">5h</span><span class="bd ok" aria-hidden="true"><i>&#xF136;</i><i>&#xF13E;</i></span><span class="v">Lasts</span><span class="s">58% left</span><span class="w">7d</span><span class="bd ok" aria-hidden="true"><i>&#xF136;</i><i>&#xF13E;</i></span><span class="v">Lasts</span><span class="s">39% left</span></div></div>
+    <span class="glyph small">&#xE70E;</span>
+    <span class="ld-icon"><svg class="ldi" width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><defs><clipPath id="dc2"><path d="M8 0.8C6.1 3.2 2.5 6.9 2.5 10a5.5 5.5 0 0 0 11 0C13.5 6.9 9.9 3.2 8 0.8Z"/></clipPath></defs><rect x="0" y="10.44" width="16" height="8" fill="var(--tb-fg)" clip-path="url(#dc2)"/><path d="M8 0.8C6.1 3.2 2.5 6.9 2.5 10a5.5 5.5 0 0 0 11 0C13.5 6.9 9.9 3.2 8 0.8Z" fill="none" stroke="var(--tb-fg)" stroke-width="1"/></svg></span>
+    <span class="glyph">&#xE701;</span><span class="glyph">&#xE995;</span>
+    <div class="clock">12:42<br>2026-10-06</div>
+    <span class="glyph small">&#xEA8F;</span>
+  </div>
+</div>
+</section>
+<section class="sc"><h2><span class="n">2</span>Ahead of pace · warning</h2><p class="note">5-hour 78 % used at 45 % of the window: at this pace it is empty at 15:20, the reset is 16:30. The row reads like a door sign: <b>Out 15:20 · back 16:30</b>. Only this verdict goes semibold, so the eye lands on it first.</p>
+<div class="taskbar light">
+  <div class="apps"><div class="app"><i></i></div><div class="app"><i></i></div><div class="app"><i></i></div><div class="app"><i></i></div><div class="app"><i></i></div></div>
+  <div class="tray">
+    <div class="readout" role="img" aria-label="Claude: 5-hour window runs out at 15:20, back at 16:30. Weekly lasts, 39 percent left." data-m="s2"><div class="rw"><span class="w">5h</span><span class="bd warn" aria-hidden="true"><i>&#xF139;</i><i>&#xF13B;</i></span><span class="v hot">Out 15:20</span><span class="s">back 16:30</span><span class="w">7d</span><span class="bd ok" aria-hidden="true"><i>&#xF136;</i><i>&#xF13E;</i></span><span class="v">Lasts</span><span class="s">39% left</span></div></div>
+    <span class="glyph small">&#xE70E;</span>
+    <span class="ld-icon"><svg class="ldi" width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><defs><clipPath id="dc3"><path d="M8 0.8C6.1 3.2 2.5 6.9 2.5 10a5.5 5.5 0 0 0 11 0C13.5 6.9 9.9 3.2 8 0.8Z"/></clipPath></defs><rect x="0" y="12.19" width="16" height="8" fill="var(--tb-fg)" clip-path="url(#dc3)"/><path d="M8 0.8C6.1 3.2 2.5 6.9 2.5 10a5.5 5.5 0 0 0 11 0C13.5 6.9 9.9 3.2 8 0.8Z" fill="none" stroke="var(--tb-fg)" stroke-width="1"/><path d="M11.5 7.2 15.6 15.4H7.4Z" fill="var(--warn)" stroke="var(--tb-bg)" stroke-width="1.2" stroke-linejoin="round"/><rect x="11" y="10" width="1" height="3" fill="var(--on-badge)"/><rect x="11" y="14" width="1" height="1" fill="var(--on-badge)"/></svg></span>
+    <span class="glyph">&#xE701;</span><span class="glyph">&#xE995;</span>
+    <div class="clock">13:45<br>2026-10-06</div>
+    <span class="glyph small">&#xEA8F;</span>
+  </div>
+</div>
+<div class="taskbar dark">
+  <div class="apps"><div class="app"><i></i></div><div class="app"><i></i></div><div class="app"><i></i></div><div class="app"><i></i></div><div class="app"><i></i></div></div>
+  <div class="tray">
+    <div class="readout" role="img" aria-label="Claude: 5-hour window runs out at 15:20, back at 16:30. Weekly lasts, 39 percent left."><div class="rw"><span class="w">5h</span><span class="bd warn" aria-hidden="true"><i>&#xF139;</i><i>&#xF13B;</i></span><span class="v hot">Out 15:20</span><span class="s">back 16:30</span><span class="w">7d</span><span class="bd ok" aria-hidden="true"><i>&#xF136;</i><i>&#xF13E;</i></span><span class="v">Lasts</span><span class="s">39% left</span></div></div>
+    <span class="glyph small">&#xE70E;</span>
+    <span class="ld-icon"><svg class="ldi" width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><defs><clipPath id="dc4"><path d="M8 0.8C6.1 3.2 2.5 6.9 2.5 10a5.5 5.5 0 0 0 11 0C13.5 6.9 9.9 3.2 8 0.8Z"/></clipPath></defs><rect x="0" y="12.19" width="16" height="8" fill="var(--tb-fg)" clip-path="url(#dc4)"/><path d="M8 0.8C6.1 3.2 2.5 6.9 2.5 10a5.5 5.5 0 0 0 11 0C13.5 6.9 9.9 3.2 8 0.8Z" fill="none" stroke="var(--tb-fg)" stroke-width="1"/><path d="M11.5 7.2 15.6 15.4H7.4Z" fill="var(--warn)" stroke="var(--tb-bg)" stroke-width="1.2" stroke-linejoin="round"/><rect x="11" y="10" width="1" height="3" fill="var(--on-badge)"/><rect x="11" y="14" width="1" height="1" fill="var(--on-badge)"/></svg></span>
+    <span class="glyph">&#xE701;</span><span class="glyph">&#xE995;</span>
+    <div class="clock">13:45<br>2026-10-06</div>
+    <span class="glyph small">&#xEA8F;</span>
+  </div>
+</div>
+</section>
+<section class="sc"><h2><span class="n">3</span>Critical</h2><p class="note">5-hour 94 % used, about 12 min of runway. Countdown replaces the clock time, the verdict turns red and semibold, and the badge turns round with a “!”.</p>
+<div class="taskbar light">
+  <div class="apps"><div class="app"><i></i></div><div class="app"><i></i></div><div class="app"><i></i></div><div class="app"><i></i></div><div class="app"><i></i></div></div>
+  <div class="tray">
+    <div class="readout" role="img" aria-label="Claude: 5-hour window has 12 minutes left, back at 16:30. Weekly lasts, 39 percent left." data-m="s3"><div class="rw"><span class="w">5h</span><span class="bd crit" aria-hidden="true"><i>&#xF136;</i><i>&#xF13C;</i></span><span class="v hot crit">12 min left</span><span class="s">back 16:30</span><span class="w">7d</span><span class="bd ok" aria-hidden="true"><i>&#xF136;</i><i>&#xF13E;</i></span><span class="v">Lasts</span><span class="s">39% left</span></div></div>
+    <span class="glyph small">&#xE70E;</span>
+    <span class="ld-icon"><svg class="ldi" width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><defs><clipPath id="dc5"><path d="M8 0.8C6.1 3.2 2.5 6.9 2.5 10a5.5 5.5 0 0 0 11 0C13.5 6.9 9.9 3.2 8 0.8Z"/></clipPath></defs><rect x="0" y="14.16" width="16" height="8" fill="var(--crit)" clip-path="url(#dc5)"/><path d="M8 0.8C6.1 3.2 2.5 6.9 2.5 10a5.5 5.5 0 0 0 11 0C13.5 6.9 9.9 3.2 8 0.8Z" fill="none" stroke="var(--crit)" stroke-width="1"/><circle cx="11.5" cy="11.5" r="4.1" fill="var(--crit)" stroke="var(--tb-bg)" stroke-width="1.2"/><rect x="11" y="9" width="1" height="3" fill="var(--on-badge)"/><rect x="11" y="13" width="1" height="1" fill="var(--on-badge)"/></svg></span>
+    <span class="glyph">&#xE701;</span><span class="glyph">&#xE995;</span>
+    <div class="clock">15:08<br>2026-10-06</div>
+    <span class="glyph small">&#xEA8F;</span>
+  </div>
+</div>
+<div class="taskbar dark">
+  <div class="apps"><div class="app"><i></i></div><div class="app"><i></i></div><div class="app"><i></i></div><div class="app"><i></i></div><div class="app"><i></i></div></div>
+  <div class="tray">
+    <div class="readout" role="img" aria-label="Claude: 5-hour window has 12 minutes left, back at 16:30. Weekly lasts, 39 percent left."><div class="rw"><span class="w">5h</span><span class="bd crit" aria-hidden="true"><i>&#xF136;</i><i>&#xF13C;</i></span><span class="v hot crit">12 min left</span><span class="s">back 16:30</span><span class="w">7d</span><span class="bd ok" aria-hidden="true"><i>&#xF136;</i><i>&#xF13E;</i></span><span class="v">Lasts</span><span class="s">39% left</span></div></div>
+    <span class="glyph small">&#xE70E;</span>
+    <span class="ld-icon"><svg class="ldi" width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><defs><clipPath id="dc6"><path d="M8 0.8C6.1 3.2 2.5 6.9 2.5 10a5.5 5.5 0 0 0 11 0C13.5 6.9 9.9 3.2 8 0.8Z"/></clipPath></defs><rect x="0" y="14.16" width="16" height="8" fill="var(--crit)" clip-path="url(#dc6)"/><path d="M8 0.8C6.1 3.2 2.5 6.9 2.5 10a5.5 5.5 0 0 0 11 0C13.5 6.9 9.9 3.2 8 0.8Z" fill="none" stroke="var(--crit)" stroke-width="1"/><circle cx="11.5" cy="11.5" r="4.1" fill="var(--crit)" stroke="var(--tb-bg)" stroke-width="1.2"/><rect x="11" y="9" width="1" height="3" fill="var(--on-badge)"/><rect x="11" y="13" width="1" height="1" fill="var(--on-badge)"/></svg></span>
+    <span class="glyph">&#xE701;</span><span class="glyph">&#xE995;</span>
+    <div class="clock">15:08<br>2026-10-06</div>
+    <span class="glyph small">&#xEA8F;</span>
+  </div>
+</div>
+</section>
+<section class="sc"><h2><span class="n">4</span>Stale data</h2><p class="note">Last good reading 47 min ago. The readout stops claiming “Lasts ✓”: the age comes first, the last-known verdicts are secondary grey with no badges, and there is no state colour. The reason is the fact: <b>offline</b>, or <b>sign in</b> when the token expired (the click then opens sign-in).</p>
+<div class="sub">Offline</div>
+<div class="taskbar light">
+  <div class="apps"><div class="app"><i></i></div><div class="app"><i></i></div><div class="app"><i></i></div><div class="app"><i></i></div><div class="app"><i></i></div></div>
+  <div class="tray">
+    <div class="readout" role="img" aria-label="Claude: data is 47 minutes old, offline. Last known: 5-hour lasts, weekly lasts." data-m="s4"><div class="rw stale"><span class="sl1"><span class="bd old" aria-hidden="true"><i>&#xE81C;</i></span><b>47 min old</b><span class="why">· offline</span></span><span class="sl2">5h Lasts · 7d Lasts</span></div></div>
+    <span class="glyph small">&#xE70E;</span>
+    <span class="ld-icon"><svg class="ldi" width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><defs><clipPath id="dc7"><path d="M8 0.8C6.1 3.2 2.5 6.9 2.5 10a5.5 5.5 0 0 0 11 0C13.5 6.9 9.9 3.2 8 0.8Z"/></clipPath></defs><rect x="0" y="10.44" width="16" height="8" fill="var(--tb-fg2)" clip-path="url(#dc7)"/><path d="M8 0.8C6.1 3.2 2.5 6.9 2.5 10a5.5 5.5 0 0 0 11 0C13.5 6.9 9.9 3.2 8 0.8Z" fill="none" stroke="var(--tb-fg2)" stroke-width="1"/><circle cx="11.5" cy="11.5" r="4" fill="var(--tb-bg)" stroke="var(--tb-fg)" stroke-width="1"/><path d="M11.5 9.5v2.5h2" fill="none" stroke="var(--tb-fg)" stroke-width="1"/></svg></span>
+    <span class="glyph">&#xE701;</span><span class="glyph">&#xE995;</span>
+    <div class="clock">12:42<br>2026-10-06</div>
+    <span class="glyph small">&#xEA8F;</span>
+  </div>
+</div>
+<div class="taskbar dark">
+  <div class="apps"><div class="app"><i></i></div><div class="app"><i></i></div><div class="app"><i></i></div><div class="app"><i></i></div><div class="app"><i></i></div></div>
+  <div class="tray">
+    <div class="readout" role="img" aria-label="Claude: data is 47 minutes old, offline. Last known: 5-hour lasts, weekly lasts."><div class="rw stale"><span class="sl1"><span class="bd old" aria-hidden="true"><i>&#xE81C;</i></span><b>47 min old</b><span class="why">· offline</span></span><span class="sl2">5h Lasts · 7d Lasts</span></div></div>
+    <span class="glyph small">&#xE70E;</span>
+    <span class="ld-icon"><svg class="ldi" width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><defs><clipPath id="dc8"><path d="M8 0.8C6.1 3.2 2.5 6.9 2.5 10a5.5 5.5 0 0 0 11 0C13.5 6.9 9.9 3.2 8 0.8Z"/></clipPath></defs><rect x="0" y="10.44" width="16" height="8" fill="var(--tb-fg2)" clip-path="url(#dc8)"/><path d="M8 0.8C6.1 3.2 2.5 6.9 2.5 10a5.5 5.5 0 0 0 11 0C13.5 6.9 9.9 3.2 8 0.8Z" fill="none" stroke="var(--tb-fg2)" stroke-width="1"/><circle cx="11.5" cy="11.5" r="4" fill="var(--tb-bg)" stroke="var(--tb-fg)" stroke-width="1"/><path d="M11.5 9.5v2.5h2" fill="none" stroke="var(--tb-fg)" stroke-width="1"/></svg></span>
+    <span class="glyph">&#xE701;</span><span class="glyph">&#xE995;</span>
+    <div class="clock">12:42<br>2026-10-06</div>
+    <span class="glyph small">&#xEA8F;</span>
+  </div>
+</div>
+<div class="sub">Sign-in expired</div>
+<div class="taskbar light">
+  <div class="apps"><div class="app"><i></i></div><div class="app"><i></i></div><div class="app"><i></i></div><div class="app"><i></i></div><div class="app"><i></i></div></div>
+  <div class="tray">
+    <div class="readout" role="img" aria-label="Claude: data is 47 minutes old, sign-in expired. Last known: 5-hour lasts, weekly lasts. Activate to sign in." data-m="s4b"><div class="rw stale"><span class="sl1"><span class="bd old" aria-hidden="true"><i>&#xE81C;</i></span><b>47 min old</b><span class="why">· sign in</span></span><span class="sl2">5h Lasts · 7d Lasts</span></div></div>
+    <span class="glyph small">&#xE70E;</span>
+    <span class="ld-icon"><svg class="ldi" width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><defs><clipPath id="dc9"><path d="M8 0.8C6.1 3.2 2.5 6.9 2.5 10a5.5 5.5 0 0 0 11 0C13.5 6.9 9.9 3.2 8 0.8Z"/></clipPath></defs><rect x="0" y="10.44" width="16" height="8" fill="var(--tb-fg2)" clip-path="url(#dc9)"/><path d="M8 0.8C6.1 3.2 2.5 6.9 2.5 10a5.5 5.5 0 0 0 11 0C13.5 6.9 9.9 3.2 8 0.8Z" fill="none" stroke="var(--tb-fg2)" stroke-width="1"/><circle cx="11.5" cy="11.5" r="4" fill="var(--tb-bg)" stroke="var(--tb-fg)" stroke-width="1"/><path d="M11.5 9.5v2.5h2" fill="none" stroke="var(--tb-fg)" stroke-width="1"/></svg></span>
+    <span class="glyph">&#xE701;</span><span class="glyph">&#xE995;</span>
+    <div class="clock">12:42<br>2026-10-06</div>
+    <span class="glyph small">&#xEA8F;</span>
+  </div>
+</div>
+<div class="taskbar dark">
+  <div class="apps"><div class="app"><i></i></div><div class="app"><i></i></div><div class="app"><i></i></div><div class="app"><i></i></div><div class="app"><i></i></div></div>
+  <div class="tray">
+    <div class="readout" role="img" aria-label="Claude: data is 47 minutes old, sign-in expired. Last known: 5-hour lasts, weekly lasts. Activate to sign in."><div class="rw stale"><span class="sl1"><span class="bd old" aria-hidden="true"><i>&#xE81C;</i></span><b>47 min old</b><span class="why">· sign in</span></span><span class="sl2">5h Lasts · 7d Lasts</span></div></div>
+    <span class="glyph small">&#xE70E;</span>
+    <span class="ld-icon"><svg class="ldi" width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><defs><clipPath id="dc10"><path d="M8 0.8C6.1 3.2 2.5 6.9 2.5 10a5.5 5.5 0 0 0 11 0C13.5 6.9 9.9 3.2 8 0.8Z"/></clipPath></defs><rect x="0" y="10.44" width="16" height="8" fill="var(--tb-fg2)" clip-path="url(#dc10)"/><path d="M8 0.8C6.1 3.2 2.5 6.9 2.5 10a5.5 5.5 0 0 0 11 0C13.5 6.9 9.9 3.2 8 0.8Z" fill="none" stroke="var(--tb-fg2)" stroke-width="1"/><circle cx="11.5" cy="11.5" r="4" fill="var(--tb-bg)" stroke="var(--tb-fg)" stroke-width="1"/><path d="M11.5 9.5v2.5h2" fill="none" stroke="var(--tb-fg)" stroke-width="1"/></svg></span>
+    <span class="glyph">&#xE701;</span><span class="glyph">&#xE995;</span>
+    <div class="clock">12:42<br>2026-10-06</div>
+    <span class="glyph small">&#xEA8F;</span>
+  </div>
+</div>
+</section>
+<section class="sc"><h2><span class="n">5</span>Two services pinned</h2><p class="note">Rows are pinned meters, not services: the service name joins the window label. Claude 5-hour as in 1; Codex weekly 5 % used at 30 %.</p>
+<div class="taskbar light">
+  <div class="apps"><div class="app"><i></i></div><div class="app"><i></i></div><div class="app"><i></i></div><div class="app"><i></i></div><div class="app"><i></i></div></div>
+  <div class="tray">
+    <div class="readout" role="img" aria-label="Claude 5-hour lasts, 58 percent left. Codex weekly lasts, 95 percent left." data-m="s5"><div class="rw"><span class="w">Claude 5h</span><span class="bd ok" aria-hidden="true"><i>&#xF136;</i><i>&#xF13E;</i></span><span class="v">Lasts</span><span class="s">58% left</span><span class="w">Codex 7d</span><span class="bd ok" aria-hidden="true"><i>&#xF136;</i><i>&#xF13E;</i></span><span class="v">Lasts</span><span class="s">95% left</span></div></div>
+    <span class="glyph small">&#xE70E;</span>
+    <span class="ld-icon"><svg class="ldi" width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><defs><clipPath id="dc11"><path d="M8 0.8C6.1 3.2 2.5 6.9 2.5 10a5.5 5.5 0 0 0 11 0C13.5 6.9 9.9 3.2 8 0.8Z"/></clipPath></defs><rect x="0" y="10.44" width="16" height="8" fill="var(--tb-fg)" clip-path="url(#dc11)"/><path d="M8 0.8C6.1 3.2 2.5 6.9 2.5 10a5.5 5.5 0 0 0 11 0C13.5 6.9 9.9 3.2 8 0.8Z" fill="none" stroke="var(--tb-fg)" stroke-width="1"/></svg></span>
+    <span class="glyph">&#xE701;</span><span class="glyph">&#xE995;</span>
+    <div class="clock">12:42<br>2026-10-06</div>
+    <span class="glyph small">&#xEA8F;</span>
+  </div>
+</div>
+<div class="taskbar dark">
+  <div class="apps"><div class="app"><i></i></div><div class="app"><i></i></div><div class="app"><i></i></div><div class="app"><i></i></div><div class="app"><i></i></div></div>
+  <div class="tray">
+    <div class="readout" role="img" aria-label="Claude 5-hour lasts, 58 percent left. Codex weekly lasts, 95 percent left."><div class="rw"><span class="w">Claude 5h</span><span class="bd ok" aria-hidden="true"><i>&#xF136;</i><i>&#xF13E;</i></span><span class="v">Lasts</span><span class="s">58% left</span><span class="w">Codex 7d</span><span class="bd ok" aria-hidden="true"><i>&#xF136;</i><i>&#xF13E;</i></span><span class="v">Lasts</span><span class="s">95% left</span></div></div>
+    <span class="glyph small">&#xE70E;</span>
+    <span class="ld-icon"><svg class="ldi" width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><defs><clipPath id="dc12"><path d="M8 0.8C6.1 3.2 2.5 6.9 2.5 10a5.5 5.5 0 0 0 11 0C13.5 6.9 9.9 3.2 8 0.8Z"/></clipPath></defs><rect x="0" y="10.44" width="16" height="8" fill="var(--tb-fg)" clip-path="url(#dc12)"/><path d="M8 0.8C6.1 3.2 2.5 6.9 2.5 10a5.5 5.5 0 0 0 11 0C13.5 6.9 9.9 3.2 8 0.8Z" fill="none" stroke="var(--tb-fg)" stroke-width="1"/></svg></span>
+    <span class="glyph">&#xE701;</span><span class="glyph">&#xE995;</span>
+    <div class="clock">12:42<br>2026-10-06</div>
+    <span class="glyph small">&#xEA8F;</span>
+  </div>
+</div>
+</section>
+<section class="sc tight"><h2><span class="n">6</span>Tight space · one row</h2><p class="note">Collapsed form: the single worst verdict. When everything lasts it is just “Lasts” (no label needed); otherwise the window that fails is named. The second window and the fact move to the hover card.</p>
+<div class="taskbar light">
+  <div class="apps"><div class="app"><i></i></div><div class="app"><i></i></div><div class="app"><i></i></div><div class="app"><i></i></div><div class="app"><i></i></div></div>
+  <div class="tray">
+    <div class="readout" role="img" aria-label="All Claude windows last." data-m="t1"><div class="rw one"><span class="bd ok" aria-hidden="true"><i>&#xF136;</i><i>&#xF13E;</i></span><span class="v">Lasts</span></div></div>
+    <span class="glyph small">&#xE70E;</span>
+    <span class="ld-icon"><svg class="ldi" width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><defs><clipPath id="dc13"><path d="M8 0.8C6.1 3.2 2.5 6.9 2.5 10a5.5 5.5 0 0 0 11 0C13.5 6.9 9.9 3.2 8 0.8Z"/></clipPath></defs><rect x="0" y="10.44" width="16" height="8" fill="var(--tb-fg)" clip-path="url(#dc13)"/><path d="M8 0.8C6.1 3.2 2.5 6.9 2.5 10a5.5 5.5 0 0 0 11 0C13.5 6.9 9.9 3.2 8 0.8Z" fill="none" stroke="var(--tb-fg)" stroke-width="1"/></svg></span>
+    <span class="glyph">&#xE701;</span><span class="glyph">&#xE995;</span>
+    <div class="clock">12:42<br>2026-10-06</div>
+    <span class="glyph small">&#xEA8F;</span>
+  </div>
+</div>
+<div class="taskbar dark">
+  <div class="apps"><div class="app"><i></i></div><div class="app"><i></i></div><div class="app"><i></i></div><div class="app"><i></i></div><div class="app"><i></i></div></div>
+  <div class="tray">
+    <div class="readout" role="img" aria-label="All Claude windows last."><div class="rw one"><span class="bd ok" aria-hidden="true"><i>&#xF136;</i><i>&#xF13E;</i></span><span class="v">Lasts</span></div></div>
+    <span class="glyph small">&#xE70E;</span>
+    <span class="ld-icon"><svg class="ldi" width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><defs><clipPath id="dc14"><path d="M8 0.8C6.1 3.2 2.5 6.9 2.5 10a5.5 5.5 0 0 0 11 0C13.5 6.9 9.9 3.2 8 0.8Z"/></clipPath></defs><rect x="0" y="10.44" width="16" height="8" fill="var(--tb-fg)" clip-path="url(#dc14)"/><path d="M8 0.8C6.1 3.2 2.5 6.9 2.5 10a5.5 5.5 0 0 0 11 0C13.5 6.9 9.9 3.2 8 0.8Z" fill="none" stroke="var(--tb-fg)" stroke-width="1"/></svg></span>
+    <span class="glyph">&#xE701;</span><span class="glyph">&#xE995;</span>
+    <div class="clock">12:42<br>2026-10-06</div>
+    <span class="glyph small">&#xEA8F;</span>
+  </div>
+</div>
+<div class="taskbar light">
+  <div class="apps"><div class="app"><i></i></div><div class="app"><i></i></div><div class="app"><i></i></div><div class="app"><i></i></div><div class="app"><i></i></div></div>
+  <div class="tray">
+    <div class="readout" role="img" aria-label="Claude 5-hour runs out at 15:20." data-m="t2"><div class="rw one"><span class="w">5h</span><span class="bd warn" aria-hidden="true"><i>&#xF139;</i><i>&#xF13B;</i></span><span class="v hot">Out 15:20</span></div></div>
+    <span class="glyph small">&#xE70E;</span>
+    <span class="ld-icon"><svg class="ldi" width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><defs><clipPath id="dc15"><path d="M8 0.8C6.1 3.2 2.5 6.9 2.5 10a5.5 5.5 0 0 0 11 0C13.5 6.9 9.9 3.2 8 0.8Z"/></clipPath></defs><rect x="0" y="12.19" width="16" height="8" fill="var(--tb-fg)" clip-path="url(#dc15)"/><path d="M8 0.8C6.1 3.2 2.5 6.9 2.5 10a5.5 5.5 0 0 0 11 0C13.5 6.9 9.9 3.2 8 0.8Z" fill="none" stroke="var(--tb-fg)" stroke-width="1"/><path d="M11.5 7.2 15.6 15.4H7.4Z" fill="var(--warn)" stroke="var(--tb-bg)" stroke-width="1.2" stroke-linejoin="round"/><rect x="11" y="10" width="1" height="3" fill="var(--on-badge)"/><rect x="11" y="14" width="1" height="1" fill="var(--on-badge)"/></svg></span>
+    <span class="glyph">&#xE701;</span><span class="glyph">&#xE995;</span>
+    <div class="clock">13:45<br>2026-10-06</div>
+    <span class="glyph small">&#xEA8F;</span>
+  </div>
+</div>
+<div class="taskbar dark">
+  <div class="apps"><div class="app"><i></i></div><div class="app"><i></i></div><div class="app"><i></i></div><div class="app"><i></i></div><div class="app"><i></i></div></div>
+  <div class="tray">
+    <div class="readout" role="img" aria-label="Claude 5-hour runs out at 15:20."><div class="rw one"><span class="w">5h</span><span class="bd warn" aria-hidden="true"><i>&#xF139;</i><i>&#xF13B;</i></span><span class="v hot">Out 15:20</span></div></div>
+    <span class="glyph small">&#xE70E;</span>
+    <span class="ld-icon"><svg class="ldi" width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><defs><clipPath id="dc16"><path d="M8 0.8C6.1 3.2 2.5 6.9 2.5 10a5.5 5.5 0 0 0 11 0C13.5 6.9 9.9 3.2 8 0.8Z"/></clipPath></defs><rect x="0" y="12.19" width="16" height="8" fill="var(--tb-fg)" clip-path="url(#dc16)"/><path d="M8 0.8C6.1 3.2 2.5 6.9 2.5 10a5.5 5.5 0 0 0 11 0C13.5 6.9 9.9 3.2 8 0.8Z" fill="none" stroke="var(--tb-fg)" stroke-width="1"/><path d="M11.5 7.2 15.6 15.4H7.4Z" fill="var(--warn)" stroke="var(--tb-bg)" stroke-width="1.2" stroke-linejoin="round"/><rect x="11" y="10" width="1" height="3" fill="var(--on-badge)"/><rect x="11" y="14" width="1" height="1" fill="var(--on-badge)"/></svg></span>
+    <span class="glyph">&#xE701;</span><span class="glyph">&#xE995;</span>
+    <div class="clock">13:45<br>2026-10-06</div>
+    <span class="glyph small">&#xEA8F;</span>
+  </div>
+</div>
+<div class="taskbar light">
+  <div class="apps"><div class="app"><i></i></div><div class="app"><i></i></div><div class="app"><i></i></div><div class="app"><i></i></div><div class="app"><i></i></div></div>
+  <div class="tray">
+    <div class="readout" role="img" aria-label="Claude 5-hour has 12 minutes left." data-m="t3"><div class="rw one"><span class="w">5h</span><span class="bd crit" aria-hidden="true"><i>&#xF136;</i><i>&#xF13C;</i></span><span class="v hot crit">12 min left</span></div></div>
+    <span class="glyph small">&#xE70E;</span>
+    <span class="ld-icon"><svg class="ldi" width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><defs><clipPath id="dc17"><path d="M8 0.8C6.1 3.2 2.5 6.9 2.5 10a5.5 5.5 0 0 0 11 0C13.5 6.9 9.9 3.2 8 0.8Z"/></clipPath></defs><rect x="0" y="14.16" width="16" height="8" fill="var(--crit)" clip-path="url(#dc17)"/><path d="M8 0.8C6.1 3.2 2.5 6.9 2.5 10a5.5 5.5 0 0 0 11 0C13.5 6.9 9.9 3.2 8 0.8Z" fill="none" stroke="var(--crit)" stroke-width="1"/><circle cx="11.5" cy="11.5" r="4.1" fill="var(--crit)" stroke="var(--tb-bg)" stroke-width="1.2"/><rect x="11" y="9" width="1" height="3" fill="var(--on-badge)"/><rect x="11" y="13" width="1" height="1" fill="var(--on-badge)"/></svg></span>
+    <span class="glyph">&#xE701;</span><span class="glyph">&#xE995;</span>
+    <div class="clock">15:08<br>2026-10-06</div>
+    <span class="glyph small">&#xEA8F;</span>
+  </div>
+</div>
+<div class="taskbar dark">
+  <div class="apps"><div class="app"><i></i></div><div class="app"><i></i></div><div class="app"><i></i></div><div class="app"><i></i></div><div class="app"><i></i></div></div>
+  <div class="tray">
+    <div class="readout" role="img" aria-label="Claude 5-hour has 12 minutes left."><div class="rw one"><span class="w">5h</span><span class="bd crit" aria-hidden="true"><i>&#xF136;</i><i>&#xF13C;</i></span><span class="v hot crit">12 min left</span></div></div>
+    <span class="glyph small">&#xE70E;</span>
+    <span class="ld-icon"><svg class="ldi" width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><defs><clipPath id="dc18"><path d="M8 0.8C6.1 3.2 2.5 6.9 2.5 10a5.5 5.5 0 0 0 11 0C13.5 6.9 9.9 3.2 8 0.8Z"/></clipPath></defs><rect x="0" y="14.16" width="16" height="8" fill="var(--crit)" clip-path="url(#dc18)"/><path d="M8 0.8C6.1 3.2 2.5 6.9 2.5 10a5.5 5.5 0 0 0 11 0C13.5 6.9 9.9 3.2 8 0.8Z" fill="none" stroke="var(--crit)" stroke-width="1"/><circle cx="11.5" cy="11.5" r="4.1" fill="var(--crit)" stroke="var(--tb-bg)" stroke-width="1.2"/><rect x="11" y="9" width="1" height="3" fill="var(--on-badge)"/><rect x="11" y="13" width="1" height="1" fill="var(--on-badge)"/></svg></span>
+    <span class="glyph">&#xE701;</span><span class="glyph">&#xE995;</span>
+    <div class="clock">15:08<br>2026-10-06</div>
+    <span class="glyph small">&#xEA8F;</span>
+  </div>
+</div>
+<div class="taskbar light">
+  <div class="apps"><div class="app"><i></i></div><div class="app"><i></i></div><div class="app"><i></i></div><div class="app"><i></i></div><div class="app"><i></i></div></div>
+  <div class="tray">
+    <div class="readout" role="img" aria-label="Claude data is 47 minutes old." data-m="t4"><div class="rw one"><span class="bd old" aria-hidden="true"><i>&#xE81C;</i></span><span class="v hot">47 min old</span></div></div>
+    <span class="glyph small">&#xE70E;</span>
+    <span class="ld-icon"><svg class="ldi" width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><defs><clipPath id="dc19"><path d="M8 0.8C6.1 3.2 2.5 6.9 2.5 10a5.5 5.5 0 0 0 11 0C13.5 6.9 9.9 3.2 8 0.8Z"/></clipPath></defs><rect x="0" y="10.44" width="16" height="8" fill="var(--tb-fg2)" clip-path="url(#dc19)"/><path d="M8 0.8C6.1 3.2 2.5 6.9 2.5 10a5.5 5.5 0 0 0 11 0C13.5 6.9 9.9 3.2 8 0.8Z" fill="none" stroke="var(--tb-fg2)" stroke-width="1"/><circle cx="11.5" cy="11.5" r="4" fill="var(--tb-bg)" stroke="var(--tb-fg)" stroke-width="1"/><path d="M11.5 9.5v2.5h2" fill="none" stroke="var(--tb-fg)" stroke-width="1"/></svg></span>
+    <span class="glyph">&#xE701;</span><span class="glyph">&#xE995;</span>
+    <div class="clock">12:42<br>2026-10-06</div>
+    <span class="glyph small">&#xEA8F;</span>
+  </div>
+</div>
+<div class="taskbar dark">
+  <div class="apps"><div class="app"><i></i></div><div class="app"><i></i></div><div class="app"><i></i></div><div class="app"><i></i></div><div class="app"><i></i></div></div>
+  <div class="tray">
+    <div class="readout" role="img" aria-label="Claude data is 47 minutes old."><div class="rw one"><span class="bd old" aria-hidden="true"><i>&#xE81C;</i></span><span class="v hot">47 min old</span></div></div>
+    <span class="glyph small">&#xE70E;</span>
+    <span class="ld-icon"><svg class="ldi" width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><defs><clipPath id="dc20"><path d="M8 0.8C6.1 3.2 2.5 6.9 2.5 10a5.5 5.5 0 0 0 11 0C13.5 6.9 9.9 3.2 8 0.8Z"/></clipPath></defs><rect x="0" y="10.44" width="16" height="8" fill="var(--tb-fg2)" clip-path="url(#dc20)"/><path d="M8 0.8C6.1 3.2 2.5 6.9 2.5 10a5.5 5.5 0 0 0 11 0C13.5 6.9 9.9 3.2 8 0.8Z" fill="none" stroke="var(--tb-fg2)" stroke-width="1"/><circle cx="11.5" cy="11.5" r="4" fill="var(--tb-bg)" stroke="var(--tb-fg)" stroke-width="1"/><path d="M11.5 9.5v2.5h2" fill="none" stroke="var(--tb-fg)" stroke-width="1"/></svg></span>
+    <span class="glyph">&#xE701;</span><span class="glyph">&#xE995;</span>
+    <div class="clock">12:42<br>2026-10-06</div>
+    <span class="glyph small">&#xEA8F;</span>
+  </div>
+</div>
+</section>
+<section class="sc"><h2><span class="n">7</span>Hover card</h2><p class="note">Windows 11 tooltip surface (8 px radius, 1 px stroke, flyout shadow, solid #F9F9F9 / #2C2C2C), anchored above the readout. Each window shows its verdict, its reset, and a runway bar that counts in the readout’s unit: the fill is quota <b>left</b> and the tick is time <b>left</b>, so a fill that passes the tick means you make it. Under the bar, one pace sentence and one forecast. Scenario 1 comes first, then scenario 2.</p>
+<div class="hoverstage" style="padding-top:391px"><div class="taskbar light">
+  <div class="apps"><div class="app"><i></i></div><div class="app"><i></i></div><div class="app"><i></i></div><div class="app"><i></i></div><div class="app"><i></i></div></div>
+  <div class="tray">
+    <div class="readout is-hover" role="img" aria-label="Claude: 5-hour window lasts, 58 percent left. Weekly lasts, 39 percent left."><div class="rw"><span class="w">5h</span><span class="bd ok" aria-hidden="true"><i>&#xF136;</i><i>&#xF13E;</i></span><span class="v">Lasts</span><span class="s">58% left</span><span class="w">7d</span><span class="bd ok" aria-hidden="true"><i>&#xF136;</i><i>&#xF13E;</i></span><span class="v">Lasts</span><span class="s">39% left</span></div><div class="card" role="tooltip"><div class="ch"><span class="prov">Claude</span><span class="plan">Max plan</span><span class="age">Updated 1 min ago</span></div><div class="m"><div class="mh"><span class="bd ok" aria-hidden="true"><i>&#xF136;</i><i>&#xF13E;</i></span><span class="mt">5-hour session</span><span class="mv">Lasts</span></div><div class="ml">Resets <b>14:56</b> (in 2&nbsp;h&nbsp;14&nbsp;min)</div><div class="pace" aria-hidden="true"><div class="trk"><div class="use ok" style="width:58%"></div></div><div class="now" style="left:46%"></div></div><div class="legend"><span><i class="k use ok"></i><b>58% left</b></span><span><i class="k tick"></i>46% of time left</span></div><p class="mp"><b>Slower than time passes.</b> At this pace about <b>22%</b> is still left at the reset.</p></div><div class="m"><div class="mh"><span class="bd ok" aria-hidden="true"><i>&#xF136;</i><i>&#xF13E;</i></span><span class="mt">Weekly · all models</span><span class="mv">Lasts</span></div><div class="ml">Resets <b>Thu 09:00</b></div><div class="pace" aria-hidden="true"><div class="trk"><div class="use ok" style="width:39%"></div></div><div class="now" style="left:30%"></div></div><div class="legend"><span><i class="k use ok"></i><b>39% left</b></span><span><i class="k tick"></i>30% of time left</span></div><p class="mp"><b>Slower than time passes.</b> At this pace about <b>13%</b> is still left on Thursday.</p></div><div class="cf">Checks every 2 min · click for history</div></div></div>
+    <span class="glyph small">&#xE70E;</span>
+    <span class="ld-icon"><svg class="ldi" width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><defs><clipPath id="dc21"><path d="M8 0.8C6.1 3.2 2.5 6.9 2.5 10a5.5 5.5 0 0 0 11 0C13.5 6.9 9.9 3.2 8 0.8Z"/></clipPath></defs><rect x="0" y="10.44" width="16" height="8" fill="var(--tb-fg)" clip-path="url(#dc21)"/><path d="M8 0.8C6.1 3.2 2.5 6.9 2.5 10a5.5 5.5 0 0 0 11 0C13.5 6.9 9.9 3.2 8 0.8Z" fill="none" stroke="var(--tb-fg)" stroke-width="1"/></svg></span>
+    <span class="glyph">&#xE701;</span><span class="glyph">&#xE995;</span>
+    <div class="clock">12:42<br>2026-10-06</div>
+    <span class="glyph small">&#xEA8F;</span>
+  </div>
+</div></div>
+<div class="hoverstage" style="padding-top:391px"><div class="taskbar dark">
+  <div class="apps"><div class="app"><i></i></div><div class="app"><i></i></div><div class="app"><i></i></div><div class="app"><i></i></div><div class="app"><i></i></div></div>
+  <div class="tray">
+    <div class="readout is-hover" role="img" aria-label="Claude: 5-hour window lasts, 58 percent left. Weekly lasts, 39 percent left."><div class="rw"><span class="w">5h</span><span class="bd ok" aria-hidden="true"><i>&#xF136;</i><i>&#xF13E;</i></span><span class="v">Lasts</span><span class="s">58% left</span><span class="w">7d</span><span class="bd ok" aria-hidden="true"><i>&#xF136;</i><i>&#xF13E;</i></span><span class="v">Lasts</span><span class="s">39% left</span></div><div class="card" role="tooltip"><div class="ch"><span class="prov">Claude</span><span class="plan">Max plan</span><span class="age">Updated 1 min ago</span></div><div class="m"><div class="mh"><span class="bd ok" aria-hidden="true"><i>&#xF136;</i><i>&#xF13E;</i></span><span class="mt">5-hour session</span><span class="mv">Lasts</span></div><div class="ml">Resets <b>14:56</b> (in 2&nbsp;h&nbsp;14&nbsp;min)</div><div class="pace" aria-hidden="true"><div class="trk"><div class="use ok" style="width:58%"></div></div><div class="now" style="left:46%"></div></div><div class="legend"><span><i class="k use ok"></i><b>58% left</b></span><span><i class="k tick"></i>46% of time left</span></div><p class="mp"><b>Slower than time passes.</b> At this pace about <b>22%</b> is still left at the reset.</p></div><div class="m"><div class="mh"><span class="bd ok" aria-hidden="true"><i>&#xF136;</i><i>&#xF13E;</i></span><span class="mt">Weekly · all models</span><span class="mv">Lasts</span></div><div class="ml">Resets <b>Thu 09:00</b></div><div class="pace" aria-hidden="true"><div class="trk"><div class="use ok" style="width:39%"></div></div><div class="now" style="left:30%"></div></div><div class="legend"><span><i class="k use ok"></i><b>39% left</b></span><span><i class="k tick"></i>30% of time left</span></div><p class="mp"><b>Slower than time passes.</b> At this pace about <b>13%</b> is still left on Thursday.</p></div><div class="cf">Checks every 2 min · click for history</div></div></div>
+    <span class="glyph small">&#xE70E;</span>
+    <span class="ld-icon"><svg class="ldi" width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><defs><clipPath id="dc22"><path d="M8 0.8C6.1 3.2 2.5 6.9 2.5 10a5.5 5.5 0 0 0 11 0C13.5 6.9 9.9 3.2 8 0.8Z"/></clipPath></defs><rect x="0" y="10.44" width="16" height="8" fill="var(--tb-fg)" clip-path="url(#dc22)"/><path d="M8 0.8C6.1 3.2 2.5 6.9 2.5 10a5.5 5.5 0 0 0 11 0C13.5 6.9 9.9 3.2 8 0.8Z" fill="none" stroke="var(--tb-fg)" stroke-width="1"/></svg></span>
+    <span class="glyph">&#xE701;</span><span class="glyph">&#xE995;</span>
+    <div class="clock">12:42<br>2026-10-06</div>
+    <span class="glyph small">&#xEA8F;</span>
+  </div>
+</div></div>
+<div class="hoverstage" style="padding-top:407px"><div class="taskbar light">
+  <div class="apps"><div class="app"><i></i></div><div class="app"><i></i></div><div class="app"><i></i></div><div class="app"><i></i></div><div class="app"><i></i></div></div>
+  <div class="tray">
+    <div class="readout is-hover" role="img" aria-label="Claude: 5-hour window runs out at 15:20, back at 16:30. Weekly lasts, 39 percent left."><div class="rw"><span class="w">5h</span><span class="bd warn" aria-hidden="true"><i>&#xF139;</i><i>&#xF13B;</i></span><span class="v hot">Out 15:20</span><span class="s">back 16:30</span><span class="w">7d</span><span class="bd ok" aria-hidden="true"><i>&#xF136;</i><i>&#xF13E;</i></span><span class="v">Lasts</span><span class="s">39% left</span></div><div class="card" role="tooltip"><div class="ch"><span class="prov">Claude</span><span class="plan">Max plan</span><span class="age">Updated 1 min ago</span></div><div class="m"><div class="mh"><span class="bd warn" aria-hidden="true"><i>&#xF139;</i><i>&#xF13B;</i></span><span class="mt">5-hour session</span><span class="mv">Out ≈&nbsp;15:20</span></div><div class="ml">Resets <b>16:30</b> (in 2&nbsp;h&nbsp;45&nbsp;min)</div><div class="pace" aria-hidden="true"><div class="trk"><div class="use warn" style="width:22%"></div></div><div class="now" style="left:55%"></div></div><div class="legend"><span><i class="k use warn"></i><b>22% left</b></span><span><i class="k tick"></i>55% of time left</span></div><p class="mp"><b>Faster than time passes.</b> At the last hour’s rate (14%/h) it runs out at <b>15:20</b>, 1&nbsp;h&nbsp;10&nbsp;min before the reset. Stay under <b>8%/h</b> to&nbsp;make&nbsp;it.</p></div><div class="m"><div class="mh"><span class="bd ok" aria-hidden="true"><i>&#xF136;</i><i>&#xF13E;</i></span><span class="mt">Weekly · all models</span><span class="mv">Lasts</span></div><div class="ml">Resets <b>Thu 09:00</b></div><div class="pace" aria-hidden="true"><div class="trk"><div class="use ok" style="width:39%"></div></div><div class="now" style="left:30%"></div></div><div class="legend"><span><i class="k use ok"></i><b>39% left</b></span><span><i class="k tick"></i>30% of time left</span></div><p class="mp"><b>Slower than time passes.</b> At this pace about <b>13%</b> is still left on Thursday.</p></div><div class="cf">Checks every 2 min · click for history</div></div></div>
+    <span class="glyph small">&#xE70E;</span>
+    <span class="ld-icon"><svg class="ldi" width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><defs><clipPath id="dc23"><path d="M8 0.8C6.1 3.2 2.5 6.9 2.5 10a5.5 5.5 0 0 0 11 0C13.5 6.9 9.9 3.2 8 0.8Z"/></clipPath></defs><rect x="0" y="12.19" width="16" height="8" fill="var(--tb-fg)" clip-path="url(#dc23)"/><path d="M8 0.8C6.1 3.2 2.5 6.9 2.5 10a5.5 5.5 0 0 0 11 0C13.5 6.9 9.9 3.2 8 0.8Z" fill="none" stroke="var(--tb-fg)" stroke-width="1"/><path d="M11.5 7.2 15.6 15.4H7.4Z" fill="var(--warn)" stroke="var(--tb-bg)" stroke-width="1.2" stroke-linejoin="round"/><rect x="11" y="10" width="1" height="3" fill="var(--on-badge)"/><rect x="11" y="14" width="1" height="1" fill="var(--on-badge)"/></svg></span>
+    <span class="glyph">&#xE701;</span><span class="glyph">&#xE995;</span>
+    <div class="clock">13:45<br>2026-10-06</div>
+    <span class="glyph small">&#xEA8F;</span>
+  </div>
+</div></div>
+<div class="hoverstage" style="padding-top:407px"><div class="taskbar dark">
+  <div class="apps"><div class="app"><i></i></div><div class="app"><i></i></div><div class="app"><i></i></div><div class="app"><i></i></div><div class="app"><i></i></div></div>
+  <div class="tray">
+    <div class="readout is-hover" role="img" aria-label="Claude: 5-hour window runs out at 15:20, back at 16:30. Weekly lasts, 39 percent left."><div class="rw"><span class="w">5h</span><span class="bd warn" aria-hidden="true"><i>&#xF139;</i><i>&#xF13B;</i></span><span class="v hot">Out 15:20</span><span class="s">back 16:30</span><span class="w">7d</span><span class="bd ok" aria-hidden="true"><i>&#xF136;</i><i>&#xF13E;</i></span><span class="v">Lasts</span><span class="s">39% left</span></div><div class="card" role="tooltip"><div class="ch"><span class="prov">Claude</span><span class="plan">Max plan</span><span class="age">Updated 1 min ago</span></div><div class="m"><div class="mh"><span class="bd warn" aria-hidden="true"><i>&#xF139;</i><i>&#xF13B;</i></span><span class="mt">5-hour session</span><span class="mv">Out ≈&nbsp;15:20</span></div><div class="ml">Resets <b>16:30</b> (in 2&nbsp;h&nbsp;45&nbsp;min)</div><div class="pace" aria-hidden="true"><div class="trk"><div class="use warn" style="width:22%"></div></div><div class="now" style="left:55%"></div></div><div class="legend"><span><i class="k use warn"></i><b>22% left</b></span><span><i class="k tick"></i>55% of time left</span></div><p class="mp"><b>Faster than time passes.</b> At the last hour’s rate (14%/h) it runs out at <b>15:20</b>, 1&nbsp;h&nbsp;10&nbsp;min before the reset. Stay under <b>8%/h</b> to&nbsp;make&nbsp;it.</p></div><div class="m"><div class="mh"><span class="bd ok" aria-hidden="true"><i>&#xF136;</i><i>&#xF13E;</i></span><span class="mt">Weekly · all models</span><span class="mv">Lasts</span></div><div class="ml">Resets <b>Thu 09:00</b></div><div class="pace" aria-hidden="true"><div class="trk"><div class="use ok" style="width:39%"></div></div><div class="now" style="left:30%"></div></div><div class="legend"><span><i class="k use ok"></i><b>39% left</b></span><span><i class="k tick"></i>30% of time left</span></div><p class="mp"><b>Slower than time passes.</b> At this pace about <b>13%</b> is still left on Thursday.</p></div><div class="cf">Checks every 2 min · click for history</div></div></div>
+    <span class="glyph small">&#xE70E;</span>
+    <span class="ld-icon"><svg class="ldi" width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><defs><clipPath id="dc24"><path d="M8 0.8C6.1 3.2 2.5 6.9 2.5 10a5.5 5.5 0 0 0 11 0C13.5 6.9 9.9 3.2 8 0.8Z"/></clipPath></defs><rect x="0" y="12.19" width="16" height="8" fill="var(--tb-fg)" clip-path="url(#dc24)"/><path d="M8 0.8C6.1 3.2 2.5 6.9 2.5 10a5.5 5.5 0 0 0 11 0C13.5 6.9 9.9 3.2 8 0.8Z" fill="none" stroke="var(--tb-fg)" stroke-width="1"/><path d="M11.5 7.2 15.6 15.4H7.4Z" fill="var(--warn)" stroke="var(--tb-bg)" stroke-width="1.2" stroke-linejoin="round"/><rect x="11" y="10" width="1" height="3" fill="var(--on-badge)"/><rect x="11" y="14" width="1" height="1" fill="var(--on-badge)"/></svg></span>
+    <span class="glyph">&#xE701;</span><span class="glyph">&#xE995;</span>
+    <div class="clock">13:45<br>2026-10-06</div>
+    <span class="glyph small">&#xEA8F;</span>
+  </div>
+</div></div>
+</section>
+<section class="sc"><h2><span class="n">8</span>Tray icon · 16 × 16</h2><p class="note">A drop that drains: the fill is area-true (39 % of the drop’s area, not its height), so “how much is left” is honest even at 16 px. It always shows the tightest window. Colour sits only in the badge, as in the readout, except in critical, which also colours the outline. In-place versions also sit in every taskbar above.</p>
+<div class="icongrid"><div class="ih"></div><div class="ih">Light · 16 px in tray</div><div class="ih">Dark · 16 px in tray</div><div class="ih">4× light</div><div class="ih">4× dark</div><div class="ih">Reads as</div>
+<div class="iname">Normal</div><div><div class="taskbar light strip"><div class="tray"><span class="glyph small">&#xE70E;</span><span class="ld-icon"><svg class="ldi" width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><defs><clipPath id="dc25"><path d="M8 0.8C6.1 3.2 2.5 6.9 2.5 10a5.5 5.5 0 0 0 11 0C13.5 6.9 9.9 3.2 8 0.8Z"/></clipPath></defs><rect x="0" y="10.44" width="16" height="8" fill="var(--tb-fg)" clip-path="url(#dc25)"/><path d="M8 0.8C6.1 3.2 2.5 6.9 2.5 10a5.5 5.5 0 0 0 11 0C13.5 6.9 9.9 3.2 8 0.8Z" fill="none" stroke="var(--tb-fg)" stroke-width="1"/></svg></span><span class="glyph">&#xE701;</span><span class="glyph">&#xE995;</span></div></div></div><div><div class="taskbar dark strip"><div class="tray"><span class="glyph small">&#xE70E;</span><span class="ld-icon"><svg class="ldi" width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><defs><clipPath id="dc26"><path d="M8 0.8C6.1 3.2 2.5 6.9 2.5 10a5.5 5.5 0 0 0 11 0C13.5 6.9 9.9 3.2 8 0.8Z"/></clipPath></defs><rect x="0" y="10.44" width="16" height="8" fill="var(--tb-fg)" clip-path="url(#dc26)"/><path d="M8 0.8C6.1 3.2 2.5 6.9 2.5 10a5.5 5.5 0 0 0 11 0C13.5 6.9 9.9 3.2 8 0.8Z" fill="none" stroke="var(--tb-fg)" stroke-width="1"/></svg></span><span class="glyph">&#xE701;</span><span class="glyph">&#xE995;</span></div></div></div><div><div class="taskbar light zoomwrap"><div class="z4"><svg class="ldi" width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><defs><clipPath id="dc27"><path d="M8 0.8C6.1 3.2 2.5 6.9 2.5 10a5.5 5.5 0 0 0 11 0C13.5 6.9 9.9 3.2 8 0.8Z"/></clipPath></defs><rect x="0" y="10.44" width="16" height="8" fill="var(--tb-fg)" clip-path="url(#dc27)"/><path d="M8 0.8C6.1 3.2 2.5 6.9 2.5 10a5.5 5.5 0 0 0 11 0C13.5 6.9 9.9 3.2 8 0.8Z" fill="none" stroke="var(--tb-fg)" stroke-width="1"/></svg></div></div></div><div><div class="taskbar dark zoomwrap"><div class="z4"><svg class="ldi" width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><defs><clipPath id="dc28"><path d="M8 0.8C6.1 3.2 2.5 6.9 2.5 10a5.5 5.5 0 0 0 11 0C13.5 6.9 9.9 3.2 8 0.8Z"/></clipPath></defs><rect x="0" y="10.44" width="16" height="8" fill="var(--tb-fg)" clip-path="url(#dc28)"/><path d="M8 0.8C6.1 3.2 2.5 6.9 2.5 10a5.5 5.5 0 0 0 11 0C13.5 6.9 9.9 3.2 8 0.8Z" fill="none" stroke="var(--tb-fg)" stroke-width="1"/></svg></div></div></div><div class="idesc">Tightest window (weekly) at 39 % left. Monochrome like every other tray glyph: calm when fine.</div>
+<div class="iname">Warning</div><div><div class="taskbar light strip"><div class="tray"><span class="glyph small">&#xE70E;</span><span class="ld-icon"><svg class="ldi" width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><defs><clipPath id="dc29"><path d="M8 0.8C6.1 3.2 2.5 6.9 2.5 10a5.5 5.5 0 0 0 11 0C13.5 6.9 9.9 3.2 8 0.8Z"/></clipPath></defs><rect x="0" y="12.19" width="16" height="8" fill="var(--tb-fg)" clip-path="url(#dc29)"/><path d="M8 0.8C6.1 3.2 2.5 6.9 2.5 10a5.5 5.5 0 0 0 11 0C13.5 6.9 9.9 3.2 8 0.8Z" fill="none" stroke="var(--tb-fg)" stroke-width="1"/><path d="M11.5 7.2 15.6 15.4H7.4Z" fill="var(--warn)" stroke="var(--tb-bg)" stroke-width="1.2" stroke-linejoin="round"/><rect x="11" y="10" width="1" height="3" fill="var(--on-badge)"/><rect x="11" y="14" width="1" height="1" fill="var(--on-badge)"/></svg></span><span class="glyph">&#xE701;</span><span class="glyph">&#xE995;</span></div></div></div><div><div class="taskbar dark strip"><div class="tray"><span class="glyph small">&#xE70E;</span><span class="ld-icon"><svg class="ldi" width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><defs><clipPath id="dc30"><path d="M8 0.8C6.1 3.2 2.5 6.9 2.5 10a5.5 5.5 0 0 0 11 0C13.5 6.9 9.9 3.2 8 0.8Z"/></clipPath></defs><rect x="0" y="12.19" width="16" height="8" fill="var(--tb-fg)" clip-path="url(#dc30)"/><path d="M8 0.8C6.1 3.2 2.5 6.9 2.5 10a5.5 5.5 0 0 0 11 0C13.5 6.9 9.9 3.2 8 0.8Z" fill="none" stroke="var(--tb-fg)" stroke-width="1"/><path d="M11.5 7.2 15.6 15.4H7.4Z" fill="var(--warn)" stroke="var(--tb-bg)" stroke-width="1.2" stroke-linejoin="round"/><rect x="11" y="10" width="1" height="3" fill="var(--on-badge)"/><rect x="11" y="14" width="1" height="1" fill="var(--on-badge)"/></svg></span><span class="glyph">&#xE701;</span><span class="glyph">&#xE995;</span></div></div></div><div><div class="taskbar light zoomwrap"><div class="z4"><svg class="ldi" width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><defs><clipPath id="dc31"><path d="M8 0.8C6.1 3.2 2.5 6.9 2.5 10a5.5 5.5 0 0 0 11 0C13.5 6.9 9.9 3.2 8 0.8Z"/></clipPath></defs><rect x="0" y="12.19" width="16" height="8" fill="var(--tb-fg)" clip-path="url(#dc31)"/><path d="M8 0.8C6.1 3.2 2.5 6.9 2.5 10a5.5 5.5 0 0 0 11 0C13.5 6.9 9.9 3.2 8 0.8Z" fill="none" stroke="var(--tb-fg)" stroke-width="1"/><path d="M11.5 7.2 15.6 15.4H7.4Z" fill="var(--warn)" stroke="var(--tb-bg)" stroke-width="1.2" stroke-linejoin="round"/><rect x="11" y="10" width="1" height="3" fill="var(--on-badge)"/><rect x="11" y="14" width="1" height="1" fill="var(--on-badge)"/></svg></div></div></div><div><div class="taskbar dark zoomwrap"><div class="z4"><svg class="ldi" width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><defs><clipPath id="dc32"><path d="M8 0.8C6.1 3.2 2.5 6.9 2.5 10a5.5 5.5 0 0 0 11 0C13.5 6.9 9.9 3.2 8 0.8Z"/></clipPath></defs><rect x="0" y="12.19" width="16" height="8" fill="var(--tb-fg)" clip-path="url(#dc32)"/><path d="M8 0.8C6.1 3.2 2.5 6.9 2.5 10a5.5 5.5 0 0 0 11 0C13.5 6.9 9.9 3.2 8 0.8Z" fill="none" stroke="var(--tb-fg)" stroke-width="1"/><path d="M11.5 7.2 15.6 15.4H7.4Z" fill="var(--warn)" stroke="var(--tb-bg)" stroke-width="1.2" stroke-linejoin="round"/><rect x="11" y="10" width="1" height="3" fill="var(--on-badge)"/><rect x="11" y="14" width="1" height="1" fill="var(--on-badge)"/></svg></div></div></div><div class="idesc">5-hour at 22 % left, runs out before the reset. The level stays monochrome so it still reads; the amber triangle badge (cut out of the drop by a 1 px taskbar-colour gap) carries the state.</div>
+<div class="iname">Critical</div><div><div class="taskbar light strip"><div class="tray"><span class="glyph small">&#xE70E;</span><span class="ld-icon"><svg class="ldi" width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><defs><clipPath id="dc33"><path d="M8 0.8C6.1 3.2 2.5 6.9 2.5 10a5.5 5.5 0 0 0 11 0C13.5 6.9 9.9 3.2 8 0.8Z"/></clipPath></defs><rect x="0" y="14.16" width="16" height="8" fill="var(--crit)" clip-path="url(#dc33)"/><path d="M8 0.8C6.1 3.2 2.5 6.9 2.5 10a5.5 5.5 0 0 0 11 0C13.5 6.9 9.9 3.2 8 0.8Z" fill="none" stroke="var(--crit)" stroke-width="1"/><circle cx="11.5" cy="11.5" r="4.1" fill="var(--crit)" stroke="var(--tb-bg)" stroke-width="1.2"/><rect x="11" y="9" width="1" height="3" fill="var(--on-badge)"/><rect x="11" y="13" width="1" height="1" fill="var(--on-badge)"/></svg></span><span class="glyph">&#xE701;</span><span class="glyph">&#xE995;</span></div></div></div><div><div class="taskbar dark strip"><div class="tray"><span class="glyph small">&#xE70E;</span><span class="ld-icon"><svg class="ldi" width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><defs><clipPath id="dc34"><path d="M8 0.8C6.1 3.2 2.5 6.9 2.5 10a5.5 5.5 0 0 0 11 0C13.5 6.9 9.9 3.2 8 0.8Z"/></clipPath></defs><rect x="0" y="14.16" width="16" height="8" fill="var(--crit)" clip-path="url(#dc34)"/><path d="M8 0.8C6.1 3.2 2.5 6.9 2.5 10a5.5 5.5 0 0 0 11 0C13.5 6.9 9.9 3.2 8 0.8Z" fill="none" stroke="var(--crit)" stroke-width="1"/><circle cx="11.5" cy="11.5" r="4.1" fill="var(--crit)" stroke="var(--tb-bg)" stroke-width="1.2"/><rect x="11" y="9" width="1" height="3" fill="var(--on-badge)"/><rect x="11" y="13" width="1" height="1" fill="var(--on-badge)"/></svg></span><span class="glyph">&#xE701;</span><span class="glyph">&#xE995;</span></div></div></div><div><div class="taskbar light zoomwrap"><div class="z4"><svg class="ldi" width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><defs><clipPath id="dc35"><path d="M8 0.8C6.1 3.2 2.5 6.9 2.5 10a5.5 5.5 0 0 0 11 0C13.5 6.9 9.9 3.2 8 0.8Z"/></clipPath></defs><rect x="0" y="14.16" width="16" height="8" fill="var(--crit)" clip-path="url(#dc35)"/><path d="M8 0.8C6.1 3.2 2.5 6.9 2.5 10a5.5 5.5 0 0 0 11 0C13.5 6.9 9.9 3.2 8 0.8Z" fill="none" stroke="var(--crit)" stroke-width="1"/><circle cx="11.5" cy="11.5" r="4.1" fill="var(--crit)" stroke="var(--tb-bg)" stroke-width="1.2"/><rect x="11" y="9" width="1" height="3" fill="var(--on-badge)"/><rect x="11" y="13" width="1" height="1" fill="var(--on-badge)"/></svg></div></div></div><div><div class="taskbar dark zoomwrap"><div class="z4"><svg class="ldi" width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><defs><clipPath id="dc36"><path d="M8 0.8C6.1 3.2 2.5 6.9 2.5 10a5.5 5.5 0 0 0 11 0C13.5 6.9 9.9 3.2 8 0.8Z"/></clipPath></defs><rect x="0" y="14.16" width="16" height="8" fill="var(--crit)" clip-path="url(#dc36)"/><path d="M8 0.8C6.1 3.2 2.5 6.9 2.5 10a5.5 5.5 0 0 0 11 0C13.5 6.9 9.9 3.2 8 0.8Z" fill="none" stroke="var(--crit)" stroke-width="1"/><circle cx="11.5" cy="11.5" r="4.1" fill="var(--crit)" stroke="var(--tb-bg)" stroke-width="1.2"/><rect x="11" y="9" width="1" height="3" fill="var(--on-badge)"/><rect x="11" y="13" width="1" height="1" fill="var(--on-badge)"/></svg></div></div></div><div class="idesc">6 % left, about 12 min. Red outline + sliver + round “!” badge: the one state that colours the glyph itself, mirroring the red verdict text in the readout.</div>
+<div class="iname">Stale</div><div><div class="taskbar light strip"><div class="tray"><span class="glyph small">&#xE70E;</span><span class="ld-icon"><svg class="ldi" width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><defs><clipPath id="dc37"><path d="M8 0.8C6.1 3.2 2.5 6.9 2.5 10a5.5 5.5 0 0 0 11 0C13.5 6.9 9.9 3.2 8 0.8Z"/></clipPath></defs><rect x="0" y="10.44" width="16" height="8" fill="var(--tb-fg2)" clip-path="url(#dc37)"/><path d="M8 0.8C6.1 3.2 2.5 6.9 2.5 10a5.5 5.5 0 0 0 11 0C13.5 6.9 9.9 3.2 8 0.8Z" fill="none" stroke="var(--tb-fg2)" stroke-width="1"/><circle cx="11.5" cy="11.5" r="4" fill="var(--tb-bg)" stroke="var(--tb-fg)" stroke-width="1"/><path d="M11.5 9.5v2.5h2" fill="none" stroke="var(--tb-fg)" stroke-width="1"/></svg></span><span class="glyph">&#xE701;</span><span class="glyph">&#xE995;</span></div></div></div><div><div class="taskbar dark strip"><div class="tray"><span class="glyph small">&#xE70E;</span><span class="ld-icon"><svg class="ldi" width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><defs><clipPath id="dc38"><path d="M8 0.8C6.1 3.2 2.5 6.9 2.5 10a5.5 5.5 0 0 0 11 0C13.5 6.9 9.9 3.2 8 0.8Z"/></clipPath></defs><rect x="0" y="10.44" width="16" height="8" fill="var(--tb-fg2)" clip-path="url(#dc38)"/><path d="M8 0.8C6.1 3.2 2.5 6.9 2.5 10a5.5 5.5 0 0 0 11 0C13.5 6.9 9.9 3.2 8 0.8Z" fill="none" stroke="var(--tb-fg2)" stroke-width="1"/><circle cx="11.5" cy="11.5" r="4" fill="var(--tb-bg)" stroke="var(--tb-fg)" stroke-width="1"/><path d="M11.5 9.5v2.5h2" fill="none" stroke="var(--tb-fg)" stroke-width="1"/></svg></span><span class="glyph">&#xE701;</span><span class="glyph">&#xE995;</span></div></div></div><div><div class="taskbar light zoomwrap"><div class="z4"><svg class="ldi" width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><defs><clipPath id="dc39"><path d="M8 0.8C6.1 3.2 2.5 6.9 2.5 10a5.5 5.5 0 0 0 11 0C13.5 6.9 9.9 3.2 8 0.8Z"/></clipPath></defs><rect x="0" y="10.44" width="16" height="8" fill="var(--tb-fg2)" clip-path="url(#dc39)"/><path d="M8 0.8C6.1 3.2 2.5 6.9 2.5 10a5.5 5.5 0 0 0 11 0C13.5 6.9 9.9 3.2 8 0.8Z" fill="none" stroke="var(--tb-fg2)" stroke-width="1"/><circle cx="11.5" cy="11.5" r="4" fill="var(--tb-bg)" stroke="var(--tb-fg)" stroke-width="1"/><path d="M11.5 9.5v2.5h2" fill="none" stroke="var(--tb-fg)" stroke-width="1"/></svg></div></div></div><div><div class="taskbar dark zoomwrap"><div class="z4"><svg class="ldi" width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><defs><clipPath id="dc40"><path d="M8 0.8C6.1 3.2 2.5 6.9 2.5 10a5.5 5.5 0 0 0 11 0C13.5 6.9 9.9 3.2 8 0.8Z"/></clipPath></defs><rect x="0" y="10.44" width="16" height="8" fill="var(--tb-fg2)" clip-path="url(#dc40)"/><path d="M8 0.8C6.1 3.2 2.5 6.9 2.5 10a5.5 5.5 0 0 0 11 0C13.5 6.9 9.9 3.2 8 0.8Z" fill="none" stroke="var(--tb-fg2)" stroke-width="1"/><circle cx="11.5" cy="11.5" r="4" fill="var(--tb-bg)" stroke="var(--tb-fg)" stroke-width="1"/><path d="M11.5 9.5v2.5h2" fill="none" stroke="var(--tb-fg)" stroke-width="1"/></svg></div></div></div><div class="idesc">Last known level kept but drawn in secondary grey, clock badge: “this is an old reading”. Never shown empty, which would read as “nothing left”.</div>
+</div>
+</section>
+</body>
+</html>

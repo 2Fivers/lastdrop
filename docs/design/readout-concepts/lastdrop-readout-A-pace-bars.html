@@ -1,0 +1,489 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Pace bars</title>
+<style>
+/* Windows 11 taskbar mock at 1:1 (100 % scale). Shared by every readout variant so they
+   compare fairly. Transparency effects off = solid taskbar colours, as on the owner's PC. */
+:root {
+  --font: "Segoe UI Variable Text", "Segoe UI Variable", "Segoe UI", sans-serif;
+  --icons: "Segoe Fluent Icons", "Segoe MDL2 Assets";
+  --accent-light: #8e3aa7;   /* owner's accent, darker shade WinUI uses on light */
+  --accent-dark: #d58ae8;    /* lighter shade WinUI uses on dark */
+}
+* { box-sizing: border-box; }
+body { margin: 0; padding: 24px; background: #6b6f78; font-family: var(--font); }
+h2 { font: 600 14px var(--font); color: #fff; margin: 28px 0 8px; }
+p.note { font: 12px var(--font); color: #e6e6e6; margin: 0 0 10px; max-width: 900px; }
+
+.taskbar {
+  position: relative; height: 48px; width: 1100px; display: flex; align-items: center;
+  font-family: var(--font); user-select: none;
+}
+.taskbar.light { background: #eeeeee; color: #1a1a1a; border-top: 1px solid #d9d9d9; --tb-fg: #1a1a1a; --tb-fg2: #5c5c5c; --tb-hover: rgba(0,0,0,.05); --accent: var(--accent-light); }
+.taskbar.dark  { background: #1c1c1c; color: #ffffff; border-top: 1px solid #2e2e2e; --tb-fg: #ffffff; --tb-fg2: #c5c5c5; --tb-hover: rgba(255,255,255,.07); --accent: var(--accent-dark); }
+
+/* centred app buttons (Windows 11 default alignment) */
+.taskbar .apps { position: absolute; left: 50%; transform: translateX(-50%); display: flex; gap: 4px; }
+.taskbar .app { width: 40px; height: 40px; border-radius: 4px; display: grid; place-items: center; }
+.taskbar .app i { width: 24px; height: 24px; border-radius: 5px; display: block; }
+.taskbar .app:nth-child(1) i { background: linear-gradient(135deg,#0a84ff,#4cc2ff); }
+.taskbar .app:nth-child(2) i { background: #f2c94c; }
+.taskbar .app:nth-child(3) i { background: linear-gradient(135deg,#e34c26,#f06529); }
+.taskbar .app:nth-child(4) i { background: #2d2d2d; outline: 1px solid #555; }
+.taskbar .app:nth-child(5) i { background: linear-gradient(135deg,#7b2ff7,#f107a3); }
+
+/* right side: readout slot, overflow chevron, tray icons, clock, bell */
+.taskbar .tray { margin-left: auto; display: flex; align-items: center; height: 100%; padding-right: 8px; }
+.taskbar .readout { height: 40px; display: flex; align-items: center; margin-right: 4px; border-radius: 4px; padding: 0 6px; }
+.taskbar .readout:hover { background: var(--tb-hover); }
+.taskbar .glyph { font-family: var(--icons); font-size: 16px; width: 32px; height: 40px; display: grid; place-items: center; color: var(--tb-fg); }
+.taskbar .glyph.small { font-size: 12px; width: 24px; }
+.taskbar .clock { text-align: right; font-size: 12px; line-height: 16px; padding: 0 8px 0 6px; color: var(--tb-fg); }
+
+/* the tray icon of Lastdrop itself, 16x16 at 100 % */
+.taskbar .ld-icon { width: 32px; height: 40px; display: grid; place-items: center; }
+
+</style>
+<style>
+/* ---- Pace bars: own tokens on top of the harness taskbar themes ---- */
+.taskbar.light,.zp.light{--track:rgba(0,0,0,.4458);--fill:var(--tb-fg);--ok:#0F7B0F;--warn:#9D5D00;--crit:#C42B1C;--on-state:#ffffff;
+  --card-bg:#F9F9F9;--card-stroke:rgba(0,0,0,.0578);--card-shadow:0 8px 16px rgba(0,0,0,.14),0 0 2px rgba(0,0,0,.08);--card-fg:#1a1a1a;--card-fg2:#5c5c5c;--card-div:rgba(0,0,0,.0803)}
+.taskbar.dark,.zp.dark{--track:rgba(255,255,255,.5442);--fill:var(--tb-fg);--ok:#6CCB5F;--warn:#FCE100;--crit:#FF99A4;--on-state:#1a1a1a;
+  --card-bg:#2C2C2C;--card-stroke:rgba(0,0,0,.2);--card-shadow:0 8px 16px rgba(0,0,0,.26),0 0 2px rgba(0,0,0,.3);--card-fg:#ffffff;--card-fg2:#c5c5c5;--card-div:rgba(255,255,255,.0837)}
+.taskbar .readout.hov{background:var(--tb-hover)}
+
+/* ---- readout grid: label | bar | value | reset. Fixed columns, so the tray never shifts ---- */
+.pb{display:grid;grid-template-columns:17px 40px 24px 39px;grid-auto-rows:16px;column-gap:6px;align-items:center;
+  font:400 12px/16px "Segoe UI Variable Small","Segoe UI",sans-serif;font-variant-numeric:tabular-nums;color:var(--tb-fg);white-space:nowrap}
+.pb .lb{font-size:11px;color:var(--tb-fg2)}
+.pb .v{text-align:right}
+.pb .t{display:flex;align-items:center;margin-left:-3px}
+.pb .gl{font:400 11px/16px "Segoe Fluent Icons";font-style:normal;width:11px;margin-right:1px;text-align:left;color:var(--tb-fg2)}
+.pb .say{grid-column:3 / span 2;display:flex;align-items:center;gap:2px;font-weight:600}
+.pb .gl.sev{font-size:12px;width:12px;margin-right:0}
+/* InfoBar convention: the severity glyph carries the colour, the words stay in the taskbar text colour */
+.pb .gl.warn{color:var(--warn)}
+.pb .st{grid-column:3 / span 2;grid-row:1 / span 2;display:flex;flex-direction:column;line-height:16px}
+.pb .st1{color:var(--tb-fg)}
+.pb .st1.act{color:var(--accent)}
+.pb .st2{font-size:11px;color:var(--tb-fg2)}
+.pb.two{grid-template-columns:52px 40px 24px 39px}
+/* one-row form: label | bar | fixed 39 px cell = [severity glyph] value */
+.pb.one{grid-template-columns:17px 40px 39px}
+.pb .ov{display:flex;align-items:center;gap:2px}
+.pb .ov.warn,.pb .ov.crit{font-weight:600}
+
+/* InfoBar-style severity badge: filled disc + glyph in the inverse text colour */
+.bd,.bd16{position:relative;display:inline-block;flex:none;width:12px;height:16px}
+.bd i,.bd16 i{position:absolute;left:0;top:0;width:100%;font:400 12px/16px "Segoe Fluent Icons";font-style:normal;text-align:center}
+.bd.crit i:first-child{color:var(--crit)} .bd i+i{color:var(--on-state)}
+.bd16{width:16px;height:20px}
+.bd16 i{font-size:16px;line-height:20px}
+.bd16.ok i:first-child{color:var(--ok)} .bd16 i+i{color:var(--on-state)}
+.bd16.warn i{color:var(--warn)}
+
+/* ---- the pace bar: WinUI ProgressBar anatomy (1 px track, 3 px indicator) + a 1 px pace tick.
+   Normal fill is the taskbar text colour, so colour appears only when something is wrong.
+   The gaps beside the tick are left unpainted (segments), never painted in a guessed background colour. ---- */
+.bar{position:relative;display:block;height:16px}
+.bar>span{position:absolute;display:block}
+.bar .tr{top:8px;height:1px;background:var(--track)}
+.bar .f{top:7px;height:3px;background:var(--fill)}
+.bar .f.s{border-radius:1px 0 0 1px} .bar .f.e{border-top-right-radius:1px;border-bottom-right-radius:1px}
+.bar.warn .f{background:var(--warn)}
+.bar.crit .f{background:var(--crit)}
+.bar.stale .f{border-radius:0;background:repeating-linear-gradient(90deg,var(--tb-fg2) 0 2px,transparent 2px 3px)}
+.bar .k{top:4px;height:9px;width:1px;background:var(--tb-fg)}
+.bar.stale .k{background:var(--tb-fg2)}
+
+/* ---- tray icon, 16 x 16 at 100 % ---- */
+.ti{position:relative;display:block;width:16px;height:16px;color:var(--tb-fg);
+  font:600 11px/11px "Segoe UI Variable Small","Segoe UI",sans-serif;font-variant-numeric:tabular-nums;text-align:center}
+.ti b{position:absolute;left:0;right:0;top:0;height:11px;font-weight:600;letter-spacing:-.2px}
+.ti .bar{position:absolute;left:1px;top:11px;height:5px}
+.ti .bar .tr{top:2px}
+.ti .bar .f{top:1px;border-radius:0}
+.ti .bar .k{top:0;height:5px}
+.ti.stale b{color:var(--tb-fg2)}
+/* warning = outlined tile (number stays in the text colour: 13:1+ on rest and hover), critical = filled tile */
+.ti.warn,.ti.crit{border-radius:3px}
+.ti.warn{box-shadow:inset 0 0 0 1px var(--warn)}
+.ti.crit{background:var(--crit);color:var(--on-state)}
+.ti.warn b,.ti.crit b{top:0;height:16px;line-height:16px;letter-spacing:-.6px;text-indent:-.3px}
+
+/* ---- hover card: Windows 11 teaching-tip anatomy, solid acrylic fallback ---- */
+.anch{position:relative}
+.card{position:absolute;bottom:52px;left:-75px;width:300px;padding:12px 12px 10px;box-sizing:border-box;
+  background:var(--card-bg);border:1px solid var(--card-stroke);border-radius:8px;box-shadow:var(--card-shadow);
+  color:var(--card-fg);--tb-fg:var(--card-fg);--tb-fg2:var(--card-fg2);
+  font:400 12px/16px "Segoe UI Variable Small","Segoe UI",sans-serif;font-variant-numeric:tabular-nums;white-space:normal;text-align:left}
+.c-head{display:flex;gap:8px;align-items:flex-start}
+.c-title{font:600 14px/20px "Segoe UI Variable Text","Segoe UI",sans-serif}
+.c-sent{margin:4px 0 0;color:var(--card-fg)}
+.c-m{margin-top:12px}
+.c-row{display:flex;justify-content:space-between;align-items:baseline;gap:8px;white-space:nowrap}
+.c-name{font-weight:600}
+.c-val.warn,.c-fc.warn{color:var(--warn);font-weight:600}
+.c-sub{color:var(--card-fg2)}
+.c-m .bar{margin:0 0 -1px}
+/* the card is the key to the readout: the same tick and the same reset glyph sit in front of their sentences */
+.kw{display:inline-block;width:1px;height:9px;background:var(--card-fg);margin:0 6px 0 2px;vertical-align:-1px}
+.cg{font:400 11px/16px "Segoe Fluent Icons";font-style:normal;margin-right:3px;vertical-align:top}
+.c-foot{margin-top:12px;padding-top:9px;border-top:1px solid var(--card-div);color:var(--card-fg2);display:flex;justify-content:space-between}
+
+/* ---- page chrome (not part of the design) ---- */
+h1{font:600 20px/28px var(--font);color:#fff;margin:0 0 6px}
+.tbwrap,.stage{position:relative;margin-bottom:12px}
+.stage{padding-top:320px}
+.theme-tag{position:absolute;left:-2px;top:-15px;font:11px var(--font);color:#d6d6d6;letter-spacing:.2px}
+.stage .theme-tag{top:auto;bottom:52px}
+.tbwrap{margin-top:18px}
+h2{margin-top:30px}
+.rat{font:13px/19px var(--font);color:#f2f2f2;max-width:1060px;margin:0 0 12px}
+.rules{font:12px/18px var(--font);color:#e6e6e6;max-width:1060px;margin:0 0 14px;padding-left:18px}
+.rules b{color:#fff;font-weight:600}
+.fi{font-family:var(--icons);font-style:normal;font-size:11px}
+table.w{border-collapse:collapse;font:12px/16px var(--font);color:#f2f2f2;font-variant-numeric:tabular-nums}
+table.w th,table.w td{padding:4px 14px 4px 0;text-align:left;border-bottom:1px solid rgba(255,255,255,.18)}
+table.w th{font-weight:600;color:#fff}
+table.w td.n{text-align:right;padding-right:22px}
+.zoom{display:flex;gap:16px;margin-top:6px}
+.zp{border-radius:8px;padding:14px 18px 12px;display:flex;gap:26px;align-items:flex-end}
+.zp.light{background:#eeeeee;--tb-fg:#1a1a1a;--tb-fg2:#5c5c5c;--accent:var(--accent-light)}
+.zp.dark{background:#1c1c1c;--tb-fg:#fff;--tb-fg2:#c5c5c5;--accent:var(--accent-dark)}
+.zc{display:flex;flex-direction:column;align-items:center;gap:8px;font:11px/14px var(--font);color:var(--tb-fg2)}
+.zc .x4{zoom:4}
+.zc .x1{display:flex;gap:6px;align-items:center}
+</style>
+</head>
+<body>
+<h1>Pace bars &mdash; Lastdrop taskbar readout</h1>
+<p class="rat">The readout answers &ldquo;will I make it to the reset?&rdquo; with one comparison the eye makes before reading a digit: where the fill stops relative to the thin pace tick. The tick sits at the share of the window that has gone by, so a fill that stops short of the tick is under pace and a fill that runs past it is burning faster than time passes. Each bar uses WinUI&rsquo;s ProgressBar anatomy (1&nbsp;px track, 3&nbsp;px indicator, whole pixels). While the answer is yes, bars and text are drawn in the taskbar&rsquo;s own monochrome text colour, like the clock and the tray glyphs, so the readout stays calm and any colour in it means trouble. The 1&nbsp;px gaps beside the tick are left unpainted, not painted in a guessed background colour, so they hold on the hover plate, on Mica or acrylic and inside the card. The text has one grammar: &ldquo;42%&rdquo; is the share used, &ldquo;<span class="fi">&#xE777;</span>&thinsp;14:56&rdquo; is when the window resets (the hover card puts the same glyph beside the word &ldquo;Resets&rdquo;), and &ldquo;Out&nbsp;15:20&rdquo; is when it runs out, shown only when that comes before the reset. Warning and critical use the same words and differ in their severity marks: triangle or filled disc, caution or critical fill, outlined or filled tray tile. The words stay in the text colour, so they keep full contrast on light, dark and hover. Columns have fixed widths, so the readout keeps one width in every state and the tray icons never jump.</p>
+<ul class="rules">
+<li><b>Bar</b> fill = share used, tick = share of the window elapsed. Fill short of the tick: fine. Fill past the tick: ahead of linear pace (still monochrome; it shows the trend). The bar turns caution or critical, and words replace the numbers, only when the forecast (recent burn rate) runs out before the reset. Values round to whole pixels (40&nbsp;px bar = 2.5&nbsp;% per pixel). At 150&nbsp;% the app draws the track and tick 1&nbsp;device px wide and the fill round(3&nbsp;&times;&nbsp;scale) px tall, and cuts the gaps in device pixels.</li>
+<li><b>Labels</b> 5h = 5-hour session, Wk = weekly. With two services the provider goes first (&ldquo;Claude 5h&rdquo;). The label column is sized once, when the user pins services, from the widest pinned label, so no label is ever cut off and it never resizes with the data.</li>
+<li><b>Time text</b> <span class="fi">&#xE777;</span>&thinsp;14:56 = resets at (today: clock time; later: weekday). &#9650;&thinsp;Out 15:20 = runs out at, caution. &#9679;&thinsp;Out 15:02 = runs out at, critical (within the hour or at 90&nbsp;% and above); the hover card adds the countdown. A time is shown only when it is less than 12&nbsp;hours away (otherwise the weekday), so 12-hour locales drop AM/PM: &ldquo;2:56&rdquo; can only mean the next 2:56, and the 39&nbsp;px column holds in every locale. The value column never needs to fit &ldquo;100%&rdquo;: an exhausted meter always shows the critical words.</li>
+<li><b>Which meter wins</b> the tray icon and the one-row form: the one forecast to run out first; if none will, the one with the highest forecast at its reset.</li>
+<li><b>Accessibility</b> the readout exposes one UI Automation name per meter, verdict first (&ldquo;Claude 5-hour session: on track, 42 percent used, &hellip; resets at 14:56&rdquo;); see the aria-label on each readout in this file. In a contrast theme the fills use the theme&rsquo;s text and highlight colours; the severity glyphs, words and tray-tile shapes carry every state without colour.</li>
+<li><b>Stale</b> after 15&nbsp;min without a good reading. Bars and tick freeze at the last reading. If a window has reset since then, its bar is drawn empty, so no old fill is shown as current.</li>
+</ul>
+<table class="w"><tr><th>Scenario</th><th>Layout</th><th>Readout width at 100&nbsp;% (incl. the slot&rsquo;s 6&nbsp;px side padding)</th></tr>
+<tr><td>1 Normal / under pace</td><td>1 service, 2 meters</td><td class="n">150&nbsp;px</td></tr>
+<tr><td>2 Ahead of pace</td><td>1 service, 2 meters</td><td class="n">150&nbsp;px</td></tr>
+<tr><td>3 Critical</td><td>1 service, 2 meters</td><td class="n">150&nbsp;px</td></tr>
+<tr><td>4a Stale, offline</td><td>1 service, 2 meters</td><td class="n">150&nbsp;px</td></tr>
+<tr><td>4b Stale, sign-in expired</td><td>1 service, 2 meters</td><td class="n">150&nbsp;px</td></tr>
+<tr><td>5 Two services</td><td>2 services, 1 meter each</td><td class="n">185&nbsp;px</td></tr>
+<tr><td>6a Tight space, normal</td><td>one row</td><td class="n">120&nbsp;px</td></tr>
+<tr><td>6b Tight space, warning</td><td>one row</td><td class="n">120&nbsp;px</td></tr>
+<tr><td>6c Tight space, critical</td><td>one row</td><td class="n">120&nbsp;px</td></tr>
+<tr><td>7 Readout under the hover card</td><td>1 service, 2 meters</td><td class="n">150&nbsp;px</td></tr>
+</table>
+<h2>1 &middot; Normal / under pace</h2><p class="note">Claude, 12:42. 5-hour: 42&nbsp;% used, 54&nbsp;% of the window gone, resets 14:56. Weekly: 61&nbsp;% used, 70&nbsp;% gone, resets Thu 09:00. Both fills stop short of their ticks, so you will make it. Nothing is coloured. The tray icon shows the week (61), the meter with the higher forecast at its reset.</p><div class="tbwrap"><span class="theme-tag">light</span><div class="taskbar light">
+  <div class="apps"><div class="app"><i></i></div><div class="app"><i></i></div><div class="app"><i></i></div><div class="app"><i></i></div><div class="app"><i></i></div></div>
+  <div class="tray">
+    <div class="readout" data-k="1-l" role="group" aria-label="Claude 5-hour session: on track, 42 percent used, 54 percent of the time gone, resets at 14:56. Weekly: on track, 61 percent used, 70 percent of the time gone, resets Thursday 09:00."><div class="pb"><span class="lb">5h</span><span class="bar" style="width:40px"><span class="tr" style="left:0px;width:21px"></span><span class="tr" style="left:24px;width:16px"></span><span class="f s e" style="left:0px;width:17px"></span><span class="k" style="left:22px"></span></span><span class="v">42%</span><span class="t"><i class="gl">&#xE777;</i>14:56</span><span class="lb">Wk</span><span class="bar" style="width:40px"><span class="tr" style="left:0px;width:27px"></span><span class="tr" style="left:30px;width:10px"></span><span class="f s e" style="left:0px;width:24px"></span><span class="k" style="left:28px"></span></span><span class="v">61%</span><span class="t"><i class="gl">&#xE777;</i>Thu</span></div></div>
+    <span class="glyph small">&#xE70E;</span>
+    <span class="ld-icon"><span class="ti"><b>61</b><span class="bar" style="width:14px"><span class="tr" style="left:0px;width:9px"></span><span class="tr" style="left:12px;width:2px"></span><span class="f s e" style="left:0px;width:9px"></span><span class="k" style="left:10px"></span></span></span></span>
+    <span class="glyph">&#xE701;</span><span class="glyph">&#xE995;</span>
+    <div class="clock">12:42<br>2026-10-10</div>
+    <span class="glyph small">&#xEA8F;</span>
+  </div>
+</div></div>
+<div class="tbwrap"><span class="theme-tag">dark</span><div class="taskbar dark">
+  <div class="apps"><div class="app"><i></i></div><div class="app"><i></i></div><div class="app"><i></i></div><div class="app"><i></i></div><div class="app"><i></i></div></div>
+  <div class="tray">
+    <div class="readout" data-k="1-d" role="group" aria-label="Claude 5-hour session: on track, 42 percent used, 54 percent of the time gone, resets at 14:56. Weekly: on track, 61 percent used, 70 percent of the time gone, resets Thursday 09:00."><div class="pb"><span class="lb">5h</span><span class="bar" style="width:40px"><span class="tr" style="left:0px;width:21px"></span><span class="tr" style="left:24px;width:16px"></span><span class="f s e" style="left:0px;width:17px"></span><span class="k" style="left:22px"></span></span><span class="v">42%</span><span class="t"><i class="gl">&#xE777;</i>14:56</span><span class="lb">Wk</span><span class="bar" style="width:40px"><span class="tr" style="left:0px;width:27px"></span><span class="tr" style="left:30px;width:10px"></span><span class="f s e" style="left:0px;width:24px"></span><span class="k" style="left:28px"></span></span><span class="v">61%</span><span class="t"><i class="gl">&#xE777;</i>Thu</span></div></div>
+    <span class="glyph small">&#xE70E;</span>
+    <span class="ld-icon"><span class="ti"><b>61</b><span class="bar" style="width:14px"><span class="tr" style="left:0px;width:9px"></span><span class="tr" style="left:12px;width:2px"></span><span class="f s e" style="left:0px;width:9px"></span><span class="k" style="left:10px"></span></span></span></span>
+    <span class="glyph">&#xE701;</span><span class="glyph">&#xE995;</span>
+    <div class="clock">12:42<br>2026-10-10</div>
+    <span class="glyph small">&#xEA8F;</span>
+  </div>
+</div></div>
+<h2>2 &middot; Ahead of pace (warning)</h2><p class="note">13:45. 5-hour: 78&nbsp;% used at 45&nbsp;% of the window. The caution fill runs well past the tick, and the row swaps its numbers for the answer: it runs out at 15:20, before the 16:30 reset. Weekly unchanged. The tray icon gets an outline.</p><div class="tbwrap"><span class="theme-tag">light</span><div class="taskbar light">
+  <div class="apps"><div class="app"><i></i></div><div class="app"><i></i></div><div class="app"><i></i></div><div class="app"><i></i></div><div class="app"><i></i></div></div>
+  <div class="tray">
+    <div class="readout" data-k="2-l" role="group" aria-label="Claude 5-hour session: warning, runs out at about 15:20, before the reset at 16:30; 78 percent used. Weekly: on track, 61 percent used, resets Thursday 09:00."><div class="pb"><span class="lb">5h</span><span class="bar warn" style="width:40px"><span class="tr" style="left:0px;width:17px"></span><span class="tr" style="left:20px;width:20px"></span><span class="f s" style="left:0px;width:17px"></span><span class="f e" style="left:20px;width:11px"></span><span class="k" style="left:18px"></span></span><span class="say warn"><i class="gl sev warn" aria-hidden="true">&#xE814;</i>Out 15:20</span><span class="lb">Wk</span><span class="bar" style="width:40px"><span class="tr" style="left:0px;width:27px"></span><span class="tr" style="left:30px;width:10px"></span><span class="f s e" style="left:0px;width:24px"></span><span class="k" style="left:28px"></span></span><span class="v">61%</span><span class="t"><i class="gl">&#xE777;</i>Thu</span></div></div>
+    <span class="glyph small">&#xE70E;</span>
+    <span class="ld-icon"><span class="ti warn"><b>78</b></span></span>
+    <span class="glyph">&#xE701;</span><span class="glyph">&#xE995;</span>
+    <div class="clock">13:45<br>2026-10-10</div>
+    <span class="glyph small">&#xEA8F;</span>
+  </div>
+</div></div>
+<div class="tbwrap"><span class="theme-tag">dark</span><div class="taskbar dark">
+  <div class="apps"><div class="app"><i></i></div><div class="app"><i></i></div><div class="app"><i></i></div><div class="app"><i></i></div><div class="app"><i></i></div></div>
+  <div class="tray">
+    <div class="readout" data-k="2-d" role="group" aria-label="Claude 5-hour session: warning, runs out at about 15:20, before the reset at 16:30; 78 percent used. Weekly: on track, 61 percent used, resets Thursday 09:00."><div class="pb"><span class="lb">5h</span><span class="bar warn" style="width:40px"><span class="tr" style="left:0px;width:17px"></span><span class="tr" style="left:20px;width:20px"></span><span class="f s" style="left:0px;width:17px"></span><span class="f e" style="left:20px;width:11px"></span><span class="k" style="left:18px"></span></span><span class="say warn"><i class="gl sev warn" aria-hidden="true">&#xE814;</i>Out 15:20</span><span class="lb">Wk</span><span class="bar" style="width:40px"><span class="tr" style="left:0px;width:27px"></span><span class="tr" style="left:30px;width:10px"></span><span class="f s e" style="left:0px;width:24px"></span><span class="k" style="left:28px"></span></span><span class="v">61%</span><span class="t"><i class="gl">&#xE777;</i>Thu</span></div></div>
+    <span class="glyph small">&#xE70E;</span>
+    <span class="ld-icon"><span class="ti warn"><b>78</b></span></span>
+    <span class="glyph">&#xE701;</span><span class="glyph">&#xE995;</span>
+    <div class="clock">13:45<br>2026-10-10</div>
+    <span class="glyph small">&#xEA8F;</span>
+  </div>
+</div></div>
+<h2>3 &middot; Critical</h2><p class="note">14:50. 5-hour: 94&nbsp;% used, about 12 minutes left at the current pace; resets 16:30. Same grammar as the warning (&ldquo;Out&rdquo; + the time it runs out, 15:02) with the critical disc and fill. The tray icon becomes a filled tile, so the change is in shape as well as colour.</p><div class="tbwrap"><span class="theme-tag">light</span><div class="taskbar light">
+  <div class="apps"><div class="app"><i></i></div><div class="app"><i></i></div><div class="app"><i></i></div><div class="app"><i></i></div><div class="app"><i></i></div></div>
+  <div class="tray">
+    <div class="readout" data-k="3-l" role="group" aria-label="Claude 5-hour session: critical, runs out at about 15:02, in 12 minutes; 94 percent used; resets at 16:30. Weekly: on track, 61 percent used."><div class="pb"><span class="lb">5h</span><span class="bar crit" style="width:40px"><span class="tr" style="left:0px;width:26px"></span><span class="tr" style="left:29px;width:11px"></span><span class="f s" style="left:0px;width:26px"></span><span class="f e" style="left:29px;width:9px"></span><span class="k" style="left:27px"></span></span><span class="say crit"><span class="bd crit" aria-hidden="true"><i>&#xEA3B;</i><i>&#xF13C;</i></span>Out 15:02</span><span class="lb">Wk</span><span class="bar" style="width:40px"><span class="tr" style="left:0px;width:27px"></span><span class="tr" style="left:30px;width:10px"></span><span class="f s e" style="left:0px;width:24px"></span><span class="k" style="left:28px"></span></span><span class="v">61%</span><span class="t"><i class="gl">&#xE777;</i>Thu</span></div></div>
+    <span class="glyph small">&#xE70E;</span>
+    <span class="ld-icon"><span class="ti crit"><b>94</b></span></span>
+    <span class="glyph">&#xE701;</span><span class="glyph">&#xE995;</span>
+    <div class="clock">14:50<br>2026-10-10</div>
+    <span class="glyph small">&#xEA8F;</span>
+  </div>
+</div></div>
+<div class="tbwrap"><span class="theme-tag">dark</span><div class="taskbar dark">
+  <div class="apps"><div class="app"><i></i></div><div class="app"><i></i></div><div class="app"><i></i></div><div class="app"><i></i></div><div class="app"><i></i></div></div>
+  <div class="tray">
+    <div class="readout" data-k="3-d" role="group" aria-label="Claude 5-hour session: critical, runs out at about 15:02, in 12 minutes; 94 percent used; resets at 16:30. Weekly: on track, 61 percent used."><div class="pb"><span class="lb">5h</span><span class="bar crit" style="width:40px"><span class="tr" style="left:0px;width:26px"></span><span class="tr" style="left:29px;width:11px"></span><span class="f s" style="left:0px;width:26px"></span><span class="f e" style="left:29px;width:9px"></span><span class="k" style="left:27px"></span></span><span class="say crit"><span class="bd crit" aria-hidden="true"><i>&#xEA3B;</i><i>&#xF13C;</i></span>Out 15:02</span><span class="lb">Wk</span><span class="bar" style="width:40px"><span class="tr" style="left:0px;width:27px"></span><span class="tr" style="left:30px;width:10px"></span><span class="f s e" style="left:0px;width:24px"></span><span class="k" style="left:28px"></span></span><span class="v">61%</span><span class="t"><i class="gl">&#xE777;</i>Thu</span></div></div>
+    <span class="glyph small">&#xE70E;</span>
+    <span class="ld-icon"><span class="ti crit"><b>94</b></span></span>
+    <span class="glyph">&#xE701;</span><span class="glyph">&#xE995;</span>
+    <div class="clock">14:50<br>2026-10-10</div>
+    <span class="glyph small">&#xEA8F;</span>
+  </div>
+</div></div>
+<h2>4a &middot; Stale data &mdash; offline</h2><p class="note">13:29. Same numbers as 1, but the last good reading is 47 minutes old. Fills turn dashed and grey, and the numbers give way to a two-line status set like the clock: why, and how old. Bars and tick stay frozen at the moment of the reading, so an old fill is never compared against a tick that kept moving (that would flatter the pace). The last known numbers are in the hover card.</p><div class="tbwrap"><span class="theme-tag">light</span><div class="taskbar light">
+  <div class="apps"><div class="app"><i></i></div><div class="app"><i></i></div><div class="app"><i></i></div><div class="app"><i></i></div><div class="app"><i></i></div></div>
+  <div class="tray">
+    <div class="readout" data-k="4a-l" role="group" aria-label="Claude: offline, last reading 47 minutes ago. Then: 5-hour 42 percent used, weekly 61 percent used."><div class="pb"><span class="lb">5h</span><span class="bar stale" style="width:40px"><span class="tr" style="left:0px;width:21px"></span><span class="tr" style="left:24px;width:16px"></span><span class="f s e" style="left:0px;width:17px"></span><span class="k" style="left:22px"></span></span><span class="st"><span class="st1">Offline</span><span class="st2">47 min ago</span></span><span class="lb">Wk</span><span class="bar stale" style="width:40px"><span class="tr" style="left:0px;width:27px"></span><span class="tr" style="left:30px;width:10px"></span><span class="f s e" style="left:0px;width:24px"></span><span class="k" style="left:28px"></span></span></div></div>
+    <span class="glyph small">&#xE70E;</span>
+    <span class="ld-icon"><span class="ti stale"><b>61</b><span class="bar stale" style="width:14px"><span class="tr" style="left:0px;width:9px"></span><span class="tr" style="left:12px;width:2px"></span><span class="f s e" style="left:0px;width:9px"></span><span class="k" style="left:10px"></span></span></span></span>
+    <span class="glyph">&#xE701;</span><span class="glyph">&#xE995;</span>
+    <div class="clock">13:29<br>2026-10-10</div>
+    <span class="glyph small">&#xEA8F;</span>
+  </div>
+</div></div>
+<div class="tbwrap"><span class="theme-tag">dark</span><div class="taskbar dark">
+  <div class="apps"><div class="app"><i></i></div><div class="app"><i></i></div><div class="app"><i></i></div><div class="app"><i></i></div><div class="app"><i></i></div></div>
+  <div class="tray">
+    <div class="readout" data-k="4a-d" role="group" aria-label="Claude: offline, last reading 47 minutes ago. Then: 5-hour 42 percent used, weekly 61 percent used."><div class="pb"><span class="lb">5h</span><span class="bar stale" style="width:40px"><span class="tr" style="left:0px;width:21px"></span><span class="tr" style="left:24px;width:16px"></span><span class="f s e" style="left:0px;width:17px"></span><span class="k" style="left:22px"></span></span><span class="st"><span class="st1">Offline</span><span class="st2">47 min ago</span></span><span class="lb">Wk</span><span class="bar stale" style="width:40px"><span class="tr" style="left:0px;width:27px"></span><span class="tr" style="left:30px;width:10px"></span><span class="f s e" style="left:0px;width:24px"></span><span class="k" style="left:28px"></span></span></div></div>
+    <span class="glyph small">&#xE70E;</span>
+    <span class="ld-icon"><span class="ti stale"><b>61</b><span class="bar stale" style="width:14px"><span class="tr" style="left:0px;width:9px"></span><span class="tr" style="left:12px;width:2px"></span><span class="f s e" style="left:0px;width:9px"></span><span class="k" style="left:10px"></span></span></span></span>
+    <span class="glyph">&#xE701;</span><span class="glyph">&#xE995;</span>
+    <div class="clock">13:29<br>2026-10-10</div>
+    <span class="glyph small">&#xEA8F;</span>
+  </div>
+</div></div>
+<h2>4b &middot; Stale data &mdash; sign-in expired</h2><p class="note">Same as 4a when the token has expired: the first line becomes the action, in the accent colour (the only place the accent appears); clicking the readout opens sign-in.</p><div class="tbwrap"><span class="theme-tag">light</span><div class="taskbar light">
+  <div class="apps"><div class="app"><i></i></div><div class="app"><i></i></div><div class="app"><i></i></div><div class="app"><i></i></div><div class="app"><i></i></div></div>
+  <div class="tray">
+    <div class="readout" data-k="4b-l" role="group" aria-label="Claude: sign-in expired, last reading 47 minutes ago. Select to sign in."><div class="pb"><span class="lb">5h</span><span class="bar stale" style="width:40px"><span class="tr" style="left:0px;width:21px"></span><span class="tr" style="left:24px;width:16px"></span><span class="f s e" style="left:0px;width:17px"></span><span class="k" style="left:22px"></span></span><span class="st"><span class="st1 act">Sign in</span><span class="st2">47 min ago</span></span><span class="lb">Wk</span><span class="bar stale" style="width:40px"><span class="tr" style="left:0px;width:27px"></span><span class="tr" style="left:30px;width:10px"></span><span class="f s e" style="left:0px;width:24px"></span><span class="k" style="left:28px"></span></span></div></div>
+    <span class="glyph small">&#xE70E;</span>
+    <span class="ld-icon"><span class="ti stale"><b>61</b><span class="bar stale" style="width:14px"><span class="tr" style="left:0px;width:9px"></span><span class="tr" style="left:12px;width:2px"></span><span class="f s e" style="left:0px;width:9px"></span><span class="k" style="left:10px"></span></span></span></span>
+    <span class="glyph">&#xE701;</span><span class="glyph">&#xE995;</span>
+    <div class="clock">13:29<br>2026-10-10</div>
+    <span class="glyph small">&#xEA8F;</span>
+  </div>
+</div></div>
+<div class="tbwrap"><span class="theme-tag">dark</span><div class="taskbar dark">
+  <div class="apps"><div class="app"><i></i></div><div class="app"><i></i></div><div class="app"><i></i></div><div class="app"><i></i></div><div class="app"><i></i></div></div>
+  <div class="tray">
+    <div class="readout" data-k="4b-d" role="group" aria-label="Claude: sign-in expired, last reading 47 minutes ago. Select to sign in."><div class="pb"><span class="lb">5h</span><span class="bar stale" style="width:40px"><span class="tr" style="left:0px;width:21px"></span><span class="tr" style="left:24px;width:16px"></span><span class="f s e" style="left:0px;width:17px"></span><span class="k" style="left:22px"></span></span><span class="st"><span class="st1 act">Sign in</span><span class="st2">47 min ago</span></span><span class="lb">Wk</span><span class="bar stale" style="width:40px"><span class="tr" style="left:0px;width:27px"></span><span class="tr" style="left:30px;width:10px"></span><span class="f s e" style="left:0px;width:24px"></span><span class="k" style="left:28px"></span></span></div></div>
+    <span class="glyph small">&#xE70E;</span>
+    <span class="ld-icon"><span class="ti stale"><b>61</b><span class="bar stale" style="width:14px"><span class="tr" style="left:0px;width:9px"></span><span class="tr" style="left:12px;width:2px"></span><span class="f s e" style="left:0px;width:9px"></span><span class="k" style="left:10px"></span></span></span></span>
+    <span class="glyph">&#xE701;</span><span class="glyph">&#xE995;</span>
+    <div class="clock">13:29<br>2026-10-10</div>
+    <span class="glyph small">&#xEA8F;</span>
+  </div>
+</div></div>
+<h2>5 &middot; Two services pinned</h2><p class="note">12:42. Claude 5-hour (as in 1) and Codex weekly: 5&nbsp;% used, 30&nbsp;% gone, resets Fri 14:26. Labels carry the provider; the columns and the text grammar stay the same.</p><div class="tbwrap"><span class="theme-tag">light</span><div class="taskbar light">
+  <div class="apps"><div class="app"><i></i></div><div class="app"><i></i></div><div class="app"><i></i></div><div class="app"><i></i></div><div class="app"><i></i></div></div>
+  <div class="tray">
+    <div class="readout" data-k="5-l" role="group" aria-label="Claude 5-hour session: on track, 42 percent used, resets at 14:56. Codex weekly: on track, 5 percent used, resets Friday 14:26."><div class="pb two"><span class="lb">Claude 5h</span><span class="bar" style="width:40px"><span class="tr" style="left:0px;width:21px"></span><span class="tr" style="left:24px;width:16px"></span><span class="f s e" style="left:0px;width:17px"></span><span class="k" style="left:22px"></span></span><span class="v">42%</span><span class="t"><i class="gl">&#xE777;</i>14:56</span><span class="lb">Codex Wk</span><span class="bar" style="width:40px"><span class="tr" style="left:0px;width:11px"></span><span class="tr" style="left:14px;width:26px"></span><span class="f s e" style="left:0px;width:2px"></span><span class="k" style="left:12px"></span></span><span class="v">5%</span><span class="t"><i class="gl">&#xE777;</i>Fri</span></div></div>
+    <span class="glyph small">&#xE70E;</span>
+    <span class="ld-icon"><span class="ti"><b>42</b><span class="bar" style="width:14px"><span class="tr" style="left:0px;width:7px"></span><span class="tr" style="left:10px;width:4px"></span><span class="f s e" style="left:0px;width:6px"></span><span class="k" style="left:8px"></span></span></span></span>
+    <span class="glyph">&#xE701;</span><span class="glyph">&#xE995;</span>
+    <div class="clock">12:42<br>2026-10-10</div>
+    <span class="glyph small">&#xEA8F;</span>
+  </div>
+</div></div>
+<div class="tbwrap"><span class="theme-tag">dark</span><div class="taskbar dark">
+  <div class="apps"><div class="app"><i></i></div><div class="app"><i></i></div><div class="app"><i></i></div><div class="app"><i></i></div><div class="app"><i></i></div></div>
+  <div class="tray">
+    <div class="readout" data-k="5-d" role="group" aria-label="Claude 5-hour session: on track, 42 percent used, resets at 14:56. Codex weekly: on track, 5 percent used, resets Friday 14:26."><div class="pb two"><span class="lb">Claude 5h</span><span class="bar" style="width:40px"><span class="tr" style="left:0px;width:21px"></span><span class="tr" style="left:24px;width:16px"></span><span class="f s e" style="left:0px;width:17px"></span><span class="k" style="left:22px"></span></span><span class="v">42%</span><span class="t"><i class="gl">&#xE777;</i>14:56</span><span class="lb">Codex Wk</span><span class="bar" style="width:40px"><span class="tr" style="left:0px;width:11px"></span><span class="tr" style="left:14px;width:26px"></span><span class="f s e" style="left:0px;width:2px"></span><span class="k" style="left:12px"></span></span><span class="v">5%</span><span class="t"><i class="gl">&#xE777;</i>Fri</span></div></div>
+    <span class="glyph small">&#xE70E;</span>
+    <span class="ld-icon"><span class="ti"><b>42</b><span class="bar" style="width:14px"><span class="tr" style="left:0px;width:7px"></span><span class="tr" style="left:10px;width:4px"></span><span class="f s e" style="left:0px;width:6px"></span><span class="k" style="left:8px"></span></span></span></span>
+    <span class="glyph">&#xE701;</span><span class="glyph">&#xE995;</span>
+    <div class="clock">12:42<br>2026-10-10</div>
+    <span class="glyph small">&#xEA8F;</span>
+  </div>
+</div></div>
+<h2>6a &middot; Tight space &mdash; one row (normal)</h2><p class="note">When the taskbar is crowded the readout keeps one row: the meter closest to trouble (here the week, on course for 87&nbsp;% at its reset). The reset time moves to the hover card. The cell after the bar is fixed at 39&nbsp;px so a severity glyph can appear without moving the tray.</p><div class="tbwrap"><span class="theme-tag">light</span><div class="taskbar light">
+  <div class="apps"><div class="app"><i></i></div><div class="app"><i></i></div><div class="app"><i></i></div><div class="app"><i></i></div><div class="app"><i></i></div></div>
+  <div class="tray">
+    <div class="readout" data-k="6a-l" role="group" aria-label="Claude weekly: on track, 61 percent used, 70 percent of the time gone."><div class="pb one"><span class="lb">Wk</span><span class="bar" style="width:40px"><span class="tr" style="left:0px;width:27px"></span><span class="tr" style="left:30px;width:10px"></span><span class="f s e" style="left:0px;width:24px"></span><span class="k" style="left:28px"></span></span><span class="ov ok"><span>61%</span></span></div></div>
+    <span class="glyph small">&#xE70E;</span>
+    <span class="ld-icon"><span class="ti"><b>61</b><span class="bar" style="width:14px"><span class="tr" style="left:0px;width:9px"></span><span class="tr" style="left:12px;width:2px"></span><span class="f s e" style="left:0px;width:9px"></span><span class="k" style="left:10px"></span></span></span></span>
+    <span class="glyph">&#xE701;</span><span class="glyph">&#xE995;</span>
+    <div class="clock">12:42<br>2026-10-10</div>
+    <span class="glyph small">&#xEA8F;</span>
+  </div>
+</div></div>
+<div class="tbwrap"><span class="theme-tag">dark</span><div class="taskbar dark">
+  <div class="apps"><div class="app"><i></i></div><div class="app"><i></i></div><div class="app"><i></i></div><div class="app"><i></i></div><div class="app"><i></i></div></div>
+  <div class="tray">
+    <div class="readout" data-k="6a-d" role="group" aria-label="Claude weekly: on track, 61 percent used, 70 percent of the time gone."><div class="pb one"><span class="lb">Wk</span><span class="bar" style="width:40px"><span class="tr" style="left:0px;width:27px"></span><span class="tr" style="left:30px;width:10px"></span><span class="f s e" style="left:0px;width:24px"></span><span class="k" style="left:28px"></span></span><span class="ov ok"><span>61%</span></span></div></div>
+    <span class="glyph small">&#xE70E;</span>
+    <span class="ld-icon"><span class="ti"><b>61</b><span class="bar" style="width:14px"><span class="tr" style="left:0px;width:9px"></span><span class="tr" style="left:12px;width:2px"></span><span class="f s e" style="left:0px;width:9px"></span><span class="k" style="left:10px"></span></span></span></span>
+    <span class="glyph">&#xE701;</span><span class="glyph">&#xE995;</span>
+    <div class="clock">12:42<br>2026-10-10</div>
+    <span class="glyph small">&#xEA8F;</span>
+  </div>
+</div></div>
+<h2>6b &middot; Tight space &mdash; one row (warning)</h2><p class="note">Scenario 2 in the one-row form: the 5-hour meter takes over because it is forecast to run out first. Caution fill past the tick, the caution triangle and a semibold value, so colour is never the only signal here either.</p><div class="tbwrap"><span class="theme-tag">light</span><div class="taskbar light">
+  <div class="apps"><div class="app"><i></i></div><div class="app"><i></i></div><div class="app"><i></i></div><div class="app"><i></i></div><div class="app"><i></i></div></div>
+  <div class="tray">
+    <div class="readout" data-k="6b-l" role="group" aria-label="Claude 5-hour session: warning, runs out at about 15:20, before the reset at 16:30; 78 percent used."><div class="pb one"><span class="lb">5h</span><span class="bar warn" style="width:40px"><span class="tr" style="left:0px;width:17px"></span><span class="tr" style="left:20px;width:20px"></span><span class="f s" style="left:0px;width:17px"></span><span class="f e" style="left:20px;width:11px"></span><span class="k" style="left:18px"></span></span><span class="ov warn"><i class="gl sev warn" aria-hidden="true">&#xE814;</i><span>78%</span></span></div></div>
+    <span class="glyph small">&#xE70E;</span>
+    <span class="ld-icon"><span class="ti warn"><b>78</b></span></span>
+    <span class="glyph">&#xE701;</span><span class="glyph">&#xE995;</span>
+    <div class="clock">13:45<br>2026-10-10</div>
+    <span class="glyph small">&#xEA8F;</span>
+  </div>
+</div></div>
+<div class="tbwrap"><span class="theme-tag">dark</span><div class="taskbar dark">
+  <div class="apps"><div class="app"><i></i></div><div class="app"><i></i></div><div class="app"><i></i></div><div class="app"><i></i></div><div class="app"><i></i></div></div>
+  <div class="tray">
+    <div class="readout" data-k="6b-d" role="group" aria-label="Claude 5-hour session: warning, runs out at about 15:20, before the reset at 16:30; 78 percent used."><div class="pb one"><span class="lb">5h</span><span class="bar warn" style="width:40px"><span class="tr" style="left:0px;width:17px"></span><span class="tr" style="left:20px;width:20px"></span><span class="f s" style="left:0px;width:17px"></span><span class="f e" style="left:20px;width:11px"></span><span class="k" style="left:18px"></span></span><span class="ov warn"><i class="gl sev warn" aria-hidden="true">&#xE814;</i><span>78%</span></span></div></div>
+    <span class="glyph small">&#xE70E;</span>
+    <span class="ld-icon"><span class="ti warn"><b>78</b></span></span>
+    <span class="glyph">&#xE701;</span><span class="glyph">&#xE995;</span>
+    <div class="clock">13:45<br>2026-10-10</div>
+    <span class="glyph small">&#xEA8F;</span>
+  </div>
+</div></div>
+<h2>6c &middot; Tight space &mdash; one row (critical)</h2><p class="note">Scenario 3 in the one-row form: the critical disc takes the glyph slot.</p><div class="tbwrap"><span class="theme-tag">light</span><div class="taskbar light">
+  <div class="apps"><div class="app"><i></i></div><div class="app"><i></i></div><div class="app"><i></i></div><div class="app"><i></i></div><div class="app"><i></i></div></div>
+  <div class="tray">
+    <div class="readout" data-k="6c-l" role="group" aria-label="Claude 5-hour session: critical, runs out at about 15:02; 94 percent used."><div class="pb one"><span class="lb">5h</span><span class="bar crit" style="width:40px"><span class="tr" style="left:0px;width:26px"></span><span class="tr" style="left:29px;width:11px"></span><span class="f s" style="left:0px;width:26px"></span><span class="f e" style="left:29px;width:9px"></span><span class="k" style="left:27px"></span></span><span class="ov crit"><span class="bd crit" aria-hidden="true"><i>&#xEA3B;</i><i>&#xF13C;</i></span><span>94%</span></span></div></div>
+    <span class="glyph small">&#xE70E;</span>
+    <span class="ld-icon"><span class="ti crit"><b>94</b></span></span>
+    <span class="glyph">&#xE701;</span><span class="glyph">&#xE995;</span>
+    <div class="clock">14:50<br>2026-10-10</div>
+    <span class="glyph small">&#xEA8F;</span>
+  </div>
+</div></div>
+<div class="tbwrap"><span class="theme-tag">dark</span><div class="taskbar dark">
+  <div class="apps"><div class="app"><i></i></div><div class="app"><i></i></div><div class="app"><i></i></div><div class="app"><i></i></div><div class="app"><i></i></div></div>
+  <div class="tray">
+    <div class="readout" data-k="6c-d" role="group" aria-label="Claude 5-hour session: critical, runs out at about 15:02; 94 percent used."><div class="pb one"><span class="lb">5h</span><span class="bar crit" style="width:40px"><span class="tr" style="left:0px;width:26px"></span><span class="tr" style="left:29px;width:11px"></span><span class="f s" style="left:0px;width:26px"></span><span class="f e" style="left:29px;width:9px"></span><span class="k" style="left:27px"></span></span><span class="ov crit"><span class="bd crit" aria-hidden="true"><i>&#xEA3B;</i><i>&#xF13C;</i></span><span>94%</span></span></div></div>
+    <span class="glyph small">&#xE70E;</span>
+    <span class="ld-icon"><span class="ti crit"><b>94</b></span></span>
+    <span class="glyph">&#xE701;</span><span class="glyph">&#xE995;</span>
+    <div class="clock">14:50<br>2026-10-10</div>
+    <span class="glyph small">&#xEA8F;</span>
+  </div>
+</div></div>
+<h2>7a &middot; Hover card &mdash; scenario 1</h2><p class="note">Hovering the readout opens a Windows 11 tooltip-style card centred above it. The verdict comes first, then the pace sentence. Each window gets a wider copy of the same pace bar, with no extra marks, so what you learn here is what you see in the taskbar. The tick and the reset glyph appear in front of the lines that explain them. Provider, plan and data age are at the bottom.</p><div class="stage"><span class="theme-tag">light</span><div class="taskbar light">
+  <div class="apps"><div class="app"><i></i></div><div class="app"><i></i></div><div class="app"><i></i></div><div class="app"><i></i></div><div class="app"><i></i></div></div>
+  <div class="tray">
+    <div class="readout hov anch" data-k="7a-l" role="group" aria-label="Claude 5-hour session: on track, 42 percent used, 54 percent of the time gone, resets at 14:56. Weekly: on track, 61 percent used, 70 percent of the time gone, resets Thursday 09:00."><div class="card" role="tooltip">
+    <div class="c-head"><span class="bd16 ok" aria-hidden="true"><i>&#xEA3B;</i><i>&#xF13E;</i></span><span class="c-title">You&rsquo;ll make it to both resets</span></div>
+    <p class="c-sent">You&rsquo;re using both limits more slowly than time passes. At this rate about 22% of the session and 13% of the week will be left when they reset.</p>
+    <div class="c-m">
+      <div class="c-row"><span class="c-name">5-hour session</span><span class="c-val">42% used</span></div>
+      <span class="bar" style="width:274px"><span class="tr" style="left:0px;width:147px"></span><span class="tr" style="left:150px;width:124px"></span><span class="f s e" style="left:0px;width:115px"></span><span class="k" style="left:148px"></span></span>
+      <div class="c-row c-sub"><span><i class="kw" aria-hidden="true"></i>54% of time gone</span><span class="c-fc">on course for 78% at reset</span></div>
+      <div class="c-row c-sub"><span><i class="cg" aria-hidden="true">&#xE777;</i>Resets 14:56</span><span>in 2&thinsp;h 14&thinsp;min</span></div>
+    </div><div class="c-m">
+      <div class="c-row"><span class="c-name">Weekly &middot; all models</span><span class="c-val">61% used</span></div>
+      <span class="bar" style="width:274px"><span class="tr" style="left:0px;width:191px"></span><span class="tr" style="left:194px;width:80px"></span><span class="f s e" style="left:0px;width:167px"></span><span class="k" style="left:192px"></span></span>
+      <div class="c-row c-sub"><span><i class="kw" aria-hidden="true"></i>70% of time gone</span><span class="c-fc">on course for 87% at reset</span></div>
+      <div class="c-row c-sub"><span><i class="cg" aria-hidden="true">&#xE777;</i>Resets Thu 09:00</span><span>in 2&thinsp;d 2&thinsp;h</span></div>
+    </div>
+    <div class="c-foot"><span>Claude &middot; Max plan</span><span>Updated 12:41 (1 min ago)</span></div>
+  </div><div class="pb"><span class="lb">5h</span><span class="bar" style="width:40px"><span class="tr" style="left:0px;width:21px"></span><span class="tr" style="left:24px;width:16px"></span><span class="f s e" style="left:0px;width:17px"></span><span class="k" style="left:22px"></span></span><span class="v">42%</span><span class="t"><i class="gl">&#xE777;</i>14:56</span><span class="lb">Wk</span><span class="bar" style="width:40px"><span class="tr" style="left:0px;width:27px"></span><span class="tr" style="left:30px;width:10px"></span><span class="f s e" style="left:0px;width:24px"></span><span class="k" style="left:28px"></span></span><span class="v">61%</span><span class="t"><i class="gl">&#xE777;</i>Thu</span></div></div>
+    <span class="glyph small">&#xE70E;</span>
+    <span class="ld-icon"><span class="ti"><b>61</b><span class="bar" style="width:14px"><span class="tr" style="left:0px;width:9px"></span><span class="tr" style="left:12px;width:2px"></span><span class="f s e" style="left:0px;width:9px"></span><span class="k" style="left:10px"></span></span></span></span>
+    <span class="glyph">&#xE701;</span><span class="glyph">&#xE995;</span>
+    <div class="clock">12:42<br>2026-10-10</div>
+    <span class="glyph small">&#xEA8F;</span>
+  </div>
+</div></div>
+<div class="stage"><span class="theme-tag">dark</span><div class="taskbar dark">
+  <div class="apps"><div class="app"><i></i></div><div class="app"><i></i></div><div class="app"><i></i></div><div class="app"><i></i></div><div class="app"><i></i></div></div>
+  <div class="tray">
+    <div class="readout hov anch" data-k="7a-d" role="group" aria-label="Claude 5-hour session: on track, 42 percent used, 54 percent of the time gone, resets at 14:56. Weekly: on track, 61 percent used, 70 percent of the time gone, resets Thursday 09:00."><div class="card" role="tooltip">
+    <div class="c-head"><span class="bd16 ok" aria-hidden="true"><i>&#xEA3B;</i><i>&#xF13E;</i></span><span class="c-title">You&rsquo;ll make it to both resets</span></div>
+    <p class="c-sent">You&rsquo;re using both limits more slowly than time passes. At this rate about 22% of the session and 13% of the week will be left when they reset.</p>
+    <div class="c-m">
+      <div class="c-row"><span class="c-name">5-hour session</span><span class="c-val">42% used</span></div>
+      <span class="bar" style="width:274px"><span class="tr" style="left:0px;width:147px"></span><span class="tr" style="left:150px;width:124px"></span><span class="f s e" style="left:0px;width:115px"></span><span class="k" style="left:148px"></span></span>
+      <div class="c-row c-sub"><span><i class="kw" aria-hidden="true"></i>54% of time gone</span><span class="c-fc">on course for 78% at reset</span></div>
+      <div class="c-row c-sub"><span><i class="cg" aria-hidden="true">&#xE777;</i>Resets 14:56</span><span>in 2&thinsp;h 14&thinsp;min</span></div>
+    </div><div class="c-m">
+      <div class="c-row"><span class="c-name">Weekly &middot; all models</span><span class="c-val">61% used</span></div>
+      <span class="bar" style="width:274px"><span class="tr" style="left:0px;width:191px"></span><span class="tr" style="left:194px;width:80px"></span><span class="f s e" style="left:0px;width:167px"></span><span class="k" style="left:192px"></span></span>
+      <div class="c-row c-sub"><span><i class="kw" aria-hidden="true"></i>70% of time gone</span><span class="c-fc">on course for 87% at reset</span></div>
+      <div class="c-row c-sub"><span><i class="cg" aria-hidden="true">&#xE777;</i>Resets Thu 09:00</span><span>in 2&thinsp;d 2&thinsp;h</span></div>
+    </div>
+    <div class="c-foot"><span>Claude &middot; Max plan</span><span>Updated 12:41 (1 min ago)</span></div>
+  </div><div class="pb"><span class="lb">5h</span><span class="bar" style="width:40px"><span class="tr" style="left:0px;width:21px"></span><span class="tr" style="left:24px;width:16px"></span><span class="f s e" style="left:0px;width:17px"></span><span class="k" style="left:22px"></span></span><span class="v">42%</span><span class="t"><i class="gl">&#xE777;</i>14:56</span><span class="lb">Wk</span><span class="bar" style="width:40px"><span class="tr" style="left:0px;width:27px"></span><span class="tr" style="left:30px;width:10px"></span><span class="f s e" style="left:0px;width:24px"></span><span class="k" style="left:28px"></span></span><span class="v">61%</span><span class="t"><i class="gl">&#xE777;</i>Thu</span></div></div>
+    <span class="glyph small">&#xE70E;</span>
+    <span class="ld-icon"><span class="ti"><b>61</b><span class="bar" style="width:14px"><span class="tr" style="left:0px;width:9px"></span><span class="tr" style="left:12px;width:2px"></span><span class="f s e" style="left:0px;width:9px"></span><span class="k" style="left:10px"></span></span></span></span>
+    <span class="glyph">&#xE701;</span><span class="glyph">&#xE995;</span>
+    <div class="clock">12:42<br>2026-10-10</div>
+    <span class="glyph small">&#xEA8F;</span>
+  </div>
+</div></div>
+<h2>7b &middot; Hover card &mdash; scenario 2</h2><p class="note">The same card when one limit is ahead of pace: the verdict becomes the forecast, and the sentence says how far short of the reset it runs out.</p><div class="stage"><span class="theme-tag">light</span><div class="taskbar light">
+  <div class="apps"><div class="app"><i></i></div><div class="app"><i></i></div><div class="app"><i></i></div><div class="app"><i></i></div><div class="app"><i></i></div></div>
+  <div class="tray">
+    <div class="readout hov anch" data-k="7b-l" role="group" aria-label="Claude 5-hour session: warning, runs out at about 15:20, before the reset at 16:30; 78 percent used. Weekly: on track, 61 percent used, resets Thursday 09:00."><div class="card" role="tooltip">
+    <div class="c-head"><span class="bd16 warn" aria-hidden="true"><i>&#xE814;</i></span><span class="c-title">5-hour limit runs out at 15:20</span></div>
+    <p class="c-sent">You&rsquo;re using it faster than time passes: 78% used with 45% of the window gone. At this pace it runs out 1&thinsp;h 10&thinsp;min before the 16:30 reset. The weekly limit is fine.</p>
+    <div class="c-m">
+      <div class="c-row"><span class="c-name">5-hour session</span><span class="c-val warn">78% used</span></div>
+      <span class="bar warn" style="width:274px"><span class="tr" style="left:0px;width:122px"></span><span class="tr" style="left:125px;width:149px"></span><span class="f s" style="left:0px;width:122px"></span><span class="f e" style="left:125px;width:89px"></span><span class="k" style="left:123px"></span></span>
+      <div class="c-row c-sub"><span><i class="kw" aria-hidden="true"></i>45% of time gone</span><span class="c-fc warn">runs out &asymp; 15:20</span></div>
+      <div class="c-row c-sub"><span><i class="cg" aria-hidden="true">&#xE777;</i>Resets 16:30</span><span>in 2&thinsp;h 45&thinsp;min</span></div>
+    </div><div class="c-m">
+      <div class="c-row"><span class="c-name">Weekly &middot; all models</span><span class="c-val">61% used</span></div>
+      <span class="bar" style="width:274px"><span class="tr" style="left:0px;width:191px"></span><span class="tr" style="left:194px;width:80px"></span><span class="f s e" style="left:0px;width:167px"></span><span class="k" style="left:192px"></span></span>
+      <div class="c-row c-sub"><span><i class="kw" aria-hidden="true"></i>70% of time gone</span><span class="c-fc">on course for 87% at reset</span></div>
+      <div class="c-row c-sub"><span><i class="cg" aria-hidden="true">&#xE777;</i>Resets Thu 09:00</span><span>in 2&thinsp;d 1&thinsp;h</span></div>
+    </div>
+    <div class="c-foot"><span>Claude &middot; Max plan</span><span>Updated 13:44 (1 min ago)</span></div>
+  </div><div class="pb"><span class="lb">5h</span><span class="bar warn" style="width:40px"><span class="tr" style="left:0px;width:17px"></span><span class="tr" style="left:20px;width:20px"></span><span class="f s" style="left:0px;width:17px"></span><span class="f e" style="left:20px;width:11px"></span><span class="k" style="left:18px"></span></span><span class="say warn"><i class="gl sev warn" aria-hidden="true">&#xE814;</i>Out 15:20</span><span class="lb">Wk</span><span class="bar" style="width:40px"><span class="tr" style="left:0px;width:27px"></span><span class="tr" style="left:30px;width:10px"></span><span class="f s e" style="left:0px;width:24px"></span><span class="k" style="left:28px"></span></span><span class="v">61%</span><span class="t"><i class="gl">&#xE777;</i>Thu</span></div></div>
+    <span class="glyph small">&#xE70E;</span>
+    <span class="ld-icon"><span class="ti warn"><b>78</b></span></span>
+    <span class="glyph">&#xE701;</span><span class="glyph">&#xE995;</span>
+    <div class="clock">13:45<br>2026-10-10</div>
+    <span class="glyph small">&#xEA8F;</span>
+  </div>
+</div></div>
+<div class="stage"><span class="theme-tag">dark</span><div class="taskbar dark">
+  <div class="apps"><div class="app"><i></i></div><div class="app"><i></i></div><div class="app"><i></i></div><div class="app"><i></i></div><div class="app"><i></i></div></div>
+  <div class="tray">
+    <div class="readout hov anch" data-k="7b-d" role="group" aria-label="Claude 5-hour session: warning, runs out at about 15:20, before the reset at 16:30; 78 percent used. Weekly: on track, 61 percent used, resets Thursday 09:00."><div class="card" role="tooltip">
+    <div class="c-head"><span class="bd16 warn" aria-hidden="true"><i>&#xE814;</i></span><span class="c-title">5-hour limit runs out at 15:20</span></div>
+    <p class="c-sent">You&rsquo;re using it faster than time passes: 78% used with 45% of the window gone. At this pace it runs out 1&thinsp;h 10&thinsp;min before the 16:30 reset. The weekly limit is fine.</p>
+    <div class="c-m">
+      <div class="c-row"><span class="c-name">5-hour session</span><span class="c-val warn">78% used</span></div>
+      <span class="bar warn" style="width:274px"><span class="tr" style="left:0px;width:122px"></span><span class="tr" style="left:125px;width:149px"></span><span class="f s" style="left:0px;width:122px"></span><span class="f e" style="left:125px;width:89px"></span><span class="k" style="left:123px"></span></span>
+      <div class="c-row c-sub"><span><i class="kw" aria-hidden="true"></i>45% of time gone</span><span class="c-fc warn">runs out &asymp; 15:20</span></div>
+      <div class="c-row c-sub"><span><i class="cg" aria-hidden="true">&#xE777;</i>Resets 16:30</span><span>in 2&thinsp;h 45&thinsp;min</span></div>
+    </div><div class="c-m">
+      <div class="c-row"><span class="c-name">Weekly &middot; all models</span><span class="c-val">61% used</span></div>
+      <span class="bar" style="width:274px"><span class="tr" style="left:0px;width:191px"></span><span class="tr" style="left:194px;width:80px"></span><span class="f s e" style="left:0px;width:167px"></span><span class="k" style="left:192px"></span></span>
+      <div class="c-row c-sub"><span><i class="kw" aria-hidden="true"></i>70% of time gone</span><span class="c-fc">on course for 87% at reset</span></div>
+      <div class="c-row c-sub"><span><i class="cg" aria-hidden="true">&#xE777;</i>Resets Thu 09:00</span><span>in 2&thinsp;d 1&thinsp;h</span></div>
+    </div>
+    <div class="c-foot"><span>Claude &middot; Max plan</span><span>Updated 13:44 (1 min ago)</span></div>
+  </div><div class="pb"><span class="lb">5h</span><span class="bar warn" style="width:40px"><span class="tr" style="left:0px;width:17px"></span><span class="tr" style="left:20px;width:20px"></span><span class="f s" style="left:0px;width:17px"></span><span class="f e" style="left:20px;width:11px"></span><span class="k" style="left:18px"></span></span><span class="say warn"><i class="gl sev warn" aria-hidden="true">&#xE814;</i>Out 15:20</span><span class="lb">Wk</span><span class="bar" style="width:40px"><span class="tr" style="left:0px;width:27px"></span><span class="tr" style="left:30px;width:10px"></span><span class="f s e" style="left:0px;width:24px"></span><span class="k" style="left:28px"></span></span><span class="v">61%</span><span class="t"><i class="gl">&#xE777;</i>Thu</span></div></div>
+    <span class="glyph small">&#xE70E;</span>
+    <span class="ld-icon"><span class="ti warn"><b>78</b></span></span>
+    <span class="glyph">&#xE701;</span><span class="glyph">&#xE995;</span>
+    <div class="clock">13:45<br>2026-10-10</div>
+    <span class="glyph small">&#xEA8F;</span>
+  </div>
+</div></div>
+<h2>8 &middot; Lastdrop tray icon, 16 &times; 16</h2><p class="note">In place: the .ld-icon slot in every taskbar above (normal in 1, warning in 2, critical in 3, stale in 4). Below: the same four icons at 4&times; (CSS zoom) with the 1&times; original beside each label. The number is the most constrained meter&rsquo;s % used. Shape ladder: bare number + 14&nbsp;px pace bar (normal), outlined caution tile (warning), filled critical tile (critical), grey number + dashed bar (stale). In the warning tile the number stays in the taskbar text colour, so it keeps 13:1 or better on the hover plate too.</p><div class="zoom"><div class="zp light"><div class="zc"><div class="x4"><span class="ti"><b>61</b><span class="bar" style="width:14px"><span class="tr" style="left:0px;width:9px"></span><span class="tr" style="left:12px;width:2px"></span><span class="f s e" style="left:0px;width:9px"></span><span class="k" style="left:10px"></span></span></span></div><div class="x1"><span class="ti"><b>61</b><span class="bar" style="width:14px"><span class="tr" style="left:0px;width:9px"></span><span class="tr" style="left:12px;width:2px"></span><span class="f s e" style="left:0px;width:9px"></span><span class="k" style="left:10px"></span></span></span><span>normal &middot; 61</span></div></div><div class="zc"><div class="x4"><span class="ti warn"><b>78</b></span></div><div class="x1"><span class="ti warn"><b>78</b></span><span>warning &middot; 78</span></div></div><div class="zc"><div class="x4"><span class="ti crit"><b>94</b></span></div><div class="x1"><span class="ti crit"><b>94</b></span><span>critical &middot; 94</span></div></div><div class="zc"><div class="x4"><span class="ti stale"><b>61</b><span class="bar stale" style="width:14px"><span class="tr" style="left:0px;width:9px"></span><span class="tr" style="left:12px;width:2px"></span><span class="f s e" style="left:0px;width:9px"></span><span class="k" style="left:10px"></span></span></span></div><div class="x1"><span class="ti stale"><b>61</b><span class="bar stale" style="width:14px"><span class="tr" style="left:0px;width:9px"></span><span class="tr" style="left:12px;width:2px"></span><span class="f s e" style="left:0px;width:9px"></span><span class="k" style="left:10px"></span></span></span><span>stale &middot; 61</span></div></div></div><div class="zp dark"><div class="zc"><div class="x4"><span class="ti"><b>61</b><span class="bar" style="width:14px"><span class="tr" style="left:0px;width:9px"></span><span class="tr" style="left:12px;width:2px"></span><span class="f s e" style="left:0px;width:9px"></span><span class="k" style="left:10px"></span></span></span></div><div class="x1"><span class="ti"><b>61</b><span class="bar" style="width:14px"><span class="tr" style="left:0px;width:9px"></span><span class="tr" style="left:12px;width:2px"></span><span class="f s e" style="left:0px;width:9px"></span><span class="k" style="left:10px"></span></span></span><span>normal &middot; 61</span></div></div><div class="zc"><div class="x4"><span class="ti warn"><b>78</b></span></div><div class="x1"><span class="ti warn"><b>78</b></span><span>warning &middot; 78</span></div></div><div class="zc"><div class="x4"><span class="ti crit"><b>94</b></span></div><div class="x1"><span class="ti crit"><b>94</b></span><span>critical &middot; 94</span></div></div><div class="zc"><div class="x4"><span class="ti stale"><b>61</b><span class="bar stale" style="width:14px"><span class="tr" style="left:0px;width:9px"></span><span class="tr" style="left:12px;width:2px"></span><span class="f s e" style="left:0px;width:9px"></span><span class="k" style="left:10px"></span></span></span></div><div class="x1"><span class="ti stale"><b>61</b><span class="bar stale" style="width:14px"><span class="tr" style="left:0px;width:9px"></span><span class="tr" style="left:12px;width:2px"></span><span class="f s e" style="left:0px;width:9px"></span><span class="k" style="left:10px"></span></span></span><span>stale &middot; 61</span></div></div></div></div>
+</body>
+</html>
