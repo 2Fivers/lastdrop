@@ -157,6 +157,7 @@ semibold TextPrimary; wraps to at most 2 lines.
 |---|---|---|---|
 | OFFLINE | stale (U+F140) | **Offline** · showing 12:42 · next try 13:30 | — |
 | NO_DATA | stale | **Not answering** · showing 12:42 · next try 13:30 (the card header already names the service; one line) | — |
+| OLD_READING (R§3.8) | stale | **No new reading** · showing 12:42 · next try 13:30 | — |
 | SIGN_IN | informational (accent disc + i) | **Sign-in expired.** Lastdrop never signs in for you. | hyperlink button `Open sign-in…` (AccentTextFillColorPrimary): opens the vendor's own login in a terminal with this account's config folder set (`claude` / `codex login`), roadmap "Add an account" |
 | PAUSED | stale | **Paused** · showing 12:42 | hyperlink `Resume` |
 | first fetch failed | critical | **Couldn't read Claude** · {short detail} | hyperlink `Retry` |

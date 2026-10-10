@@ -572,7 +572,7 @@ fn verdict(eval: &Evaluation, cx: &TextContext<'_>) -> Verdict {
                     SeverityGlyph::Stale,
                     s.template(Msg::FlyoutVerdictPaused).to_owned(),
                 ),
-                StaleReason::Offline | StaleReason::NoData => {
+                StaleReason::Offline | StaleReason::NoData | StaleReason::OldReading => {
                     let age = last_reading(service)
                         .map(|t| long_duration(shown_age(cx.now, t), s))
                         .unwrap_or_default();
@@ -745,23 +745,26 @@ fn message_line(service: &ServiceEval, cx: &TextContext<'_>) -> Option<MessageLi
         .unwrap_or_default();
     match reason {
         StaleReason::SignIn => sign_in(),
-        StaleReason::Offline | StaleReason::NoData => Some(MessageLine {
-            kind: if reason == StaleReason::Offline {
-                MessageKind::Offline
-            } else {
-                MessageKind::NoData
-            },
-            glyph: SeverityGlyph::Stale,
-            lead: s
-                .template(if reason == StaleReason::Offline {
-                    Msg::FlyoutMsgOffline
+        StaleReason::Offline | StaleReason::NoData | StaleReason::OldReading => {
+            Some(MessageLine {
+                kind: if reason == StaleReason::Offline {
+                    MessageKind::Offline
                 } else {
-                    Msg::FlyoutMsgNoData
-                })
-                .to_owned(),
-            text: format!("{showing}{next}"),
-            action: None,
-        }),
+                    // The same look as NO_DATA; only the words differ.
+                    MessageKind::NoData
+                },
+                glyph: SeverityGlyph::Stale,
+                lead: s
+                    .template(match reason {
+                        StaleReason::Offline => Msg::FlyoutMsgOffline,
+                        StaleReason::OldReading => Msg::FlyoutMsgOldReading,
+                        _ => Msg::FlyoutMsgNoData,
+                    })
+                    .to_owned(),
+                text: format!("{showing}{next}"),
+                action: None,
+            })
+        }
         StaleReason::Paused => Some(MessageLine {
             kind: MessageKind::Paused,
             glyph: SeverityGlyph::Stale,

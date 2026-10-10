@@ -236,6 +236,7 @@ pub fn service_sentence(
         StaleReason::SignIn => Msg::A11yServiceSignIn,
         StaleReason::Offline => Msg::A11yServiceOffline,
         StaleReason::NoData => Msg::A11yServiceNoData,
+        StaleReason::OldReading => Msg::A11yServiceOldReading,
         StaleReason::Paused => Msg::A11yServicePaused,
     };
     let sentence = text(
@@ -246,7 +247,10 @@ pub fn service_sentence(
     if list.is_empty()
         && matches!(
             reason,
-            StaleReason::Offline | StaleReason::NoData | StaleReason::Paused
+            StaleReason::Offline
+                | StaleReason::NoData
+                | StaleReason::OldReading
+                | StaleReason::Paused
         )
     {
         first_sentence(&sentence).to_owned()
@@ -307,10 +311,10 @@ pub fn tray_tooltip(eval: &Evaluation, cx: &TextContext<'_>) -> String {
                 || cx.strings.template(Msg::NoReset).to_owned(),
                 |t| long_duration(shown_age(cx.now, t), cx.strings),
             );
-            let msg = if reason == StaleReason::Offline {
-                Msg::TrayOffline
-            } else {
-                Msg::TrayNoData
+            let msg = match reason {
+                StaleReason::Offline => Msg::TrayOffline,
+                StaleReason::OldReading => Msg::TrayOldReading,
+                _ => Msg::TrayNoData,
             };
             say(msg, &[("age", age)])
         }

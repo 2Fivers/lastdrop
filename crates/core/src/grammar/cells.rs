@@ -117,12 +117,14 @@ pub(crate) fn reason_text(reason: StaleReason, cx: &TextContext<'_>) -> String {
         StaleReason::Paused => Msg::ReasonPaused,
         StaleReason::Offline => Msg::ReasonOffline,
         StaleReason::NoData => Msg::ReasonNoData,
+        StaleReason::OldReading => Msg::ReasonOldReading,
     };
     cx.strings.template(msg).to_owned()
 }
 
 /// The status of a stale row (R§5.7): REASON (`Sign in` in AccentText, others in the stale
-/// colour) or AGE. Two rows take REASON then AGE; one row shows `Sign in` or `Paused`, else AGE.
+/// colour) or AGE. Two rows take REASON then AGE; one row shows `Sign in` or `Paused`, else AGE;
+/// an old reading (`StaleReason::OldReading`, no fault) shows AGE on every row.
 pub(crate) fn stale_status(
     reason: StaleReason,
     service: &ServiceEval,
@@ -145,7 +147,8 @@ pub(crate) fn stale_status(
         );
         run(age, TextStyle::ROW, ColorRole::Stale)
     };
-    if pos.rows_in_service >= 2 {
+    // An old reading has no fault to name: AGE on every row.
+    if pos.rows_in_service >= 2 && reason != StaleReason::OldReading {
         if pos.index_in_service == 0 {
             reason_run(reason)
         } else {
@@ -154,7 +157,7 @@ pub(crate) fn stale_status(
     } else {
         match reason {
             StaleReason::SignIn | StaleReason::Paused => reason_run(reason),
-            StaleReason::Offline | StaleReason::NoData => age(),
+            StaleReason::Offline | StaleReason::NoData | StaleReason::OldReading => age(),
         }
     }
 }

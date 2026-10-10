@@ -199,7 +199,13 @@ STALE if   now − last_success > stale_after
       or   updates are paused by the user          (reason PAUSED, immediately)
 reason = SIGN_IN | PAUSED | OFFLINE (no internet per Network List Manager, or DNS/connect failures)
        | NO_DATA (anything else: HTTP 5xx, 429 back-off, parse error)
+       | OLD_READING (no failure on record: the source answers, but its newest reading is old,
+                      e.g. Claude Desktop's history while Claude Desktop is closed)
 ```
+
+OLD_READING names no fault: the readout shows AGE on every row of the service (no REASON), the flyout's message
+line says **No new reading** · showing 12:42 · next try 13:30, the hover card sentence
+`{service} answers, but its newest numbers are from {time}. Next try at {next}.`
 
 While a service is stale its meters show the **last reading, frozen**: `u`, `e(t_r)`, no forecast, no severity
 colour. If a meter's window reset after `t_r` (`R ≤ now`), draw it as reset (§3.9) but keep the stale styling.
@@ -937,6 +943,7 @@ and §8.2.
 | card.sentence.exhausted | `Used up{ since {time}}. It is back at {time}, in {duration}.` |
 | card.sentence.offline | `Lastdrop is offline, so these are the numbers from {time}. Bars are dashed and frozen at that moment until a new reading arrives. Next try at {time}.` |
 | card.sentence.nodata | `{service} isn't answering ({detail}), so these are the numbers from {time}. Next try at {time}.` |
+| card.sentence.oldreading | `{service} answers, but its newest numbers are from {time}. Next try at {time}.` (§3.8 OLD_READING) |
 | card.sentence.signin | `{service}'s sign-in has expired. Lastdrop never signs in for you: open {client} in this account to renew it. Select the readout for the steps.` |
 | card.sentence.paused | `Updates are paused{ until {time}}. These are the numbers from {time}.` |
 | card.line.elapsed / elapsed.stale | `{e}% of time gone` / `{e}% of time gone at {time}` |

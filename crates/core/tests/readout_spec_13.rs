@@ -1034,8 +1034,17 @@ mod freshness {
             last_success: Some(now() - mins(16)),
             ..fresh
         };
+        // No failure on record: the source answered with an old reading.
         assert_eq!(
             stats::freshness(now(), &stale),
+            Freshness::Stale(StaleReason::OldReading)
+        );
+        let failing = ServiceStatus {
+            last_failure: Some((now() - mins(1), FailureKind::NoData)),
+            ..stale
+        };
+        assert_eq!(
+            stats::freshness(now(), &failing),
             Freshness::Stale(StaleReason::NoData)
         );
     }

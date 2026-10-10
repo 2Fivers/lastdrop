@@ -2163,4 +2163,58 @@ mod review {
         let card = build_hover_card(&eval, HoverAnchor::Readout, &eval.readout_rows, &cx);
         assert_eq!(card.header.title, "5-hour limit runs out in 1 min");
     }
+
+    #[test]
+    fn an_old_reading_without_a_failure_is_not_called_unanswered() {
+        // Claude Desktop's history answers every fetch, but Claude Desktop has written nothing
+        // for 23 h: no failure is on record.
+        let settings = settings_with(&[ProviderId::Claude]);
+        let read = now() - hours(23) - mins(28);
+        let snap = snapshot(
+            ProviderId::Claude,
+            vec![five_hour(0.10, None), weekly(0.55, None)],
+            read,
+        );
+        let status = ServiceStatus {
+            next_try: Some(now() + mins(5)),
+            ..fresh(read)
+        };
+        let eval = eval_once(
+            &[Svc::new(snap).status(status)],
+            &settings,
+            &History::new(),
+            now(),
+        );
+        let (service, _) = eval
+            .assessment(&key(ProviderId::Claude, MeterId::WEEKLY))
+            .expect("a");
+        assert_eq!(
+            service.freshness,
+            stats::Freshness::Stale(StaleReason::OldReading)
+        );
+        let locale = gb();
+        let cx = build_cx(now(), &locale, &settings);
+        let readout = build_readout(&eval, &cx);
+        assert_eq!(
+            cell_texts(&readout, 0),
+            ["10%", "23h ago"],
+            "AGE, not No data"
+        );
+        assert_eq!(cell_texts(&readout, 1), ["55%", "23h ago"]);
+        let flyout = build_flyout(&eval, &History::new(), false, &cx);
+        let message = flyout.cards[0].message.as_ref().expect("message");
+        assert_eq!(message.lead, "No new reading");
+        let card = build_hover_card(&eval, HoverAnchor::Readout, &eval.readout_rows, &cx);
+        assert!(
+            card.sentence
+                .starts_with("Claude answers, but its newest numbers are from"),
+            "{}",
+            card.sentence
+        );
+        assert!(
+            build_tray(&eval, &cx)
+                .tooltip
+                .contains("has no new reading")
+        );
+    }
 }

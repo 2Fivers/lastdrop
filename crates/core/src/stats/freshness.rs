@@ -17,6 +17,11 @@ pub enum StaleReason {
     Offline,
     /// Anything else: HTTP 5xx, 429 back-off, parse error.
     NoData,
+    /// The source answers, but its newest reading is old: no failure is on record (Claude
+    /// Desktop's history while Claude Desktop is closed, a cached usage). Nothing is broken, so
+    /// the readout shows AGE on every row and the flyout says "No new reading", not "Not
+    /// answering". **Not from the spec** (R§3.8 put this case under NO_DATA).
+    OldReading,
 }
 
 /// Fresh or stale with a reason (R§3.8).
@@ -85,9 +90,9 @@ pub fn stale_after(poll_interval: Option<SignedDuration>) -> SignedDuration {
 /// ```
 ///
 /// The reason is the first that applies in the order SIGN_IN, PAUSED, then the class of the last
-/// failure (OFFLINE / NO_DATA), NO_DATA when there is no failure on record (e.g. a successful
-/// fetch that returned an old cached reading). A service without any success is reported by its
-/// caller as LOADING, not through this function.
+/// failure (OFFLINE / NO_DATA), [`StaleReason::OldReading`] when there is no failure on record
+/// (a successful fetch that returned an old reading). A service without any success is reported
+/// by its caller as LOADING, not through this function.
 pub fn freshness(now: Timestamp, status: &ServiceStatus) -> Freshness {
     let failure = status.last_failure.map(|(_, kind)| kind);
     if status.sign_in_required || failure == Some(FailureKind::Auth) {
@@ -98,7 +103,8 @@ pub fn freshness(now: Timestamp, status: &ServiceStatus) -> Freshness {
     }
     let reason = match failure {
         Some(FailureKind::Offline) => StaleReason::Offline,
-        _ => StaleReason::NoData,
+        Some(FailureKind::NoData | FailureKind::Auth) => StaleReason::NoData,
+        None => StaleReason::OldReading,
     };
     match status.last_success {
         Some(t) if now.duration_since(t) > stale_after(status.poll_interval) => {
@@ -166,6 +172,15 @@ mod tests {
         assert_eq!(freshness(ts(160), &manual), Freshness::Fresh);
         assert_eq!(
             freshness(ts(161), &manual),
+            Freshness::Stale(StaleReason::OldReading),
+            "no failure on record: the source answered with an old reading"
+        );
+        let failed = ServiceStatus {
+            last_failure: Some((ts(150), FailureKind::NoData)),
+            ..manual
+        };
+        assert_eq!(
+            freshness(ts(161), &failed),
             Freshness::Stale(StaleReason::NoData)
         );
     }

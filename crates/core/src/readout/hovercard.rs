@@ -373,7 +373,7 @@ fn also_time(a: &Assessment, service: &ServiceEval, cx: &TextContext<'_>) -> Als
                 semibold: false,
                 role: ColorRole::Stale,
             },
-            StaleReason::Offline | StaleReason::NoData => AlsoTime {
+            StaleReason::Offline | StaleReason::NoData | StaleReason::OldReading => AlsoTime {
                 glyph: None,
                 text: last_reading(service)
                     .map_or_else(|| s.template(Msg::NoReset).to_owned(), |t| age_token(t, cx)),
@@ -472,7 +472,10 @@ fn stale_header(
     let title = match reason {
         StaleReason::SignIn if api_key => text(s, Msg::CardTitleApiKey, &[("service", &svc)]),
         StaleReason::SignIn => text(s, Msg::CardTitleSignIn, &[("service", &svc)]),
-        StaleReason::Paused | StaleReason::Offline | StaleReason::NoData => {
+        StaleReason::Paused
+        | StaleReason::Offline
+        | StaleReason::NoData
+        | StaleReason::OldReading => {
             let age = last_reading(service)
                 .map(|r| long(shown_age(t.now, r), t))
                 .unwrap_or_default();
@@ -493,6 +496,10 @@ fn stale_header(
             ],
         ),
         StaleReason::Offline => with_next(Msg::CardSentenceOffline, &[("time", &time)]),
+        StaleReason::OldReading => with_next(
+            Msg::CardSentenceOldReading,
+            &[("service", &svc), ("time", &time)],
+        ),
         StaleReason::NoData => {
             let template = match &service.status.failure_detail {
                 Some(_) => s.template(Msg::CardSentenceNoData).to_owned(),
