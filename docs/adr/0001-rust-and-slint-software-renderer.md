@@ -1,6 +1,6 @@
 # 0001 — Rust with Slint's software renderer
 
-- **Status:** Proposed (2026-10-10), awaiting the owner's go
+- **Status:** Accepted (2026-10-10)
 - **Deciders:** pRob3
 
 ## Context
