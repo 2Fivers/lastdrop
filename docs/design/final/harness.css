@@ -1,0 +1,40 @@
+/* Windows 11 taskbar mock at 1:1 (100 % scale). Shared by every readout variant so they
+   compare fairly. Transparency effects off = solid taskbar colours, as on the owner's PC. */
+:root {
+  --font: "Segoe UI Variable Text", "Segoe UI Variable", "Segoe UI", sans-serif;
+  --icons: "Segoe Fluent Icons", "Segoe MDL2 Assets";
+  --accent-light: #8e3aa7;   /* owner's accent, darker shade WinUI uses on light */
+  --accent-dark: #d58ae8;    /* lighter shade WinUI uses on dark */
+}
+* { box-sizing: border-box; }
+body { margin: 0; padding: 24px; background: #6b6f78; font-family: var(--font); }
+h2 { font: 600 14px var(--font); color: #fff; margin: 28px 0 8px; }
+p.note { font: 12px var(--font); color: #e6e6e6; margin: 0 0 10px; max-width: 900px; }
+
+.taskbar {
+  position: relative; height: 48px; width: 1100px; display: flex; align-items: center;
+  font-family: var(--font); user-select: none;
+}
+.taskbar.light { background: #eeeeee; color: #1a1a1a; border-top: 1px solid #d9d9d9; --tb-fg: #1a1a1a; --tb-fg2: #5c5c5c; --tb-hover: rgba(0,0,0,.05); --accent: var(--accent-light); }
+.taskbar.dark  { background: #1c1c1c; color: #ffffff; border-top: 1px solid #2e2e2e; --tb-fg: #ffffff; --tb-fg2: #c5c5c5; --tb-hover: rgba(255,255,255,.07); --accent: var(--accent-dark); }
+
+/* centred app buttons (Windows 11 default alignment) */
+.taskbar .apps { position: absolute; left: 50%; transform: translateX(-50%); display: flex; gap: 4px; }
+.taskbar .app { width: 40px; height: 40px; border-radius: 4px; display: grid; place-items: center; }
+.taskbar .app i { width: 24px; height: 24px; border-radius: 5px; display: block; }
+.taskbar .app:nth-child(1) i { background: linear-gradient(135deg,#0a84ff,#4cc2ff); }
+.taskbar .app:nth-child(2) i { background: #f2c94c; }
+.taskbar .app:nth-child(3) i { background: linear-gradient(135deg,#e34c26,#f06529); }
+.taskbar .app:nth-child(4) i { background: #2d2d2d; outline: 1px solid #555; }
+.taskbar .app:nth-child(5) i { background: linear-gradient(135deg,#7b2ff7,#f107a3); }
+
+/* right side: readout slot, overflow chevron, tray icons, clock, bell */
+.taskbar .tray { margin-left: auto; display: flex; align-items: center; height: 100%; padding-right: 8px; }
+.taskbar .readout { height: 40px; display: flex; align-items: center; margin-right: 4px; border-radius: 4px; padding: 0 6px; }
+.taskbar .readout:hover { background: var(--tb-hover); }
+.taskbar .glyph { font-family: var(--icons); font-size: 16px; width: 32px; height: 40px; display: grid; place-items: center; color: var(--tb-fg); }
+.taskbar .glyph.small { font-size: 12px; width: 24px; }
+.taskbar .clock { text-align: right; font-size: 12px; line-height: 16px; padding: 0 8px 0 6px; color: var(--tb-fg); }
+
+/* the tray icon of Lastdrop itself, 16x16 at 100 % */
+.taskbar .ld-icon { width: 32px; height: 40px; display: grid; place-items: center; }
