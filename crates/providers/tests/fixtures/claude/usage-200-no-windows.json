@@ -1,0 +1,6 @@
+{
+  "five_hour": null,
+  "seven_day": null,
+  "extra_usage": { "is_enabled": false, "utilization": null },
+  "limits": []
+}
