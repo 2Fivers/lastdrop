@@ -1,8 +1,9 @@
-// Settings window: M1 "settings basics" (ROADMAP M1). Placeholder; the settings design is out of
-// scope of both specs (F§12), so this interface may still change. The Meshy API key is passed to
-// Rust once and stored in Credential Manager, never kept in a property or settings.json.
+// Settings window: M1 "settings basics" (ROADMAP M1). The settings design is out of scope of both
+// specs (F§12); this is a plain Windows 11 (fluent) window following the app theme. The Meshy API
+// key is passed to Rust once and stored in Credential Manager, never kept in a property, never
+// shown again and never written to settings.json.
 
-import { Button, CheckBox, LineEdit, ComboBox } from "std-widgets.slint";
+import { Button, CheckBox, LineEdit, ComboBox, ScrollView, Switch, GroupBox, Palette } from "std-widgets.slint";
 
 export struct ProviderRow {
     id: string,
@@ -19,10 +20,24 @@ export struct MeterChoice {
     pinned: bool,
 }
 
+component SectionTitle inherits Text {
+    font-size: 14px;
+    font-weight: 600;
+    color: Palette.foreground;
+}
+
+component Hint inherits Text {
+    font-size: 12px;
+    color: Palette.foreground.with-alpha(0.62);
+    wrap: word-wrap;
+}
+
 export component SettingsWindow inherits Window {
     title: "Lastdrop settings";
     preferred-width: 480px;
-    preferred-height: 420px;
+    preferred-height: 640px;
+    min-width: 400px;
+    min-height: 360px;
 
     in-out property <[ProviderRow]> providers;
     // Refresh interval: index into interval-choices ("Manual", "1 min", …), localized by Rust.
@@ -38,6 +53,18 @@ export component SettingsWindow inherits Window {
     in property <bool> focus-pins;
     in-out property <bool> start-with-windows;
     in property <bool> meshy-key-stored;
+    // The global hotkey (R§10, off by default): modifiers and one key (a letter, a digit or
+    // F1…F24).
+    in-out property <bool> hotkey-enabled;
+    in-out property <bool> hotkey-ctrl;
+    in-out property <bool> hotkey-alt;
+    in-out property <bool> hotkey-shift;
+    in-out property <bool> hotkey-win;
+    in-out property <string> hotkey-key;
+    // A problem to show under the hotkey (`the shortcut is already in use`).
+    in property <string> hotkey-error;
+    // One line under the buttons: what Apply did or why it could not.
+    in property <string> status-text;
 
     callback provider-toggled(int, bool);
     callback meter-shown-toggled(int, bool);
@@ -48,53 +75,258 @@ export component SettingsWindow inherits Window {
     // `close` would shadow Window's builtin close() (Slint 1.18), hence `dismiss`.
     callback dismiss();
 
+    // Scrolls the readout section into view (focus-pins).
+    public function show-pins() {
+        sv.content-y = -readout-section.y;
+    }
+
     VerticalLayout {
-        padding: 24px;
-        spacing: 12px;
-        Text {
-            text: "Settings";
-            font-size: 20px;
-            font-weight: 600;
-        }
-        for row[i] in root.providers: CheckBox {
-            text: row.name;
-            checked: row.enabled;
-            toggled => {
-                root.provider-toggled(i, self.checked);
-            }
-        }
-        ComboBox {
-            model: root.interval-choices;
-            current-index <=> root.interval-index;
-        }
-        CheckBox {
-            text: "Show the taskbar readout";
-            checked <=> root.readout-enabled;
-        }
-        CheckBox {
-            text: "Start with Windows";
-            checked <=> root.start-with-windows;
-        }
-        HorizontalLayout {
-            spacing: 8px;
-            key := LineEdit {
-                placeholder-text: root.meshy-key-stored ? "Meshy API key stored" : "Meshy API key";
-                input-type: password;
-            }
-            Button {
-                text: "Save key";
-                clicked => {
-                    root.set-meshy-key(key.text);
-                    key.text = "";
+        sv := ScrollView {
+            vertical-stretch: 1;
+            content-width: self.visible-width;
+            content-height: page.preferred-height;
+            page := VerticalLayout {
+                width: sv.visible-width;
+                padding: 24px;
+                spacing: 16px;
+
+                Text {
+                    text: "Settings";
+                    font-size: 20px;
+                    font-weight: 600;
+                    color: Palette.foreground;
+                }
+
+                // Services: on/off; Meshy needs an API key.
+                VerticalLayout {
+                    spacing: 8px;
+                    SectionTitle {
+                        text: "Services";
+                    }
+                    for row[i] in root.providers: CheckBox {
+                        text: row.name;
+                        checked: row.enabled;
+                        toggled => {
+                            root.provider-toggled(i, self.checked);
+                        }
+                    }
+                    Hint {
+                        text: "Claude and Codex are read from their own files on this PC. Lastdrop never signs in for you and never changes their sign-in.";
+                    }
+                }
+
+                VerticalLayout {
+                    spacing: 8px;
+                    SectionTitle {
+                        text: "Meshy API key";
+                    }
+                    HorizontalLayout {
+                        spacing: 8px;
+                        key := LineEdit {
+                            placeholder-text: root.meshy-key-stored ? "A key is stored. Paste a new one to replace it" : "Paste your Meshy API key";
+                            input-type: password;
+                            horizontal-stretch: 1;
+                            accepted => {
+                                if (self.text != "") {
+                                    root.set-meshy-key(self.text);
+                                    self.text = "";
+                                }
+                            }
+                        }
+                        Button {
+                            text: "Save key";
+                            enabled: key.text != "";
+                            clicked => {
+                                root.set-meshy-key(key.text);
+                                key.text = "";
+                            }
+                        }
+                        if root.meshy-key-stored: Button {
+                            text: "Remove";
+                            clicked => {
+                                root.clear-meshy-key();
+                            }
+                        }
+                    }
+                    Hint {
+                        text: "Stored in Windows Credential Manager, never in a file. Lastdrop only reads your credit balance.";
+                    }
+                }
+
+                VerticalLayout {
+                    spacing: 8px;
+                    SectionTitle {
+                        text: "Refresh";
+                    }
+                    HorizontalLayout {
+                        spacing: 12px;
+                        Text {
+                            text: "Check usage";
+                            vertical-alignment: center;
+                            color: Palette.foreground;
+                        }
+                        ComboBox {
+                            model: root.interval-choices;
+                            current-index <=> root.interval-index;
+                        }
+                        Rectangle {
+                            horizontal-stretch: 1;
+                        }
+                    }
+                }
+
+                readout-section := VerticalLayout {
+                    spacing: 8px;
+                    SectionTitle {
+                        text: "Taskbar readout";
+                    }
+                    Switch {
+                        text: "Show the readout in the taskbar";
+                        checked <=> root.readout-enabled;
+                    }
+                    HorizontalLayout {
+                        spacing: 12px;
+                        Text {
+                            text: "Rows";
+                            vertical-alignment: center;
+                            color: Palette.foreground;
+                        }
+                        ComboBox {
+                            model: ["The most constrained meters (auto)", "Meters I pin"];
+                            current-index <=> root.readout-content-index;
+                            enabled: root.readout-enabled;
+                        }
+                        Rectangle {
+                            horizontal-stretch: 1;
+                        }
+                    }
+                    HorizontalLayout {
+                        spacing: 12px;
+                        Text {
+                            text: "Show times as";
+                            vertical-alignment: center;
+                            color: Palette.foreground;
+                        }
+                        ComboBox {
+                            model: ["Clock times (14:56)", "Time remaining (2h)"];
+                            current-index <=> root.time-style-index;
+                        }
+                        Rectangle {
+                            horizontal-stretch: 1;
+                        }
+                    }
+                    Rectangle {
+                        border-radius: 4px;
+                        border-width: root.focus-pins ? 1px : 0px;
+                        border-color: Palette.accent-background;
+                        VerticalLayout {
+                            padding: root.focus-pins ? 8px : 0px;
+                            spacing: 4px;
+                            Hint {
+                                text: "Meters: show them in the flyout, and pin up to two to the readout.";
+                            }
+                            for meter[i] in root.meters: HorizontalLayout {
+                                spacing: 12px;
+                                Text {
+                                    text: meter.label;
+                                    vertical-alignment: center;
+                                    color: Palette.foreground;
+                                    horizontal-stretch: 1;
+                                    overflow: elide;
+                                }
+                                CheckBox {
+                                    text: "Show";
+                                    checked: meter.shown;
+                                    toggled => {
+                                        root.meter-shown-toggled(i, self.checked);
+                                    }
+                                }
+                                CheckBox {
+                                    text: "Pin";
+                                    checked: meter.pinned;
+                                    enabled: meter.shown && root.readout-content-index == 1;
+                                    toggled => {
+                                        root.meter-pinned-toggled(i, self.checked);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                VerticalLayout {
+                    spacing: 8px;
+                    SectionTitle {
+                        text: "Shortcut";
+                    }
+                    Switch {
+                        text: "Open Lastdrop with a keyboard shortcut";
+                        checked <=> root.hotkey-enabled;
+                    }
+                    HorizontalLayout {
+                        spacing: 8px;
+                        CheckBox {
+                            text: "Ctrl";
+                            checked <=> root.hotkey-ctrl;
+                            enabled: root.hotkey-enabled;
+                        }
+                        CheckBox {
+                            text: "Alt";
+                            checked <=> root.hotkey-alt;
+                            enabled: root.hotkey-enabled;
+                        }
+                        CheckBox {
+                            text: "Shift";
+                            checked <=> root.hotkey-shift;
+                            enabled: root.hotkey-enabled;
+                        }
+                        CheckBox {
+                            text: "Win";
+                            checked <=> root.hotkey-win;
+                            enabled: root.hotkey-enabled;
+                        }
+                        LineEdit {
+                            width: 72px;
+                            placeholder-text: "Key";
+                            text <=> root.hotkey-key;
+                            enabled: root.hotkey-enabled;
+                        }
+                        Rectangle {
+                            horizontal-stretch: 1;
+                        }
+                    }
+                    if root.hotkey-error != "": Hint {
+                        text: root.hotkey-error;
+                        color: Palette.foreground;
+                    }
+                }
+
+                VerticalLayout {
+                    spacing: 8px;
+                    SectionTitle {
+                        text: "Start-up";
+                    }
+                    Switch {
+                        text: "Start Lastdrop when I sign in to Windows";
+                        checked <=> root.start-with-windows;
+                    }
                 }
             }
         }
         Rectangle {
-            vertical-stretch: 1;
+            height: 1px;
+            background: Palette.border;
         }
         HorizontalLayout {
-            alignment: end;
+            padding: 16px;
             spacing: 8px;
+            Text {
+                text: root.status-text;
+                vertical-alignment: center;
+                color: Palette.foreground;
+                overflow: elide;
+                horizontal-stretch: 1;
+            }
             Button {
                 text: "Apply";
                 primary: true;

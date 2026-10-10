@@ -24,11 +24,23 @@ export global Theme {
     in property <color> hc-highlight-text: #000000;
     in property <color> hc-gray-text: #a6a6a6;
     in property <color> hc-hotlight: #75e9fc;
+    // What the window paints under its content. Transparent in the app: DWM draws the acrylic
+    // backdrop or its solid fallback (F§1.1). The --preview-flyout render sets the solid fallback
+    // (#F9F9F9 / #2C2C2C, F§7) so the PNG looks like the window with transparency off.
+    in property <color> solid-backdrop: transparent;
+    // Focus rectangles only after keyboard use (F§9, as WinUI): set by the windows' key handlers,
+    // cleared on pointer input.
+    in-out property <bool> keyboard-focus-visible: false;
 
     in property <string> font-small: "Segoe UI Variable Small";
     in property <string> font-text: "Segoe UI Variable Text";
     in property <string> font-display: "Segoe UI Variable Display";
     in property <string> font-icons: "Segoe Fluent Icons";
+    // Segoe UI Variable is one variable font; Slint 1.18's text stack selects its families but
+    // not the optical-size axis of the named instances, so "Small" renders with the Text
+    // instance's tighter fit. Measured against the mock (Edge, 12 px): +0.18 px per character
+    // brings 12/16 text to the Small instance's widths (F§8). Applied to every 12 px text.
+    in property <length> small-tracking: 0.18px;
 
     out property <color> text-primary: high-contrast ? hc-window-text : dark ? #ffffff : #000000e4;
     out property <color> text-secondary: high-contrast ? hc-window-text : dark ? #ffffffc5 : #0000009e;
@@ -40,6 +52,7 @@ export global Theme {
     out property <color> critical: high-contrast ? hc-highlight : dark ? #ff99a4 : #c42b1c;
     out property <color> success: high-contrast ? hc-highlight : dark ? #6ccb5f : #0f7b0f;
     out property <color> on-accent: high-contrast ? hc-highlight-text : dark ? #000000 : #ffffff;
+    // F§7 high contrast: the flyout's meter fill is COLOR_HIGHLIGHT at every severity.
     out property <color> accent: high-contrast ? hc-highlight : accent-fill;
     out property <color> link: high-contrast ? hc-hotlight : accent-text;
     out property <color> card-fill: high-contrast ? transparent : dark ? #ffffff0d : #ffffffb3;
@@ -50,8 +63,10 @@ export global Theme {
     out property <color> badge-fill: high-contrast ? transparent : dark ? #ffffff0f : #0000000f;
     out property <color> footer-fill: high-contrast ? transparent : dark ? #00000030 : #0000000a;
     out property <color> focus-outer: high-contrast ? hc-highlight : dark ? #ffffff : #000000e4;
-    out property <color> focus-inner: dark ? #000000b3 : #ffffffb3;
-    out property <color> window-fill: high-contrast ? hc-window : transparent;
+    out property <color> focus-inner: high-contrast ? hc-window : dark ? #000000b3 : #ffffffb3;
+    // F§9: 2 px focus stroke in contrast themes (COLOR_HIGHLIGHT 2 px).
+    out property <length> focus-width: 2px;
+    out property <color> window-fill: high-contrast ? hc-window : solid-backdrop;
 }
 
 // One span of device pixels, relative to the bar's origin.
@@ -96,6 +111,40 @@ export struct SparkData {
     base-w: float,
 }
 
+// One fill segment of a pace bar. Rounded outer ends (WinUI ProgressBar indicator) per F§11's
+// fallback for renderers without per-corner radii: the whole segment is a rounded rectangle and a
+// square patch covers the rounded corners of an end that must stay square (a gap or a dash).
+component FillSeg inherits Rectangle {
+    in property <float> seg-x;
+    in property <float> seg-w;
+    in property <float> fill-h;
+    in property <float> top;
+    in property <bool> round-left;
+    in property <bool> round-right;
+    in property <color> fill-color;
+    // Device px covered by one rounded end: ceil(fill-h / 2), at most the segment's width.
+    property <float> cap: min(root.seg-w, ceil(root.fill-h / 2));
+    x: root.seg-x * 1phx;
+    y: root.top * 1phx;
+    width: root.seg-w * 1phx;
+    height: root.fill-h * 1phx;
+
+    Rectangle {
+        background: root.fill-color;
+        border-radius: (root.round-left || root.round-right) ? min(root.seg-w, root.fill-h) / 2 * 1phx : 0px;
+    }
+    if (root.round-left || root.round-right) && !root.round-left: Rectangle {
+        x: 0px;
+        width: root.cap * 1phx;
+        background: root.fill-color;
+    }
+    if (root.round-left || root.round-right) && !root.round-right: Rectangle {
+        x: (root.seg-w - root.cap) * 1phx;
+        width: root.cap * 1phx;
+        background: root.fill-color;
+    }
+}
+
 // R§6.6: rectangles at device pixels; all segments are children of one element so any sub-pixel
 // offset of the layout applies to all of them alike.
 export component PaceBar inherits Rectangle {
@@ -104,8 +153,10 @@ export component PaceBar inherits Rectangle {
     // The calm fill: AccentFill in the flyout, TextPrimary in the hover card (R§6.6).
     in property <color> calm-fill: Theme.accent;
     height: root.geom.height * 1phx;
+    accessible-role: none;
 
-    property <color> fill-color: root.tone == Tone.caution ? Theme.caution
+    property <color> fill-color: Theme.high-contrast && root.tone != Tone.stale ? root.calm-fill
+        : root.tone == Tone.caution ? Theme.caution
         : root.tone == Tone.critical ? Theme.critical
         : root.tone == Tone.stale ? Theme.stale : root.calm-fill;
 
@@ -116,14 +167,14 @@ export component PaceBar inherits Rectangle {
         height: root.geom.hair * 1phx;
         background: Theme.track;
     }
-    for seg in root.geom.fill: Rectangle {
-        x: seg.x * 1phx;
-        y: (root.geom.y-track - (root.geom.fill-h - root.geom.hair) / 2) * 1phx;
-        width: seg.w * 1phx;
-        height: root.geom.fill-h * 1phx;
-        background: root.fill-color;
-        // Rounded outer ends (WinUI ProgressBar indicator) are drawn by the M1 implementation
-        // per F§11 (per-corner radii, or an overlapping fill-h × fill-h pill).
+    for seg[i] in root.geom.fill: FillSeg {
+        seg-x: seg.x;
+        seg-w: seg.w;
+        fill-h: root.geom.fill-h;
+        top: root.geom.y-track - (root.geom.fill-h - root.geom.hair) / 2;
+        round-left: !root.geom.dashed && i == 0 && root.geom.round-start;
+        round-right: !root.geom.dashed && i == root.geom.fill.length - 1 && root.geom.round-end;
+        fill-color: root.fill-color;
     }
     if root.geom.has-tick: Rectangle {
         x: root.geom.tick-x * 1phx;
@@ -138,8 +189,11 @@ export component PaceBar inherits Rectangle {
 export component GlyphIcon inherits Rectangle {
     in property <Glyph> glyph;
     in property <length> size: 12px;
+    // The reset glyph's colour (TextSecondary in rows and keys).
+    in property <color> reset-color: Theme.text-secondary;
     width: root.glyph == Glyph.none ? 0px : root.size;
     height: root.size;
+    accessible-role: none;
 
     property <string> outer: root.glyph == Glyph.warning ? "\u{F139}"
         : root.glyph == Glyph.stale ? "\u{F140}"
@@ -153,9 +207,9 @@ export component GlyphIcon inherits Rectangle {
         : root.glyph == Glyph.critical ? Theme.critical
         : root.glyph == Glyph.success ? Theme.success
         : root.glyph == Glyph.info ? Theme.accent
-        : root.glyph == Glyph.stale ? Theme.stale : Theme.text-secondary;
+        : root.glyph == Glyph.stale ? Theme.stale : root.reset-color;
 
-    Text {
+    if root.outer != "": Text {
         text: root.outer;
         font-family: Theme.font-icons;
         font-size: root.size;
@@ -175,8 +229,9 @@ export component GlyphIcon inherits Rectangle {
 
 // A provider glyph (R§6.4, R Appendix A), from src/wiring.rs `glyph_data`: either SVG path
 // commands on the 12 × 12 grid with their stroke width in grid units (Claude 1.35, Codex 1.05,
-// Meshy 1.05), or a monogram (one or two letters) for a service without a drawing.
-export struct GlyphData { commands: string, stroke: float, monogram: string }
+// Meshy 1.05) and their caps and joins, or a monogram (one or two letters) for a service without
+// a drawing.
+export struct GlyphData { commands: string, stroke: float, round-caps: bool, round-joins: bool, monogram: string }
 
 // Stroked in TextPrimary. Needs Slint's software-renderer-path feature.
 export component ProviderGlyph inherits Rectangle {
@@ -197,6 +252,8 @@ export component ProviderGlyph inherits Rectangle {
         fill: transparent;
         stroke: Theme.text-primary;
         stroke-width: root.glyph.stroke * root.size / 12;
+        stroke-line-cap: root.glyph.round-caps ? LineCap.round : LineCap.butt;
+        stroke-line-join: root.glyph.round-joins ? LineJoin.round : LineJoin.miter;
     }
     // Monogram (R§6.4): 1 px rounded square r 2.5 (at 12 px), letter Small 8 px semibold, two
     // letters at 7 px.
@@ -207,6 +264,7 @@ export component ProviderGlyph inherits Rectangle {
         Text {
             text: root.glyph.monogram;
             font-family: Theme.font-small;
+            letter-spacing: Theme.small-tracking;
             font-size: (root.glyph.monogram.character-count > 1 ? 7px : 8px) * root.size / 12px;
             font-weight: 600;
             color: Theme.text-primary;
@@ -237,5 +295,174 @@ export component Sparkline inherits Rectangle {
         width: root.data.col-w * 1phx;
         height: col.h * 1phx;
         background: col.today && !root.data.dim ? Theme.accent : Theme.text-tertiary;
+    }
+}
+
+// The keyboard focus rectangle (F§9): 2 px FocusStrokeColorOuter outside + 1 px
+// FocusStrokeColorInner, radius = element radius + 2. Place it as the last child of the focused
+// element with `x: -2px; y: -2px; width: parent.width + 4px; height: parent.height + 4px;` so it
+// extends 2 px outside.
+export component FocusRect inherits Rectangle {
+    in property <length> radius: 4px;
+    border-width: Theme.focus-width;
+    border-color: Theme.focus-outer;
+    border-radius: root.radius + 2px;
+    Rectangle {
+        x: 2px;
+        y: 2px;
+        width: parent.width - 4px;
+        height: parent.height - 4px;
+        border-width: 1px;
+        border-color: Theme.focus-inner;
+        border-radius: root.radius;
+    }
+}
+
+// The 16 px indeterminate progress ring (F§3), accent. Drawn as an arc that turns; it only runs
+// while visible, and the flyout is the only place it appears.
+export component ProgressRing inherits Rectangle {
+    accessible-role: progress-indicator;
+    property <angle> turn: mod(animation-tick() / 1.2s, 1) * 360deg;
+    Path {
+        width: 100%;
+        height: 100%;
+        viewbox-x: 0;
+        viewbox-y: 0;
+        viewbox-width: 16;
+        viewbox-height: 16;
+        fill: transparent;
+        stroke: Theme.accent;
+        stroke-width: 2px;
+        stroke-line-cap: LineCap.round;
+        // A 3/4 arc of radius 7 starting at the angle `turn`.
+        commands: "M " + (8 + 7 * cos(root.turn)) + " " + (8 + 7 * sin(root.turn))
+            + " A 7 7 0 1 1 " + (8 + 7 * cos(root.turn - 90deg)) + " " + (8 + 7 * sin(root.turn - 90deg));
+    }
+}
+
+// A subtle button (F§5 Settings, F§3 refresh): hover SubtleFillColorSecondary, pressed
+// SubtleFillColorTertiary with the label in TextSecondary (F§9).
+export component SubtleButton inherits Rectangle {
+    in property <string> icon;
+    in property <string> label;
+    in property <string> accessible-name: root.label;
+    in property <bool> enabled: true;
+    // An indeterminate 16 px progress ring (accent) replaces the icon (F§3, the refresh button).
+    in property <bool> busy: false;
+    // The pointer is over the button (the refresh tooltip, F§9).
+    out property <bool> hovered: touch.has-hover;
+    callback clicked();
+    height: 32px;
+    min-width: 32px;
+    border-radius: 4px;
+    background: touch.pressed && root.enabled ? Theme.subtle-pressed : touch.has-hover && root.enabled ? Theme.subtle-hover : transparent;
+    accessible-role: button;
+    accessible-label: root.accessible-name;
+    accessible-enabled: root.enabled;
+    accessible-action-default => {
+        root.clicked();
+    }
+    forward-focus: focus;
+
+    property <color> fg: touch.pressed ? Theme.text-secondary : Theme.text-primary;
+
+    HorizontalLayout {
+        padding-left: root.label == "" ? 8px : 11px;
+        padding-right: root.label == "" ? 8px : 11px;
+        spacing: 8px;
+        alignment: center;
+        Rectangle {
+            width: 16px;
+            if !root.busy: Text {
+                text: root.icon;
+                font-family: Theme.font-icons;
+                font-size: 16px;
+                color: root.fg;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+            }
+            if root.busy: ProgressRing {
+                width: 16px;
+                height: 16px;
+            }
+        }
+        if root.label != "": Text {
+            text: root.label;
+            font-family: Theme.font-text;
+            font-size: 14px;
+            color: root.fg;
+            vertical-alignment: center;
+        }
+    }
+    touch := TouchArea {
+        enabled: root.enabled;
+        clicked => {
+            root.clicked();
+        }
+    }
+    focus := FocusScope {
+        enabled: root.enabled;
+        focus-on-click: false;
+        key-pressed(event) => {
+            if (event.text == Key.Return || event.text == " ") {
+                root.clicked();
+                return accept;
+            }
+            reject
+        }
+    }
+    if focus.has-focus && Theme.keyboard-focus-visible: FocusRect {
+        x: -2px;
+        y: -2px;
+        width: parent.width + 4px;
+        height: parent.height + 4px;
+        radius: 4px;
+    }
+}
+
+// A hyperlink button (F§4.3 message actions, F§5 footer link): AccentTextFillColorPrimary.
+export component HyperlinkButton inherits Rectangle {
+    in property <string> text;
+    callback clicked();
+    accessible-role: button;
+    accessible-label: root.text;
+    accessible-action-default => {
+        root.clicked();
+    }
+    forward-focus: focus;
+    min-width: label.preferred-width;
+    preferred-width: label.preferred-width;
+    height: 16px;
+
+    label := Text {
+        text: root.text;
+        font-family: Theme.font-small;
+        letter-spacing: Theme.small-tracking;
+        font-size: 12px;
+        color: touch.pressed ? Theme.text-secondary : Theme.link;
+        vertical-alignment: center;
+    }
+    touch := TouchArea {
+        mouse-cursor: pointer;
+        clicked => {
+            root.clicked();
+        }
+    }
+    focus := FocusScope {
+        focus-on-click: false;
+        key-pressed(event) => {
+            if (event.text == Key.Return || event.text == " ") {
+                root.clicked();
+                return accept;
+            }
+            reject
+        }
+    }
+    if focus.has-focus && Theme.keyboard-focus-visible: FocusRect {
+        x: -2px;
+        y: -2px;
+        width: parent.width + 4px;
+        height: parent.height + 4px;
+        radius: 2px;
     }
 }
