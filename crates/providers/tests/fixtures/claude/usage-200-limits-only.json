@@ -1,0 +1,18 @@
+{
+  "limits": [
+    { "kind": "session", "percent": 9, "resets_at": "2026-10-10T13:30:00+00:00" },
+    { "kind": "weekly_all", "percent": 44, "resets_at": "2026-10-12T07:00:00+00:00" },
+    {
+      "kind": "weekly_scoped",
+      "percent": 50,
+      "resets_at": "2026-10-12T07:00:00+00:00",
+      "scope": { "model": { "display_name": "All models" } }
+    },
+    {
+      "kind": "weekly_scoped",
+      "percent": 31,
+      "resets_at": "2026-10-12T07:00:00+00:00",
+      "scope": { "model": { "display_name": "Fable" } }
+    }
+  ]
+}

@@ -1,0 +1,8 @@
+{
+  "numStartups": 3,
+  "oauthAccount": {
+    "accountUuid": "00000000-0000-4000-8000-000000000002",
+    "emailAddress": "tester@example.invalid"
+  },
+  "projects": {}
+}
