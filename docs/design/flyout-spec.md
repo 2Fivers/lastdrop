@@ -264,7 +264,7 @@ success, accent, on-accent, HC mapping).
 | Hyperlinks | AccentTextFillColorPrimary | SystemAccentColorDark2 | SystemAccentColorLight3 |
 | Track | ControlStrongStrokeColorDefault | `#72000000` | `#8BFFFFFF` |
 | Button hover / pressed | SubtleFillColorSecondary / Tertiary | `#09000000` / `#06000000` | `#0FFFFFFF` / `#0AFFFFFF` |
-| Footer divider | DividerStrokeColorDefault | `#14000000` | `#15FFFFFF` |
+| Footer divider | DividerStrokeColorDefault | `#0F000000` (WinUI theme resources; earlier drafts said `#14000000`) | `#15FFFFFF` |
 | **BadgeFill** (plan badge) | Lastdrop token (between ControlAltFillColorTertiary and SubtleFillColorSecondary) | `#0F000000` | `#0FFFFFFF` |
 | **FooterFill** | Lastdrop token (matches the Quick Settings footer strip) | `#0A000000` | `#30000000` |
 | Focus outer / inner | FocusStrokeColorOuter / Inner | `#E4000000` / `#B3FFFFFF` | `#FFFFFFFF` / `#B3000000` |

@@ -165,7 +165,7 @@ setups.
   a separate, never-reparented message window that receives `TaskbarCreated` and rebuilds the
   readout in-process; no locks held across cross-process calls; `GetWindowRect` instead of
   `SHAppBarMessage`; app-button detection through UI Automation on its own thread with timeouts,
-  falling back to a floating card instead of covering buttons; `WM_DPICHANGED_AFTERPARENT`
-  handled. Validate in M1 against the test matrix before it is on by default.
+  falling back to a floating card instead of covering buttons; the readout is a topmost
+  `WS_POPUP` that is never parented, so it handles `WM_DPICHANGED` (readout-spec §6.1, §6.9). Validate in M1 against the test matrix before it is on by default.
 - Update and distribution channel while the app is proprietary and the repository private.
 - Theme Studio scope: colours and widget layout only, or free-form placement?

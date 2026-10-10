@@ -17,7 +17,6 @@
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use jiff::fmt::rfc2822::DateTimeParser;
 use jiff::{SignedDuration, Timestamp};
 use lastdrop_core::model::SourceKind;
 use lastdrop_core::secret::SecretString;
@@ -229,20 +228,12 @@ pub fn interpret(response: &HttpResponse, now: Timestamp) -> Result<ClaudeUsage,
     }
 }
 
-/// `Retry-After` as a duration from `now` (RFC 9110 §10.2.3): delta-seconds or an HTTP-date; a
-/// date in the past is zero; capped at [`MAX_RETRY_AFTER`]. `None` when absent or unreadable.
-/// (Same rule as the contract's `HttpResponse::retry_after`, kept here so this source does not
-/// depend on that shared stub.)
+/// `Retry-After` as a duration from `now` ([`HttpResponse::retry_after`]), capped at
+/// [`MAX_RETRY_AFTER`].
 fn retry_after(response: &HttpResponse, now: Timestamp) -> Option<Duration> {
-    static HTTP_DATE: DateTimeParser = DateTimeParser::new();
-    let value = response.header("Retry-After")?.trim();
-    let wait = if let Ok(seconds) = value.parse::<u64>() {
-        Duration::from_secs(seconds)
-    } else {
-        let at = HTTP_DATE.parse_timestamp(value).ok()?;
-        Duration::try_from(at.duration_since(now)).unwrap_or(Duration::ZERO)
-    };
-    Some(wait.min(MAX_RETRY_AFTER))
+    response
+        .retry_after(now)
+        .map(|wait| wait.min(MAX_RETRY_AFTER))
 }
 
 /// Parses the JSON body: `five_hour`, `seven_day`, and per-model weekly objects with

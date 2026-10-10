@@ -98,9 +98,19 @@ impl HttpResponse {
 
     /// `Retry-After` as a duration from `now`: delta-seconds or an HTTP-date (RFC 9110 §10.2.3);
     /// `None` when absent or unreadable.
-    #[expect(unused_variables, reason = "M1 contract stub")]
+    ///
+    /// An HTTP-date in the past is a wait of zero. Only the preferred IMF-fixdate form
+    /// (`Sun, 06 Nov 1994 08:49:37 GMT`, RFC 5322 syntax) is read; the obsolete RFC 850 and
+    /// asctime forms give `None`.
     pub fn retry_after(&self, now: Timestamp) -> Option<Duration> {
-        todo!("M1: parse Retry-After (seconds or HTTP-date)")
+        static HTTP_DATE: jiff::fmt::rfc2822::DateTimeParser =
+            jiff::fmt::rfc2822::DateTimeParser::new();
+        let value = self.header("Retry-After")?.trim();
+        if !value.is_empty() && value.bytes().all(|b| b.is_ascii_digit()) {
+            return value.parse::<u64>().ok().map(Duration::from_secs);
+        }
+        let at = HTTP_DATE.parse_timestamp(value).ok()?;
+        Some(Duration::try_from(at.duration_since(now)).unwrap_or(Duration::ZERO))
     }
 }
 
@@ -315,7 +325,45 @@ pub trait Env: Send + Sync {
 
 #[cfg(test)]
 mod tests {
-    use super::wildcard_match;
+    use std::time::Duration;
+
+    use jiff::Timestamp;
+
+    use super::{HttpResponse, wildcard_match};
+
+    fn with_retry_after(value: &str) -> HttpResponse {
+        HttpResponse {
+            status: 429,
+            headers: vec![("retry-after".to_owned(), value.to_owned())],
+            body: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn retry_after_reads_seconds_and_http_dates() {
+        let now: Timestamp = "2026-10-10T10:00:00Z".parse().expect("timestamp");
+        assert_eq!(
+            with_retry_after("120").retry_after(now),
+            Some(Duration::from_secs(120))
+        );
+        assert_eq!(
+            with_retry_after(" 0 ").retry_after(now),
+            Some(Duration::ZERO)
+        );
+        assert_eq!(
+            with_retry_after("Sat, 10 Oct 2026 10:05:00 GMT").retry_after(now),
+            Some(Duration::from_secs(300))
+        );
+        assert_eq!(
+            with_retry_after("Sat, 10 Oct 2026 09:00:00 GMT").retry_after(now),
+            Some(Duration::ZERO),
+            "a date in the past means retry now"
+        );
+        assert_eq!(with_retry_after("-5").retry_after(now), None);
+        assert_eq!(with_retry_after("soon").retry_after(now), None);
+        assert_eq!(with_retry_after("").retry_after(now), None);
+        assert_eq!(HttpResponse::new(429, "").retry_after(now), None);
+    }
 
     #[test]
     fn wildcards() {

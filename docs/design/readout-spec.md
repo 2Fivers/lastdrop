@@ -594,7 +594,7 @@ If a value below disagrees with that file, the file wins.
 | Hover plate / pressed | SubtleFillColorSecondary / Tertiary | `#09000000` / `#06000000` | `#0FFFFFFF` / `#0AFFFFFF` |
 | Card background (transparency off) | AcrylicBackgroundFillColorDefault fallback | `#FFF9F9F9` | `#FF2C2C2C` |
 | Card border | SurfaceStrokeColorFlyout | `#0F000000` | `#33000000` |
-| Card divider | DividerStrokeColorDefault | `#14000000` | `#15FFFFFF` |
+| Card divider | DividerStrokeColorDefault | `#0F000000` (WinUI theme resources; earlier drafts said `#14000000`) | `#15FFFFFF` |
 
 - Accent shades come from `UISettings.GetColorValue(AccentDark1/AccentDark2/AccentLight2/AccentLight3)` and update on
   `WM_SETTINGCHANGE` ("ImmersiveColorSet"). The owner's accent: Dark1 `#8E3AA7`, Light2 `#D58AE8`.

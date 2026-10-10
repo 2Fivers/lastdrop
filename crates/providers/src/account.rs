@@ -4,10 +4,25 @@
 use std::path::PathBuf;
 
 use lastdrop_core::model::{AccountKey, ProviderId};
-use lastdrop_core::settings::AccountSettings;
+use lastdrop_core::settings::{AccountSettings, SourceSettings};
 
 use crate::error::FetchError;
 use crate::io::{CredentialName, Env};
+
+/// Claude Code's state file (cached usage) next to the default folder or inside a custom one.
+const CLAUDE_STATE_FILE: &str = ".claude.json";
+
+/// An environment variable as a path, `None` when unset or empty.
+fn non_empty_var(env: &dyn Env, name: &str) -> Option<PathBuf> {
+    env.var(name).filter(|v| !v.is_empty()).map(PathBuf::from)
+}
+
+/// The user's profile folder, or Unavailable.
+fn home(env: &dyn Env) -> Result<PathBuf, FetchError> {
+    env.home_dir().ok_or_else(|| FetchError::Unavailable {
+        detail: "no user profile folder".to_owned(),
+    })
+}
 
 /// A resolved account source, built from settings and the environment by
 /// [`AccountSource::resolve`].
@@ -47,13 +62,94 @@ impl AccountSource {
     /// Resolves an account's settings (`SourceSettings::Default` = the service's default
     /// location from the environment) into paths and credential names. Does no file I/O;
     /// a missing folder shows up as [`FetchError::Unavailable`] at fetch time.
-    #[expect(unused_variables, reason = "M1 contract stub")]
+    ///
+    /// - **Claude**, default: `CLAUDE_CONFIG_DIR` (when set and not empty) with
+    ///   `<dir>\.claude.json`, else `~\.claude` with `~\.claude.json`; Claude Desktop's folder is
+    ///   `%APPDATA%\Claude` (else `~\AppData\Roaming\Claude`). A `ClaudeConfigDir` folder has
+    ///   its own `.claude.json` and no Desktop folder: Claude Desktop is one per Windows user and
+    ///   belongs to the default account.
+    /// - **Codex**: `CODEX_HOME` (when set and not empty), else `~\.codex`; or the
+    ///   `CodexHome` folder.
+    /// - **Meshy**: the credential `Lastdrop:meshy:<account>:api_key`, or the `ApiKey` name.
+    ///
+    /// A source kind that does not belong to the provider (a Codex home for Claude) or a missing
+    /// home folder is [`FetchError::Unavailable`].
     pub fn resolve(
         provider: ProviderId,
         account: &AccountSettings,
         env: &dyn Env,
     ) -> Result<AccountSource, FetchError> {
-        todo!("M1: resolve CLAUDE_CONFIG_DIR / CODEX_HOME / credential names")
+        let key = account.key.clone();
+        match (provider, &account.source) {
+            (ProviderId::Claude, SourceSettings::Default) => {
+                let (config_dir, state_file) = match non_empty_var(env, "CLAUDE_CONFIG_DIR") {
+                    Some(dir) => {
+                        let state_file = dir.join(CLAUDE_STATE_FILE);
+                        (dir, state_file)
+                    }
+                    None => {
+                        let home = home(env)?;
+                        (home.join(".claude"), home.join(CLAUDE_STATE_FILE))
+                    }
+                };
+                let desktop_dir = non_empty_var(env, "APPDATA")
+                    .or_else(|| env.home_dir().map(|h| h.join("AppData").join("Roaming")))
+                    .map(|roaming| roaming.join("Claude"));
+                Ok(AccountSource::Claude {
+                    account: key,
+                    config_dir,
+                    state_file,
+                    desktop_dir,
+                })
+            }
+            (ProviderId::Claude, SourceSettings::ClaudeConfigDir { path }) => {
+                Ok(AccountSource::Claude {
+                    account: key,
+                    config_dir: path.clone(),
+                    state_file: path.join(CLAUDE_STATE_FILE),
+                    desktop_dir: None,
+                })
+            }
+            (ProviderId::Codex, SourceSettings::Default) => {
+                let codex_home = match non_empty_var(env, "CODEX_HOME") {
+                    Some(dir) => dir,
+                    None => home(env)?.join(".codex"),
+                };
+                Ok(AccountSource::Codex {
+                    account: key,
+                    codex_home,
+                })
+            }
+            (ProviderId::Codex, SourceSettings::CodexHome { path }) => Ok(AccountSource::Codex {
+                account: key,
+                codex_home: path.clone(),
+            }),
+            (ProviderId::Meshy, SourceSettings::Default) => Ok(AccountSource::Meshy {
+                credential: CredentialName {
+                    provider: ProviderId::Meshy,
+                    account: key.clone(),
+                    name: crate::meshy::API_KEY_NAME.to_owned(),
+                },
+                account: key,
+            }),
+            (ProviderId::Meshy, SourceSettings::ApiKey { name }) if !name.is_empty() => {
+                Ok(AccountSource::Meshy {
+                    credential: CredentialName {
+                        provider: ProviderId::Meshy,
+                        account: key.clone(),
+                        name: name.clone(),
+                    },
+                    account: key,
+                })
+            }
+            _ => Err(FetchError::Unavailable {
+                detail: format!(
+                    "the {} account's source is not a {} source",
+                    key.0,
+                    provider.display_name()
+                ),
+            }),
+        }
     }
 
     /// The service.
@@ -71,6 +167,166 @@ impl AccountSource {
             AccountSource::Claude { account, .. }
             | AccountSource::Codex { account, .. }
             | AccountSource::Meshy { account, .. } => account,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::ffi::OsString;
+    use std::path::PathBuf;
+
+    use lastdrop_core::model::{AccountKey, ProviderId};
+    use lastdrop_core::settings::{AccountSettings, SourceSettings};
+
+    use super::AccountSource;
+    use crate::error::FetchError;
+    use crate::fakes::FakeEnv;
+    use crate::io::Env;
+
+    fn home() -> PathBuf {
+        PathBuf::from(r"C:\Users\tester")
+    }
+
+    fn with_source(source: SourceSettings) -> AccountSettings {
+        AccountSettings {
+            source,
+            ..AccountSettings::primary()
+        }
+    }
+
+    #[test]
+    fn claude_defaults_to_the_profile_folder() {
+        let env = FakeEnv::new(home()).with_var("APPDATA", r"C:\Users\tester\AppData\Roaming");
+        let source = AccountSource::resolve(ProviderId::Claude, &AccountSettings::primary(), &env)
+            .expect("resolve");
+        assert_eq!(
+            source,
+            AccountSource::Claude {
+                account: AccountKey::primary(),
+                config_dir: home().join(".claude"),
+                state_file: home().join(".claude.json"),
+                desktop_dir: Some(home().join(r"AppData\Roaming\Claude")),
+            }
+        );
+    }
+
+    #[test]
+    fn claude_config_dir_moves_the_state_file_inside() {
+        let env = FakeEnv::new(home()).with_var("CLAUDE_CONFIG_DIR", r"D:\claude-work");
+        let AccountSource::Claude {
+            config_dir,
+            state_file,
+            desktop_dir,
+            ..
+        } = AccountSource::resolve(ProviderId::Claude, &AccountSettings::primary(), &env)
+            .expect("resolve")
+        else {
+            panic!("not a Claude source");
+        };
+        assert_eq!(config_dir, PathBuf::from(r"D:\claude-work"));
+        assert_eq!(state_file, PathBuf::from(r"D:\claude-work\.claude.json"));
+        assert_eq!(
+            desktop_dir,
+            Some(home().join(r"AppData\Roaming\Claude")),
+            "without APPDATA the profile's roaming folder is used"
+        );
+
+        let custom = with_source(SourceSettings::ClaudeConfigDir {
+            path: PathBuf::from(r"E:\other"),
+        });
+        let AccountSource::Claude {
+            state_file,
+            desktop_dir,
+            ..
+        } = AccountSource::resolve(ProviderId::Claude, &custom, &env).expect("resolve")
+        else {
+            panic!("not a Claude source");
+        };
+        assert_eq!(state_file, PathBuf::from(r"E:\other\.claude.json"));
+        assert_eq!(desktop_dir, None);
+    }
+
+    #[test]
+    fn empty_variables_count_as_unset() {
+        let env = FakeEnv::new(home())
+            .with_var("CLAUDE_CONFIG_DIR", "")
+            .with_var("CODEX_HOME", "");
+        let claude = AccountSource::resolve(ProviderId::Claude, &AccountSettings::primary(), &env)
+            .expect("resolve");
+        assert!(matches!(
+            claude,
+            AccountSource::Claude { ref config_dir, .. } if *config_dir == home().join(".claude")
+        ));
+        let codex = AccountSource::resolve(ProviderId::Codex, &AccountSettings::primary(), &env)
+            .expect("resolve");
+        assert_eq!(
+            codex,
+            AccountSource::Codex {
+                account: AccountKey::primary(),
+                codex_home: home().join(".codex"),
+            }
+        );
+    }
+
+    #[test]
+    fn codex_home_and_meshy_key_names() {
+        let env = FakeEnv::new(home()).with_var("CODEX_HOME", r"D:\codex");
+        assert_eq!(
+            AccountSource::resolve(ProviderId::Codex, &AccountSettings::primary(), &env)
+                .expect("resolve"),
+            AccountSource::Codex {
+                account: AccountKey::primary(),
+                codex_home: PathBuf::from(r"D:\codex"),
+            }
+        );
+        let meshy = AccountSource::resolve(ProviderId::Meshy, &AccountSettings::primary(), &env)
+            .expect("resolve");
+        let AccountSource::Meshy { credential, .. } = &meshy else {
+            panic!("not a Meshy source");
+        };
+        assert_eq!(credential.target(), "Lastdrop:meshy:default:api_key");
+        let named = with_source(SourceSettings::ApiKey {
+            name: "studio".to_owned(),
+        });
+        let AccountSource::Meshy { credential, .. } =
+            AccountSource::resolve(ProviderId::Meshy, &named, &env).expect("resolve")
+        else {
+            panic!("not a Meshy source");
+        };
+        assert_eq!(credential.target(), "Lastdrop:meshy:default:studio");
+    }
+
+    #[test]
+    fn mismatched_sources_and_a_missing_profile_are_unavailable() {
+        let env = FakeEnv::new(home());
+        let codex_dir = with_source(SourceSettings::CodexHome {
+            path: PathBuf::from(r"D:\codex"),
+        });
+        assert!(matches!(
+            AccountSource::resolve(ProviderId::Claude, &codex_dir, &env),
+            Err(FetchError::Unavailable { .. })
+        ));
+        assert!(matches!(
+            AccountSource::resolve(ProviderId::Meshy, &codex_dir, &env),
+            Err(FetchError::Unavailable { .. })
+        ));
+        assert!(matches!(
+            AccountSource::resolve(ProviderId::Codex, &AccountSettings::primary(), &NoHome),
+            Err(FetchError::Unavailable { .. })
+        ));
+    }
+
+    /// An environment without a profile folder or variables.
+    struct NoHome;
+
+    impl Env for NoHome {
+        fn var(&self, _name: &str) -> Option<OsString> {
+            None
+        }
+
+        fn home_dir(&self) -> Option<PathBuf> {
+            None
         }
     }
 }

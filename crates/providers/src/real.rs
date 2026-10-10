@@ -136,7 +136,9 @@ impl Fs for RealFs {
 /// debug log redacts every header outside a short allow-list).
 ///
 /// Needs ureq's `native-tls` feature: with only `native-tls-no-default` ureq compiles no TLS
-/// connector and panics on the first `https://` request (an abort in release builds).
+/// connector and panics on the first `https://` request (an abort in release builds). Until the
+/// workspace enables it, [`TLS_COMPILED_IN`] is `false` and `https://` requests fail as
+/// [`HttpError::Tls`] instead of reaching ureq.
 pub struct UreqHttp {
     agent: ureq::Agent,
 }
@@ -180,14 +182,28 @@ impl fmt::Debug for UreqHttp {
     }
 }
 
+/// Whether ureq was built with its native-tls connector (the workspace's ureq feature
+/// `native-tls`, not `native-tls-no-default`).
+///
+/// The workspace currently enables only `native-tls-no-default`: ureq then compiles the
+/// `native-tls` crate but not its connector, and panics on every `https://` request ("provider is
+/// NativeTls but feature is not enabled"), which aborts a release build. Enabling `native-tls`
+/// adds the `webpki-root-certs` crate, which has not been fetched yet. Until then this is `false`
+/// and [`UreqHttp`] answers `https://` requests with [`HttpError::Tls`] instead of panicking.
+/// Flip it together with the feature; the test `tls_switch_matches_ureqs_features` fails when
+/// the two disagree.
+pub const TLS_COMPILED_IN: bool = false;
+
 /// `https://` only. Unit tests may also talk plain HTTP to a server of their own on the
 /// loopback address.
 fn scheme_allowed(url: &str) -> bool {
-    let lower = url.get(..8).map(str::to_ascii_lowercase);
-    if lower.as_deref() == Some("https://") {
-        return true;
-    }
-    cfg!(test) && url.starts_with("http://127.0.0.1:")
+    is_https(url) || (cfg!(test) && url.starts_with("http://127.0.0.1:"))
+}
+
+/// The URL starts with `https://` (any case).
+fn is_https(url: &str) -> bool {
+    url.get(..8)
+        .is_some_and(|scheme| scheme.eq_ignore_ascii_case("https://"))
 }
 
 /// Adds the request's headers; secret values are marked sensitive. Errors name the header,
@@ -253,6 +269,11 @@ impl Http for UreqHttp {
         }
         if request.timeout.is_zero() {
             return Err(HttpError::Timeout);
+        }
+        if !TLS_COMPILED_IN && is_https(&request.url) {
+            return Err(HttpError::Tls(
+                "this build has no TLS support (ureq's native-tls feature is off)".to_owned(),
+            ));
         }
         let timeout = Some(request.timeout);
         let url = request.url.as_str();
@@ -772,7 +793,9 @@ mod tests {
 
     use lastdrop_core::secret::SecretString;
 
-    use super::{LineRead, RealSpawner, UreqHttp, job, read_capped_line, spawn_child};
+    use super::{
+        LineRead, RealSpawner, TLS_COMPILED_IN, UreqHttp, job, read_capped_line, spawn_child,
+    };
     use crate::io::{
         ChildIo, HeaderValue, Http, HttpError, HttpRequest, MAX_BODY_BYTES, Method, SpawnSpec,
         Spawner,
@@ -1005,12 +1028,10 @@ mod tests {
         assert!(!text.contains("value-not-real"));
     }
 
-    /// The TLS path, against a loopback server that answers in plain text: the handshake must
-    /// fail as an error. Ignored until the workspace enables ureq's `native-tls` feature; with
-    /// only `native-tls-no-default`, ureq has no TLS connector and panics on every https request.
-    #[test]
-    #[ignore = "needs ureq's native-tls feature in the workspace Cargo.toml"]
-    fn https_fails_cleanly_against_a_server_without_tls() {
+    /// A loopback server that accepts one connection and answers in plain text, so a TLS
+    /// handshake against it fails. Returns its port and a function that unblocks and joins it
+    /// (it may never have been connected to).
+    fn plain_text_server() -> (u16, impl FnOnce()) {
         let listener = TcpListener::bind("127.0.0.1:0").expect("bind loopback");
         let port = listener.local_addr().expect("addr").port();
         let server = std::thread::spawn(move || {
@@ -1018,6 +1039,19 @@ mod tests {
                 let _ = stream.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n");
             }
         });
+        let finish = move || {
+            // Unblocks `accept` when the client never connected; refused when it did.
+            let _ = TcpStream::connect(("127.0.0.1", port));
+            let _ = server.join();
+        };
+        (port, finish)
+    }
+
+    /// The TLS path, against a loopback server that answers in plain text: the request must fail
+    /// as an error, never panic (without the TLS connector it fails before connecting).
+    #[test]
+    fn https_fails_cleanly_against_a_server_without_tls() {
+        let (port, finish) = plain_text_server();
         let mut request = get(format!("https://127.0.0.1:{port}/"), Vec::new());
         request.timeout = Duration::from_secs(3);
         let err = client()
@@ -1027,7 +1061,31 @@ mod tests {
             matches!(err, HttpError::Tls(_) | HttpError::Other(_)),
             "{err:?}"
         );
-        let _ = server.join();
+        finish();
+    }
+
+    /// [`TLS_COMPILED_IN`] agrees with how ureq was built: ureq without its TLS connector panics
+    /// on an `https://` request; with it, the request reaches the server and fails as an error.
+    #[test]
+    fn tls_switch_matches_ureqs_features() {
+        let (port, finish) = plain_text_server();
+        let agent = UreqHttp::with_proxy(None).agent;
+        let url = format!("https://127.0.0.1:{port}/");
+        let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            agent
+                .get(&url)
+                .config()
+                .timeout_global(Some(Duration::from_secs(3)))
+                .build()
+                .call()
+                .map(|_| ())
+        }));
+        finish();
+        assert_eq!(
+            outcome.is_ok(),
+            TLS_COMPILED_IN,
+            "TLS_COMPILED_IN must match ureq's native-tls feature in the workspace Cargo.toml"
+        );
     }
 
     // ---- Lines ----------------------------------------------------------------------------------

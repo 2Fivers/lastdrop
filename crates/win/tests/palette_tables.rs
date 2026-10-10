@@ -56,7 +56,7 @@ const TABLE: &[(R, u32, u32)] = &[
     (R::SubtleTertiary, 0x0600_0000, 0x0AFF_FFFF),
     (R::CardBackground, 0xFFF9_F9F9, 0xFF2C_2C2C),
     (R::CardBorder, 0x0F00_0000, 0x3300_0000),
-    // The spec says #14000000 for light; WinUI's file says #0F000000 and wins (R§7).
+    // WinUI's file says #0F000000 for light (earlier spec drafts said #14000000; R§7).
     (R::Divider, 0x0F00_0000, 0x15FF_FFFF),
     (R::FlyoutCardBackground, 0xB3FF_FFFF, 0x0DFF_FFFF),
     (R::FlyoutCardStroke, 0x0F00_0000, 0x1900_0000),

@@ -44,14 +44,17 @@ Windows-specific and has no I/O.
 | Thread | Owns | Never does |
 |---|---|---|
 | **main** | Slint event loop: flyout, hover card, settings and about windows; the tray icon (our own `Shell_NotifyIcon`, version 4); the app state | blocking I/O |
-| **readout** | the taskbar readout: a hidden top-level window that receives `TaskbarCreated`, the layered readout window parented into the taskbar, the WinEvent hook on the taskbar, its own message loop and drawing | I/O, waiting on locks held by other threads, synchronous cross-process calls while holding a lock |
+| **readout** | the taskbar readout: a hidden top-level window that receives `TaskbarCreated`, the layered readout window (a topmost `WS_POPUP` over the taskbar, never parented into it; readout-spec §6.1), the WinEvent hooks on the taskbar, its own message loop and drawing | I/O, waiting on locks held by other threads, synchronous cross-process calls while holding a lock |
 | **occupancy** | a UI Automation client (MTA) that measures where the taskbar's app buttons are, with connection and transaction timeouts | anything else |
 | **refresh workers** | provider fetches (files, HTTP, `codex app-server`), one job per credential source at a time | touching UI objects |
 
-Why a separate readout thread: a window parented into Explorer's taskbar attaches its thread's
-input queue to Explorer's. If that thread were the main thread, a slow frame or a blocked lock
-on our side could freeze the taskbar's input (the reference tool's issues #22 and #92). The
-readout thread does nothing but draw a small model and handle a handful of messages.
+Why a separate readout thread: the readout follows Explorer's taskbar (WinEvent hooks, geometry
+reads, re-raising itself when the taskbar comes to the top of the topmost band) and must react
+whatever the UI thread is doing; a slow Slint frame never delays it, and a hung Explorer never
+blocks the flyout. The readout is never parented into the taskbar: a cross-process child window
+attaches its thread's input queue to Explorer's, which in the reference tool froze the taskbar's
+input (its issues #22 and #92). The readout thread does nothing but draw a small model and handle
+a handful of messages.
 
 Messages between threads: workers send results to the main thread with
 `slint::invoke_from_event_loop`; the main thread hands the readout a new immutable
@@ -121,9 +124,11 @@ Rules for every provider:
   It is unit-tested against a matrix of recorded layouts. Gathering geometry uses
   `GetWindowRect`, never `SHAppBarMessage` (which can deadlock when Explorer hangs).
 - **Taskbar events:** `EVENT_OBJECT_LOCATIONCHANGE` (out of context, filtered to the taskbar
-  and tray), `TaskbarCreated`, `WM_DISPLAYCHANGE`, `WM_SETTINGCHANGE`, `WM_DPICHANGED` and
-  `WM_DPICHANGED_AFTERPARENT`, debounced; no polling loop for geometry. After an Explorer
-  restart the readout is rebuilt in-process.
+  and tray), `EVENT_SYSTEM_FOREGROUND` and `EVENT_OBJECT_REORDER` on the taskbar (re-assert
+  topmost), `TaskbarCreated`, `WM_DISPLAYCHANGE`, `WM_SETTINGCHANGE` and `WM_DPICHANGED` (the
+  readout is a top-level window, so `WM_DPICHANGED_AFTERPARENT` never reaches it; readout-spec
+  §6.9), debounced; no polling loop for geometry. After an Explorer restart the readout is
+  rebuilt in-process.
 - **Flyout placement:** `Shell_NotifyIconGetRect` → `CalculatePopupWindowPosition` with the
   work area (from the spike).
 - **Theme:** taskbar light/dark (`SystemUsesLightTheme`), app light/dark, accent, transparency,

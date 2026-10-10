@@ -151,12 +151,12 @@ pub fn interpret(response: &HttpResponse, now: Timestamp) -> Result<f64, FetchEr
         401 => Err(FetchError::Auth { from: SOURCE }),
         403 | 429 => Err(FetchError::RateLimited {
             from: SOURCE,
-            retry_after: retry_after(response, now),
+            retry_after: response.retry_after(now),
         }),
         500..=599 => Err(FetchError::Transient {
             from: SOURCE,
             detail: format!("HTTP {}", response.status),
-            retry_after: retry_after(response, now),
+            retry_after: response.retry_after(now),
         }),
         status => Err(FetchError::Parse {
             from: SOURCE,
@@ -220,19 +220,4 @@ pub fn to_snapshot(amount: f64, account: AccountRef, fetched_at: Timestamp) -> S
         balances: vec![balance(amount)],
         health: Health::Ok,
     }
-}
-
-/// `Retry-After` as a duration from `now`: delta-seconds or an HTTP-date (RFC 9110 §10.2.3).
-///
-/// The same rule as `HttpResponse::retry_after` in [`crate::io`], which is still a contract stub
-/// on this branch; once it is implemented this can call it instead.
-fn retry_after(response: &HttpResponse, now: Timestamp) -> Option<Duration> {
-    let value = response.header("Retry-After")?.trim();
-    if !value.is_empty() && value.bytes().all(|b| b.is_ascii_digit()) {
-        return value.parse::<u64>().ok().map(Duration::from_secs);
-    }
-    let at = jiff::fmt::rfc2822::DateTimeParser::new()
-        .parse_timestamp(value)
-        .ok()?;
-    Some(Duration::try_from(at.duration_since(now)).unwrap_or(Duration::ZERO))
 }
