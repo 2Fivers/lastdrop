@@ -28,18 +28,31 @@ _researching_ are being verified against primary sources before anything is buil
 | **Codex** | 5-hour / weekly windows (whichever the plan has), credits; tokens per day/model | `codex app-server` `account/rateLimits/read` (official) → session logs offline | Researched |
 | **GitHub Copilot** | Premium requests or AI Credits used vs allowance, reset date; usage per day/model | `copilot_internal/user` with the `gh auth token`; official billing usage API for statistics. Monthly plans since 2026-06-01: the user enters the allowance once | Researched |
 | **Meshy** | Credit balance, burn rate, days left | Official `GET /openapi/v1/balance` with an API key | Researched |
-| **Cursor** | Included usage and on-demand spend | _researching_ (local `state.vscdb` token + dashboard API) | Researching |
-| **Google Antigravity** | Model quotas | _researching_ | Researching |
-| **OpenCode Go** | Subscription limits | _researching_ | Researching |
-| **Grok Build** | Usage limits / credits | _researching_ | Researching |
+| **Cursor** | Included usage (auto / API pools), on-demand spend, billing-cycle reset | Unofficial `cursor.com/api/usage-summary`; session cookie built from the token Cursor stores in `state.vscdb` (read-only, never copied — the file can be 1.6 GB). Teams: official Admin API with an admin key | Researched |
+| **Google Antigravity** | 5-hour and weekly quota per pool ("Gemini models", "Claude and GPT models"), reset times | Official `agy -p /usage --output-format json` (agy ≥ 1.1.11; agy refreshes its own login) → the desktop app's local language server. Not the remote API: other tools scrape Google's OAuth client secret out of the binary to use it | Researched |
+| **OpenCode Go** | 5-hour, weekly and monthly windows | `GET opencode.ai/zen/go/v1/usage` with the Go API key (from the user, or OpenCode's own `auth.json`). Undocumented; percent only | Researched |
+| **Grok Build** | Credit usage % for the period, on-demand spend, prepaid balance, history | xAI's own CLI endpoint `cli-chat-proxy.grok.com/v1/billing?format=credits` with the Grok CLI login (`~/.grok/auth.json`). The xAI API's Management API for prepaid API credits is separate | Researched |
 | **Simple balance APIs** (OpenRouter, ElevenLabs, DeepSeek, Tripo3D, Stability, Kling…) | Balance, limit, reset | Declarative provider files (JSON: endpoint, auth, field mapping) — no code needed | Planned |
 
 ### Multiple accounts
 
-Claude Code and Codex support more than one account each. An account is a config folder
-(`CLAUDE_CONFIG_DIR` for Claude Code, `CODEX_HOME` for Codex); Lastdrop discovers or lets the
-user add folders, labels each account, and keeps quotas and statistics per account.
-Details _researching_.
+Claude Code and Codex support more than one account each. A **source** is a config folder
+(`CLAUDE_CONFIG_DIR` for Claude Code, `CODEX_HOME` for Codex, Claude Desktop's data folder);
+an **account** is who is actually signed in there. Cards are keyed by the account, not the
+folder: two folders signed in to the same account become one card, and a folder that switches
+account is noticed and recorded.
+
+- **First run:** discover candidate folders (defaults, the environment, `~\.claude-*` and
+  `~\.codex-*` folders that contain real Claude/Codex data) and show a checklist with who is
+  signed in where, before anything is polled.
+- **Add an account:** pick an existing folder, or let Lastdrop create one and open the vendor's
+  own sign-in in a terminal (`claude` / `codex login` with the folder set). Lastdrop never builds
+  its own Claude or ChatGPT login.
+- **Expired login:** never refreshed by Lastdrop. The card keeps its last reading, marked stale,
+  with "open Claude/Codex in this account to renew". Codex renews through its app-server.
+- **Privacy:** settings hold folder paths and aliases, never tokens; "hide personal info" shows
+  Account 1, Account 2 instead of e-mail addresses.
+- **Statistics** are attributed per account from each folder's own transcripts and sessions.
 
 ## Features
 
@@ -144,8 +157,15 @@ setups.
 
 ## Open questions
 
-- Taskbar readout: which window technique (owned overlay vs child of the taskbar) survives
-  centred/left taskbars, auto-hide, secondary-monitor taskbars and Explorer restarts best?
-  Being read out of CodeZeno's source now.
+- Taskbar readout technique. From CodeZeno's source (MIT) and its issue history: a layered
+  window parented into the taskbar shares the taskbar's visibility and z-order, but a
+  cross-process child attaches input queues (their deadlock #92, stuck input #22) and dies with
+  Explorer (their fix relaunches the whole app). Windows 11 offers no way to reserve taskbar
+  space; only Explorer injection does, which we will not ship. Lastdrop's plan:
+  a separate, never-reparented message window that receives `TaskbarCreated` and rebuilds the
+  readout in-process; no locks held across cross-process calls; `GetWindowRect` instead of
+  `SHAppBarMessage`; app-button detection through UI Automation on its own thread with timeouts,
+  falling back to a floating card instead of covering buttons; `WM_DPICHANGED_AFTERPARENT`
+  handled. Validate in M1 against the test matrix before it is on by default.
 - Update and distribution channel while the app is proprietary and the repository private.
 - Theme Studio scope: colours and widget layout only, or free-form placement?
