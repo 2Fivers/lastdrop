@@ -24,4 +24,5 @@ of the candidates on a real machine before the first line of the app is written.
 
 ## License
 
-[MIT](LICENSE)
+Proprietary. Copyright © 2026 Adinosaur AB, all rights reserved; distribution is not
+permitted. See [LICENSE](LICENSE).
