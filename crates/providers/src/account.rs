@@ -39,7 +39,8 @@ pub enum AccountSource {
         /// folder, `<config_dir>\.claude.json` with `CLAUDE_CONFIG_DIR`.
         state_file: PathBuf,
         /// Claude Desktop's data folder (`%APPDATA%\Claude`), when it exists; holds
-        /// `plan-usage-history.json`.
+        /// `plan-usage-history.json`. The Store build's private copy of it is found at fetch time
+        /// (`claude::desktop::candidates`).
         desktop_dir: Option<PathBuf>,
     },
     /// A Codex account.

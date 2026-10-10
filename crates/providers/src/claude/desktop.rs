@@ -1,7 +1,10 @@
 //! Source 1: Claude Desktop's `plan-usage-history.json` (no token needed).
 //!
 //! The file lives in Claude Desktop's data folder (`AccountSource::Claude::desktop_dir`,
-//! `%APPDATA%\Claude`). Shape, confirmed against a real install (key names only, version 2):
+//! `%APPDATA%\Claude`). The Microsoft Store (MSIX) build writes it to the package's private copy
+//! of `%APPDATA%` instead (`%LOCALAPPDATA%\Packages\Claude_*\LocalCache\Roaming\Claude`), which
+//! only processes inside that package see at `%APPDATA%\Claude`; [`read`] looks there too and
+//! takes the newer file. Shape, confirmed against a real install (key names only, version 2):
 //!
 //! ```text
 //! {"version": 2, "samples": [{"t": <epoch ms>, "org": <organisation id>,
@@ -47,12 +50,51 @@ pub fn path(desktop_dir: &Path) -> PathBuf {
     desktop_dir.join(FILE_NAME)
 }
 
-/// Reads and parses the newest entry of the history. `FetchError::Unavailable` when the file does
-/// not exist (Claude Desktop not installed or never opened) or holds no usable sample yet.
+/// The package folders of the Microsoft Store build of Claude Desktop, under
+/// `%LOCALAPPDATA%\Packages` (`Claude_<publisher id>`).
+pub const STORE_PACKAGE_PATTERN: &str = "Claude_*";
+
+/// The data folders the history may be in: `desktop_dir`, then each Store package's
+/// `LocalCache\Roaming\Claude` (`%LOCALAPPDATA%`, else `~\AppData\Local`). A packaged app's
+/// writes to `%APPDATA%` land in that private copy unless the folder existed before, and a
+/// Lastdrop started from Explorer, outside the package, sees only the private copy's real path.
+pub fn candidates(ctx: &FetchContext<'_>, desktop_dir: &Path) -> Vec<PathBuf> {
+    let mut dirs = vec![desktop_dir.to_path_buf()];
+    let local = ctx
+        .env
+        .var("LOCALAPPDATA")
+        .filter(|v| !v.is_empty())
+        .map(PathBuf::from)
+        .or_else(|| ctx.env.home_dir().map(|h| h.join("AppData").join("Local")));
+    if let Some(local) = local
+        && let Ok(packages) = ctx.fs.glob(&local.join("Packages"), STORE_PACKAGE_PATTERN)
+    {
+        dirs.extend(
+            packages
+                .into_iter()
+                .filter(|e| e.meta.is_dir)
+                .map(|e| e.path.join("LocalCache").join("Roaming").join("Claude")),
+        );
+    }
+    dirs
+}
+
+/// Reads and parses the newest entry of the history, from the most recently written of the
+/// [`candidates`]. `FetchError::Unavailable` when the file does not exist (Claude Desktop not
+/// installed or never opened) or holds no usable sample yet.
 pub fn read(ctx: &FetchContext<'_>, desktop_dir: &Path) -> Result<ClaudeUsage, FetchError> {
+    let file = candidates(ctx, desktop_dir)
+        .iter()
+        .map(|dir| path(dir))
+        .filter_map(|file| {
+            let meta = ctx.fs.metadata(&file).ok().filter(|m| !m.is_dir)?;
+            Some((meta.modified, file))
+        })
+        .max_by_key(|(modified, _)| *modified)
+        .map_or_else(|| path(desktop_dir), |(_, file)| file);
     let bytes = ctx
         .fs
-        .read(&path(desktop_dir), MAX_BYTES)
+        .read(&file, MAX_BYTES)
         .map_err(|e| file_error(FROM, &e, FILE_NAME))?;
     parse(&bytes, ctx.clock.now())
 }

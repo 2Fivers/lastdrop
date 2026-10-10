@@ -708,6 +708,70 @@ fn desktop_history_missing_empty_or_broken() {
     ));
 }
 
+/// The Store build's private copy of `%APPDATA%\Claude` (tests' home is `C:\Users\tester`).
+fn store_desktop_dir() -> PathBuf {
+    PathBuf::from(
+        r"C:\Users\tester\AppData\Local\Packages\Claude_testpublisher\LocalCache\Roaming\Claude",
+    )
+}
+
+#[test]
+fn desktop_history_of_the_store_build_is_found_in_its_package() {
+    let f = Fakes::new(now());
+    f.fs.add_file(
+        desktop::path(&store_desktop_dir()),
+        fixture!("plan-usage-history-v2.json"),
+        ts("2026-10-10T10:32:05Z"),
+    );
+    // Another package whose name only starts alike is not Claude Desktop's.
+    f.fs.add_file(
+        r"C:\Users\tester\AppData\Local\Packages\ClaudeLike.App_x\LocalCache\Roaming\Claude\plan-usage-history.json",
+        "{}",
+        now(),
+    );
+    let ctx = f.context(SignedDuration::from_secs(30));
+    assert_eq!(
+        desktop::candidates(&ctx, &desktop_dir()),
+        [desktop_dir(), store_desktop_dir()]
+    );
+    let usage = desktop::read(&ctx, &desktop_dir()).expect("read from the package");
+    assert_eq!(usage.measured_at, Some(ts("2026-10-10T10:32:00Z")));
+    assert_eq!(window(&usage, &ClaudeWindow::Weekly).used, 0.58);
+}
+
+#[test]
+fn desktop_history_takes_the_newer_of_appdata_and_the_package() {
+    let f = Fakes::new(now());
+    // An old file from an earlier install in %APPDATA%, the live one in the package.
+    f.fs.add_file(
+        desktop::path(&desktop_dir()),
+        r#"{"samples": [{"t": 1790000000000, "u": {"fh": 1, "sd": 2}}]}"#,
+        ts("2026-09-21T14:13:20Z"),
+    );
+    f.fs.add_file(
+        desktop::path(&store_desktop_dir()),
+        fixture!("plan-usage-history-v2.json"),
+        ts("2026-10-10T10:32:05Z"),
+    );
+    let ctx = f.context(SignedDuration::from_secs(30));
+    let usage = desktop::read(&ctx, &desktop_dir()).expect("read");
+    assert_eq!(usage.measured_at, Some(ts("2026-10-10T10:32:00Z")));
+
+    // And the other way round.
+    f.fs.add_file(
+        desktop::path(&desktop_dir()),
+        fixture!("plan-usage-history-v2.json"),
+        now(),
+    );
+    f.fs.add_file(
+        desktop::path(&store_desktop_dir()),
+        r#"{"samples": [{"t": 1790000000000, "u": {"fh": 1, "sd": 2}}]}"#,
+        ts("2026-09-21T14:13:20Z"),
+    );
+    let usage = desktop::read(&ctx, &desktop_dir()).expect("read");
+    assert_eq!(usage.measured_at, Some(ts("2026-10-10T10:32:00Z")));
+}
+
 // ---- Source 3: the cached usage in .claude.json --------------------------------------------------------
 
 #[test]
