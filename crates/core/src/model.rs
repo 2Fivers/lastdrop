@@ -3,12 +3,9 @@
 //!
 //! Shares are `f64` where `1.0` is the whole limit (R§0). A value the service did not report is
 //! `None`, never `0` (ARCHITECTURE "Rules for every provider").
-#![expect(
-    unused_variables,
-    reason = "M1 contract stubs: remove once no todo!() is left here"
-)]
 
-use jiff::{SignedDuration, Timestamp};
+use jiff::tz::TimeZone;
+use jiff::{SignedDuration, Span, Timestamp};
 use serde::{Deserialize, Serialize};
 
 use crate::glyph::ProviderGlyph;
@@ -348,14 +345,37 @@ pub enum WindowLen {
 
 impl WindowLen {
     /// `L` for the window instance that ends at `resets_at`; `None` when unknown (R§3.1).
+    ///
+    /// A calendar month starts one calendar month (UTC) before `resets_at`: for a reset on a
+    /// month start (`Nov 1 00:00`) that is the start of the month that ends there (`Oct 1`, so
+    /// `L` = 31 days); a reset on another day (`Nov 15 12:00`) gives the month-long billing
+    /// cycle before it (`Oct 15 12:00`). `None` when the month arithmetic leaves jiff's range.
     pub fn length_ending_at(self, resets_at: Timestamp) -> Option<SignedDuration> {
-        todo!("M1: R§2 — Fixed → the length; CalendarMonth → resets_at − start of that month (UTC)")
+        match self {
+            WindowLen::Fixed(len) => Some(len),
+            WindowLen::CalendarMonth => {
+                let start = resets_at
+                    .to_zoned(TimeZone::UTC)
+                    .checked_sub(Span::new().months(1))
+                    .ok()?;
+                Some(resets_at.duration_since(start.timestamp()))
+            }
+            WindowLen::Unknown => None,
+        }
     }
 
     /// The reset after `resets_at` for a fixed-schedule window: `R + L`, or the next month start
-    /// (R§3.9). `None` when `L` is unknown.
+    /// (R§3.9). `None` when `L` is unknown (or the result is out of range).
     pub fn next_reset(self, resets_at: Timestamp) -> Option<Timestamp> {
-        todo!("M1: R§3.9 — R' = R + L (calendar month: next month start)")
+        match self {
+            WindowLen::Fixed(len) => resets_at.checked_add(len).ok(),
+            WindowLen::CalendarMonth => resets_at
+                .to_zoned(TimeZone::UTC)
+                .checked_add(Span::new().months(1))
+                .ok()
+                .map(|z| z.timestamp()),
+            WindowLen::Unknown => None,
+        }
     }
 }
 

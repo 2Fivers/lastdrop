@@ -1,9 +1,9 @@
 //! The test vectors of readout-spec §13, as executable checks against `lastdrop-core`'s public API.
 //!
-//! Every test is `#[ignore = "M1 implementation"]` until the function it exercises is
-//! implemented: remove the attribute and make it pass. The inputs and expected values are copied
-//! from the spec; where a vector needs more inputs than the spec prints (a history, a status), the
-//! extra inputs are chosen so that they cannot change the expected value, and the comment says so.
+//! The inputs and expected values are copied from the spec; where a vector needs more inputs than
+//! the spec prints (a history, a status), the extra inputs are chosen so that they cannot change
+//! the expected value, and the comment says so. Values the spec prints rounded (`p = 1.595`) are
+//! compared at the precision printed.
 //!
 //! `now = Sat 2026-10-10 12:42` local, 24 h locale unless noted. "Local" is a fixed UTC+02:00
 //! zone (Stockholm in October before the DST change), so the vectors do not depend on a tzdb.
@@ -199,7 +199,6 @@ mod elapsed_share {
     use super::*;
 
     #[test]
-    #[ignore = "M1 implementation"]
     fn five_hour_window_resetting_at_14_56() {
         assert_close(
             stats::elapsed_share(now(), at(10, 10, 14, 56), hours(5)),
@@ -209,7 +208,6 @@ mod elapsed_share {
     }
 
     #[test]
-    #[ignore = "M1 implementation"]
     fn weekly_window_resetting_mon_09_00() {
         assert_close(
             stats::elapsed_share(now(), at(10, 12, 9, 0), hours(7 * 24)),
@@ -219,7 +217,6 @@ mod elapsed_share {
     }
 
     #[test]
-    #[ignore = "M1 implementation"]
     fn weekly_window_resetting_fri_16_oct_14_26() {
         assert_close(
             stats::elapsed_share(now(), at(10, 16, 14, 26), hours(7 * 24)),
@@ -235,7 +232,6 @@ mod display_percent {
     use super::*;
 
     #[test]
-    #[ignore = "M1 implementation"]
     fn table() {
         // (u, limited, pct, exhausted)
         let cases = [
@@ -257,7 +253,6 @@ mod display_percent {
     }
 
     #[test]
-    #[ignore = "M1 implementation"]
     fn level_threshold_compares_the_shown_percent() {
         let input = |pct| WindowSeverityInput {
             pct,
@@ -287,7 +282,6 @@ mod time_tokens {
     use super::*;
 
     #[test]
-    #[ignore = "M1 implementation"]
     fn clock_12h_and_relative() {
         let gb = en_gb();
         let us = en_us();
@@ -321,7 +315,6 @@ mod time_tokens {
     }
 
     #[test]
-    #[ignore = "M1 implementation"]
     fn today_when_12_hours_or_more_away_on_the_same_date() {
         let (gb, us) = (en_gb(), en_us());
         let early = at(10, 10, 0, 30);
@@ -338,7 +331,6 @@ mod rounding {
     use super::*;
 
     #[test]
-    #[ignore = "M1 implementation"]
     fn reset_at_14_59_59_94_shows_15_00_and_2_h_18_min() {
         let gb = en_gb();
         let now = at_s(10, 10, 12, 42, 30, 0);
@@ -353,7 +345,6 @@ mod rounding {
     }
 
     #[test]
-    #[ignore = "M1 implementation"]
     fn durations_from_12_42() {
         let cases = [
             (at(10, 10, 14, 56), "2 h 14 min"),
@@ -386,7 +377,6 @@ mod countdown_vectors {
     }
 
     #[test]
-    #[ignore = "M1 implementation"]
     fn minutes() {
         assert_eq!(left(now() + mins(12), false), "12 min left");
         // 15:01:30 rounds to 15:02 → N 12
@@ -401,7 +391,6 @@ mod countdown_vectors {
     }
 
     #[test]
-    #[ignore = "M1 implementation"]
     fn sixty_minutes_is_out_for_warning_and_hours_for_critical() {
         // +59.6 min → 15:49:36 → 15:50 → N 60
         let t_out = at_s(10, 10, 15, 49, 36, 0);
@@ -411,7 +400,6 @@ mod countdown_vectors {
     }
 
     #[test]
-    #[ignore = "M1 implementation"]
     fn hours_and_days_floor() {
         assert_eq!(left(now() + hours(6) + mins(10), true), "6 h left");
         assert_eq!(left(now() + hours(47) + mins(59), true), "47 h left");
@@ -419,7 +407,6 @@ mod countdown_vectors {
     }
 
     #[test]
-    #[ignore = "M1 implementation"]
     fn compact_form() {
         assert_eq!(countdown(12, CountdownForm::Compact, &English), "12 min");
         assert_eq!(
@@ -436,7 +423,6 @@ mod age {
     use super::*;
 
     #[test]
-    #[ignore = "M1 implementation"]
     fn tokens() {
         let gb = en_gb();
         let now = at(10, 10, 14, 50);
@@ -457,7 +443,6 @@ mod no_reset_time {
     use super::*;
 
     #[test]
-    #[ignore = "M1 implementation"]
     fn claude_five_hour_after_its_reset_is_idle() {
         let snap = claude_snapshot(vec![five_hour(0.0, None)], now() - mins(1));
         let eval = evaluate_one(&snap, now());
@@ -478,7 +463,6 @@ mod no_reset_time {
     }
 
     #[test]
-    #[ignore = "M1 implementation"]
     fn weekly_after_its_reset_without_a_new_reading_is_just_reset() {
         let now = at(10, 12, 9, 1);
         // Read at 08:58, before the 09:00 reset, so the service is fresh.
@@ -505,7 +489,6 @@ mod no_reset_time {
     }
 
     #[test]
-    #[ignore = "M1 implementation"]
     fn reset_time_none_with_forty_percent() {
         let snap = claude_snapshot(vec![weekly(0.40, None)], now() - mins(1));
         let eval = evaluate_one(&snap, now());
@@ -527,7 +510,6 @@ mod no_reset_time {
     }
 
     #[test]
-    #[ignore = "M1 implementation"]
     fn unknown_window_length_has_no_tick_a_one_hour_span_and_a_guard_from_the_first_reading() {
         let r = at(10, 10, 18, 0);
         assert_eq!(stats::elapsed(Some(r), None, now()), None);
@@ -560,7 +542,6 @@ mod pace_bar {
     use super::*;
 
     #[test]
-    #[ignore = "M1 implementation"]
     fn u_042_e_05533_at_four_scales() {
         let input = calm_bar(0.42, Some(0.5533), BarMode::Normal);
         // (s, Lpx, hair, fillH, tickH, f, k, track, fill)
@@ -635,7 +616,6 @@ mod pace_bar {
     }
 
     #[test]
-    #[ignore = "M1 implementation"]
     fn ahead_of_pace_runs_visibly_past_the_tick() {
         let g = bar_geometry(
             &calm_bar(0.68, Some(0.63), BarMode::Normal),
@@ -648,7 +628,6 @@ mod pace_bar {
     }
 
     #[test]
-    #[ignore = "M1 implementation"]
     fn on_pace() {
         let g = bar_geometry(
             &calm_bar(0.55, Some(0.5533), BarMode::Normal),
@@ -661,7 +640,6 @@ mod pace_bar {
     }
 
     #[test]
-    #[ignore = "M1 implementation"]
     fn nothing_used_at_the_start_of_a_window() {
         let g = bar_geometry(
             &calm_bar(0.0, Some(0.003), BarMode::Normal),
@@ -675,7 +653,6 @@ mod pace_bar {
     }
 
     #[test]
-    #[ignore = "M1 implementation"]
     fn exhausted_fills_the_whole_length_minus_the_gaps() {
         let g = bar_geometry(
             &calm_bar(1.0, Some(0.70), BarMode::Exhausted),
@@ -688,7 +665,6 @@ mod pace_bar {
     }
 
     #[test]
-    #[ignore = "M1 implementation"]
     fn something_used_is_at_least_one_pixel() {
         let g = bar_geometry(
             &calm_bar(0.004, Some(0.30), BarMode::Normal),
@@ -700,7 +676,6 @@ mod pace_bar {
     }
 
     #[test]
-    #[ignore = "M1 implementation"]
     fn tick_at_the_end_is_clamped() {
         let g = bar_geometry(&calm_bar(0.5, Some(1.0), BarMode::Normal), 40.0, 16.0, 1.0);
         assert_eq!(g.tick, Some(39));
@@ -735,7 +710,6 @@ mod forecast {
     }
 
     #[test]
-    #[ignore = "M1 implementation"]
     fn warning_out_15_19() {
         let tn = at(10, 10, 13, 45);
         let f = stats::forecast(
@@ -757,7 +731,6 @@ mod forecast {
     }
 
     #[test]
-    #[ignore = "M1 implementation"]
     fn critical_by_level_and_runway_12_min_left() {
         let tn = at(10, 10, 14, 50);
         let f = stats::forecast(
@@ -782,7 +755,6 @@ mod forecast {
     }
 
     #[test]
-    #[ignore = "M1 implementation"]
     fn critical_by_level_that_lasts() {
         let tn = at(10, 10, 16, 5);
         let f = stats::forecast(
@@ -804,7 +776,6 @@ mod forecast {
     }
 
     #[test]
-    #[ignore = "M1 implementation"]
     fn ok_on_course_for_62_percent() {
         let reset = at(10, 10, 14, 56);
         let tn = now();
@@ -827,7 +798,6 @@ mod forecast {
     }
 
     #[test]
-    #[ignore = "M1 implementation"]
     fn no_forecast_in_a_fresh_window() {
         let reset = at(10, 10, 21, 30);
         let f = stats::forecast(
@@ -843,7 +813,6 @@ mod forecast {
     }
 
     #[test]
-    #[ignore = "M1 implementation"]
     fn warning_out_19_39_after_fifteen_minutes() {
         let reset = at(10, 10, 21, 30);
         let tn = at(10, 10, 16, 46);
@@ -854,7 +823,8 @@ mod forecast {
         )
         .expect("forecast");
         assert_close(f.rate_per_hour, 0.32, 1e-9);
-        assert_close(f.projected, 1.595, 1e-9);
+        // p = .08 + .32 × 4 h 44 min = 1.594 67: the spec prints it to three places, 1.595.
+        assert_close(f.projected, 1.595, 5e-4);
         assert_near_time(f.t_out.expect("t_out"), at_s(10, 10, 19, 38, 30, 0));
         assert_eq!(severity(8, &f, tn).severity, Severity::Warning);
         let gb = en_gb();
@@ -866,7 +836,6 @@ mod forecast {
     }
 
     #[test]
-    #[ignore = "M1 implementation"]
     fn weekly_critical_six_hours_left() {
         // R Mon 09:00, at Sun 15:00: u .91, rate 1.5 %/h over S = 16.8 h → the anchor reading is at
         // Sun 15:00 − 16 h 48 min = Sat 22:12 with u = .91 − .015 × 16.8 = .658.
@@ -914,7 +883,6 @@ mod hysteresis {
     }
 
     #[test]
-    #[ignore = "M1 implementation"]
     fn warning_enters_above_1_and_clears_at_0_97() {
         let a =
             stats::window_severity(&input(80, true, 1.02, Some(200)), SeverityMemory::default());
@@ -926,7 +894,6 @@ mod hysteresis {
     }
 
     #[test]
-    #[ignore = "M1 implementation"]
     fn runway_critical_enters_at_30_stays_at_35_clears_at_36() {
         let never =
             stats::window_severity(&input(70, true, 1.5, Some(31)), SeverityMemory::default());
@@ -947,7 +914,6 @@ mod hysteresis {
     }
 
     #[test]
-    #[ignore = "M1 implementation"]
     fn level_critical_enters_at_90_stays_at_88_clears_at_87() {
         let level = |pct| WindowSeverityInput {
             pct,
@@ -989,7 +955,6 @@ mod balance {
     }
 
     #[test]
-    #[ignore = "M1 implementation"]
     fn credits_1240_of_3260_last_nine_days() {
         let b = stats::balance_stats(1240.0, None, &history(1240.0), now());
         assert_close(b.reference, 3260.0, 1e-9);
@@ -1007,7 +972,6 @@ mod balance {
     }
 
     #[test]
-    #[ignore = "M1 implementation"]
     fn credits_620_is_a_warning_out_thursday() {
         let b = stats::balance_stats(620.0, None, &history(620.0), now());
         assert_eq!(stats::display_pct(b.used_share, b.exhausted), 81);
@@ -1038,7 +1002,6 @@ mod freshness {
     use super::*;
 
     #[test]
-    #[ignore = "M1 implementation"]
     fn stale_after() {
         assert_eq!(stats::stale_after(Some(mins(5))), mins(15));
         assert_eq!(stats::stale_after(Some(mins(10))), mins(20));
@@ -1046,7 +1009,6 @@ mod freshness {
     }
 
     #[test]
-    #[ignore = "M1 implementation"]
     fn http_401_is_stale_sign_in_at_once() {
         let status = ServiceStatus {
             last_success: Some(now() - mins(1)),
@@ -1061,7 +1023,6 @@ mod freshness {
     }
 
     #[test]
-    #[ignore = "M1 implementation"]
     fn sixteen_minutes_without_a_reading_at_a_five_minute_interval() {
         let fresh = ServiceStatus {
             last_success: Some(now() - mins(15)),

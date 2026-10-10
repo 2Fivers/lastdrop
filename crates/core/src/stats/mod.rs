@@ -18,6 +18,7 @@ mod reset;
 mod severity;
 mod window;
 
+pub(crate) use assess::candidate;
 pub use assess::{
     AssessedMeter, Assessment, BalanceAssessment, EvalInput, EvalMemory, Evaluation, LiveChange,
     RowState, ServiceEval, ServiceInput, WindowAssessment, evaluate,

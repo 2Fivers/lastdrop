@@ -111,6 +111,11 @@ messages! {
     CardSentenceApiKey = "card.sentence.apikey" => "Lastdrop has no working {service} API key. Select the readout and choose Enter key… to add one.",
     CardSentenceOkOne = "card.sentence.ok.1" => "It is being used more slowly than time passes. At your recent pace about {left} of the {window} will be left when it resets.",
     CardSentenceOkMany = "card.sentence.ok.n" => "All limits are being used more slowly than time passes. At your recent pace about {left} will be left when they reset.",
+    // R§3.4's other two pace wordings for an OK card ("about as fast as" / "faster than time
+    // passes"); Appendix B only lists the "more slowly" sentence.
+    CardSentenceOkOneAbout = "card.sentence.ok.1.about" => "It is being used about as fast as time passes. At your recent pace about {left} of the {window} will be left when it resets.",
+    CardSentenceOkOneAhead = "card.sentence.ok.1.ahead" => "It is being used faster than time passes, but at your recent pace about {left} of the {window} will be left when it resets.",
+    CardSentenceOkManyMixed = "card.sentence.ok.n.mixed" => "At your recent pace about {left} will be left when they reset.",
     CardWindowSession = "card.window.session" => "session",
     CardWindowWeek = "card.window.week" => "week",
     CardWindowMonth = "card.window.month" => "month",
@@ -127,6 +132,9 @@ messages! {
     CardSentencePausedOpen = "card.sentence.paused.open" => "Updates are paused. These are the numbers from {time}.",
     CardLineElapsed = "card.line.elapsed" => "{e} of time gone",
     CardLineElapsedStale = "card.line.elapsed.stale" => "{e} of time gone at {time}",
+    // The tick line of a window without a reset time that is not IDLE (R§8.2 names only its
+    // reset line).
+    CardLineElapsedUnknown = "card.line.elapsed.unknown" => "time gone unknown",
     CardForecastCourse = "card.line.forecast.course" => "on course for {p} at reset",
     CardForecastLasts = "card.line.forecast.lasts" => "lasts to the reset",
     CardForecastNone = "card.line.forecast.none" => "no forecast yet",
@@ -214,6 +222,7 @@ messages! {
     A11yRoot = "a11y.root" => "Lastdrop. {rows}",
     A11yHelp = "a11y.help" => "Select for details, right-click for options.",
     A11yAt = "a11y.at" => "at {time}",
+    A11yAgo = "a11y.ago" => "{duration} ago",
     A11yRowOk = "a11y.row.ok" => "{service} {meter}: on track, {n} percent used, resets {reset}.",
     A11yRowWarning = "a11y.row.warning" => "{service} {meter}: warning, runs out at about {time}, before the reset {reset}; {n} percent used.",
     A11yRowRunway = "a11y.row.critical.runway" => "{service} {meter}: critical, runs out in about {duration}; {n} percent used; resets {reset}.",

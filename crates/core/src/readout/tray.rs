@@ -1,15 +1,16 @@
 //! The tray icon model and its per-size geometry (R§9).
-#![expect(
-    unused_variables,
-    reason = "M1 contract stubs: remove once no todo!() is left here"
-)]
 
 use serde::{Deserialize, Serialize};
 
-use super::bar::BarInput;
+use super::bar::{BarInput, bar_input};
 use super::build::BuildContext;
 use crate::color::ColorRole;
-use crate::stats::Evaluation;
+use crate::grammar::a11y::tray_tooltip;
+use crate::grammar::cells::pct;
+use crate::stats::{Evaluation, RowState};
+
+/// The tray shows one or two digits, never `100` (R§9.1: EXHAUSTED has its own icon).
+const TRAY_MAX_PCT: u8 = 99;
 
 /// The icon's shape ladder (R§9.1), for the winner (R§3.10).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -199,7 +200,35 @@ pub fn tray_layout_for(size: u32) -> (&'static TrayLayout, u32) {
 /// The tray model for the winner (R§9.1, R§9.3). Over the whole evaluation, regardless of what
 /// the readout shows.
 pub fn build_tray(eval: &Evaluation, cx: &BuildContext<'_>) -> TrayModel {
-    todo!("M1: R§9")
+    let tooltip = tray_tooltip(eval, &cx.text);
+    let Some((_, a)) = eval.winner.as_ref().and_then(|k| eval.assessment(k)) else {
+        return TrayModel {
+            icon: TrayIcon::Drop,
+            tooltip,
+        };
+    };
+    let digits = pct(a).min(TRAY_MAX_PCT).to_string();
+    let icon = match a.state {
+        RowState::Loading => TrayIcon::Drop,
+        RowState::Exhausted => TrayIcon::ExhaustedTile,
+        RowState::CriticalLevel | RowState::CriticalRunway => TrayIcon::CriticalTile { digits },
+        RowState::Warning => TrayIcon::CautionTile { digits },
+        RowState::Stale(_) => TrayIcon::Digits {
+            digits,
+            role: ColorRole::Stale,
+            bar: bar_input(a, ColorRole::TextPrimary),
+        },
+        RowState::Ok
+        | RowState::OkNoReset
+        | RowState::Idle
+        | RowState::OkBalance
+        | RowState::JustReset => TrayIcon::Digits {
+            digits,
+            role: ColorRole::TextPrimary,
+            bar: bar_input(a, ColorRole::TextPrimary),
+        },
+    };
+    TrayModel { icon, tooltip }
 }
 
 #[cfg(test)]

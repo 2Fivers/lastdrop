@@ -38,6 +38,7 @@ pub mod refresh;
 pub mod secret;
 pub mod settings;
 pub mod stats;
+mod util;
 
 /// The time crate every Lastdrop crate uses, re-exported so versions cannot drift.
 pub use jiff;

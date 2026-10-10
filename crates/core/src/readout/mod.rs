@@ -138,7 +138,9 @@ pub enum Run {
 pub struct RightCell {
     /// `42%`, `–`: right-aligned in the VALUE box.
     pub value: Option<TextRun>,
-    /// `↺` + `14:56`, `–`, `≈` + `9d`, REASON, AGE: from x = 30.
+    /// `↺` + `14:56`, `–`, `≈` + `9d`, REASON, AGE: from x = 30. A balance's `≈` and its
+    /// duration are two text runs; the renderer leaves
+    /// [`crate::consts::layout::BALANCE_APPROX_GAP`] between them (R§6.3 `width("≈") + 1`).
     pub time: Vec<Run>,
     /// ▲/● + `Out 15:20`, `Reading…`, stale `Back 16:30`: from x = 0.
     pub say: Vec<Run>,

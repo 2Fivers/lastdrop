@@ -108,6 +108,20 @@ pub const AUTO_SWAP_MARGIN: f64 = 0.05;
 /// `AUTO_SWAP_INTERVAL` = 10 min (R§3.10): same-class swaps happen at most once per interval.
 pub const AUTO_SWAP_INTERVAL: SignedDuration = SignedDuration::from_mins(10);
 
+/// Auto rows of the two-row readout, N = 2 (R§3.10; the compact form shows 1 of them, R§4.2).
+/// Also the number of places the "too few candidates" rule fills with OK balance meters.
+pub const AUTO_ROWS: usize = 2;
+
+/// R§5.5: a balance duration is in hours while `days_left` is below 2 days.
+pub const BAL_DURATION_HOURS_BELOW_DAYS: f64 = 2.0;
+
+/// R§5.5: in days while `days_left` is below 14 days.
+pub const BAL_DURATION_DAYS_BELOW_DAYS: f64 = 14.0;
+
+/// R§5.5: in weeks while `days_left` is below 63 days; from it `9w+` (F§4.5 `More than 8 weeks
+/// left`).
+pub const BAL_DURATION_WEEKS_BELOW_DAYS: f64 = 63.0;
+
 /// `HOVER_DELAY` default, 400 ms (R§10). The live value is `SPI_GETMOUSEHOVERTIME`.
 pub const HOVER_DELAY_DEFAULT: Duration = Duration::from_millis(400);
 
@@ -206,6 +220,8 @@ pub mod layout {
     pub const RESET_GLYPH: f32 = 11.0;
     /// Gap after the reset glyph (R§6.5).
     pub const RESET_GLYPH_GAP: f32 = 1.0;
+    /// The gap after `≈` in the balance term of `RIGHT_W` (R§6.3: `width("≈") + 1`).
+    pub const BALANCE_APPROX_GAP: f32 = 1.0;
     /// Severity glyph cell (12 px) in say-text (R§6.5: "cell 12 + 2 gap").
     pub const SEVERITY_GLYPH: f32 = 12.0;
     /// Gap after a severity glyph in say-text (R§6.5).

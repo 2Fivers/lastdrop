@@ -4,26 +4,34 @@
 //! [`evaluate`] is the single entry point the app calls on every new reading and on every minute
 //! tick (R§12). Its [`Evaluation`] is the input of every surface builder
 //! ([`crate::readout`], [`crate::flyout`]).
-#![expect(
-    unused_variables,
-    reason = "M1 contract stubs: remove once no todo!() is left here"
-)]
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use jiff::{SignedDuration, Timestamp};
 use serde::{Deserialize, Serialize};
 
-use super::balance::BalanceStats;
-use super::forecast::Forecast;
-use super::freshness::{Freshness, ServiceStatus, StaleReason};
-use super::history::HistoryView;
-use super::rank::{AutoRows, DisplayClass};
-use super::reset::ResetView;
-use super::severity::{CriticalCause, Severity, SeverityMemory};
-use super::window::Pace;
-use crate::model::{AccountRef, MeterKey, MeterNames, ProviderId, Snapshot, SourceKey, Unit};
-use crate::settings::Settings;
+use super::balance::{BalanceStats, balance_stats, is_top_up};
+use super::forecast::{Forecast, current_instance, forecast, runway_minutes, same_window_instance};
+use super::freshness::{Freshness, ServiceStatus, StaleReason, freshness};
+use super::history::{HistoryView, Sample};
+use super::rank::{AutoRows, Candidate, DisplayClass, rank, select_rows};
+use super::reset::{EffectiveWindow, ResetView, effective_window};
+use super::severity::{
+    BalanceSeverityInput, CriticalCause, Severity, SeverityMemory, SeverityOutcome,
+    WindowSeverityInput, balance_severity, window_severity,
+};
+use super::window::{Pace, display_pct, elapsed, is_exhausted, pace};
+use crate::consts::{AUTO_ROWS, BAL_REF_LOOKBACK, SAME_WINDOW_TOLERANCE};
+use crate::model::{
+    AccountRef, Balance, Meter, MeterId, MeterKey, MeterKind, MeterNames, ProviderId, Snapshot,
+    SourceKey, Unit, catalog,
+};
+use crate::settings::{BalanceAlert, ReadoutContent, Settings};
+use crate::util::{sane_share, sub};
+
+/// How far back the history of a window without a known start is read (the store keeps the
+/// current instance, ≤ 31 days, in memory).
+const INSTANCE_LOOKBACK: SignedDuration = SignedDuration::from_hours(32 * 24);
 
 /// Row display state of one meter (R§4.1). The row's look is chosen by R§5.7's table.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -276,5 +284,518 @@ impl Evaluation {
 ///   for the first time), its [`SeverityMemory`] is cleared (R§3.7 "On a window reset … cleared")
 ///   and [`LiveChange::WindowReset`] is raised.
 pub fn evaluate(input: &EvalInput<'_>, memory: &mut EvalMemory) -> Evaluation {
-    todo!("M1: R§3 / R§4 evaluation")
+    let mut changes = Vec::new();
+    let services: Vec<ServiceEval> = input
+        .services
+        .iter()
+        .enumerate()
+        .map(|(order, svc)| evaluate_service(input, svc, order, memory, &mut changes))
+        .collect();
+
+    let candidates: Vec<Candidate> = services
+        .iter()
+        .flat_map(|s| s.meters.iter())
+        .map(candidate)
+        .collect();
+    let order = rank(&candidates);
+    let ranked: Vec<MeterKey> = order.iter().map(|&i| candidates[i].key.clone()).collect();
+    let winner = ranked.first().cloned();
+
+    let (readout_rows, pinned) = readout_rows(input, &services, &candidates, memory);
+    let multi_service = if pinned {
+        distinct_providers(readout_rows.iter().map(|k| k.provider)) > 1
+    } else {
+        distinct_providers(
+            services
+                .iter()
+                .filter(|s| can_appear(input.settings, s))
+                .map(|s| s.source.provider),
+        ) > 1
+    };
+
+    Evaluation {
+        now: input.now,
+        services,
+        ranked,
+        winner,
+        readout_rows,
+        multi_service,
+        changes,
+    }
+}
+
+/// The number of different services in `providers`.
+fn distinct_providers(providers: impl Iterator<Item = ProviderId>) -> usize {
+    providers.collect::<BTreeSet<_>>().len()
+}
+
+/// The service has a meter that can appear in the auto readout (R§6.4 "decided from what *can*
+/// appear, not what does"): any meter it reported, or a catalogue meter that is not hidden.
+fn can_appear(settings: &Settings, service: &ServiceEval) -> bool {
+    let hidden = hidden_meters(settings, service.source.provider);
+    !service.meters.is_empty()
+        || catalog(service.source.provider)
+            .iter()
+            .any(|d| !hidden.iter().any(|h| h.0 == d.id))
+}
+
+/// The meters the user hid for a service (F§2.2).
+fn hidden_meters(settings: &Settings, provider: ProviderId) -> &[MeterId] {
+    settings
+        .provider(provider)
+        .map_or(&[], |p| p.hidden_meters.as_slice())
+}
+
+/// The readout rows (R§4.3): the pins that are evaluated, in the user's order; else the auto rows
+/// with hysteresis (R§3.10). Judgement call: pins of which none is available (service disabled,
+/// a per-model meter not reported yet) fall back to the auto rows instead of hiding the readout.
+/// Returns the rows and whether they are pins.
+fn readout_rows(
+    input: &EvalInput<'_>,
+    services: &[ServiceEval],
+    candidates: &[Candidate],
+    memory: &mut EvalMemory,
+) -> (Vec<MeterKey>, bool) {
+    if let ReadoutContent::Pinned(pins) = &input.settings.readout.content {
+        let mut rows: Vec<MeterKey> = Vec::new();
+        for pin in pins {
+            let present = services
+                .iter()
+                .any(|s| s.meters.iter().any(|a| &a.key == pin));
+            if present && !rows.contains(pin) && rows.len() < AUTO_ROWS {
+                rows.push(pin.clone());
+            }
+        }
+        if !rows.is_empty() {
+            return (rows, true);
+        }
+    }
+    let auto = select_rows(candidates, AUTO_ROWS, input.now, &memory.auto_rows);
+    let rows = auto.shown.clone();
+    memory.auto_rows = auto;
+    (rows, false)
+}
+
+/// Whether a meter id of a provider is a balance in the catalogue (for LOADING meters, which
+/// carry no reading yet).
+fn catalogue_is_balance(key: &MeterKey) -> bool {
+    catalog(key.provider)
+        .iter()
+        .any(|d| d.id == key.meter.0 && d.kind == MeterKind::Balance)
+}
+
+/// The rank candidate of an assessment (R§3.10).
+pub(crate) fn candidate(a: &Assessment) -> Candidate {
+    let (is_balance, resets_at, t_out, days_left) = match &a.meter {
+        AssessedMeter::Window(w) => (
+            false,
+            w.resets_at,
+            // A run-out after the reset does not count: critical by level then ranks by `R`.
+            w.forecast.filter(|f| f.runs_out).and_then(|f| f.t_out),
+            None,
+        ),
+        AssessedMeter::Balance(b) => (true, None, b.stats.t_out, b.stats.days_left),
+        AssessedMeter::Loading => (catalogue_is_balance(&a.key), None, None, None),
+    };
+    Candidate {
+        key: a.key.clone(),
+        class: a.class,
+        is_balance,
+        resets_at,
+        t_out,
+        pressure: a.pressure,
+        days_left,
+        service_order: a.service_order,
+        meter_order: a.meter_order,
+    }
+}
+
+/// What every meter of one service is assessed with.
+struct MeterContext<'a> {
+    now: Timestamp,
+    /// `t_r` of the snapshot.
+    reading_at: Timestamp,
+    /// `Some` when the service is stale.
+    stale: Option<StaleReason>,
+    service_order: usize,
+    history: &'a dyn HistoryView,
+    alert: Option<&'a BalanceAlert>,
+}
+
+/// One service: LOADING meters before the first reading, else every meter of the snapshot.
+fn evaluate_service(
+    input: &EvalInput<'_>,
+    svc: &ServiceInput<'_>,
+    order: usize,
+    memory: &mut EvalMemory,
+    changes: &mut Vec<LiveChange>,
+) -> ServiceEval {
+    let hidden = hidden_meters(input.settings, svc.provider);
+    let source = SourceKey {
+        provider: svc.provider,
+        account: svc.account.key.clone(),
+    };
+    let mut account = svc.account.clone();
+
+    let Some(snapshot) = svc.snapshot else {
+        let failed = !svc.fetching && svc.status.last_failure.is_some();
+        let meters = if failed {
+            Vec::new()
+        } else {
+            catalog(svc.provider)
+                .iter()
+                .filter(|d| !hidden.iter().any(|h| h.0 == d.id))
+                .map(|d| Assessment {
+                    key: MeterKey {
+                        provider: svc.provider,
+                        account: svc.account.key.clone(),
+                        meter: d.meter_id(),
+                    },
+                    names: d.names(),
+                    service_order: order,
+                    meter_order: d.order,
+                    meter: AssessedMeter::Loading,
+                    severity: None,
+                    state: RowState::Loading,
+                    class: DisplayClass::Loading,
+                    pressure: 0.0,
+                })
+                .collect()
+        };
+        return ServiceEval {
+            source,
+            account,
+            service_order: order,
+            freshness: Freshness::Fresh,
+            loading: !failed,
+            first_fetch_failed: failed,
+            status: svc.status.clone(),
+            reading_at: None,
+            meters,
+        };
+    };
+
+    if snapshot.account.plan.is_some() {
+        account.plan.clone_from(&snapshot.account.plan);
+    }
+    let reading_at = snapshot.reading_at();
+    let mut status = svc.status.clone();
+    if status.last_success.is_none() {
+        status.last_success = Some(reading_at);
+    }
+    let fresh = freshness(input.now, &status);
+    if let Some(previous) = memory.last_freshness.insert(source.clone(), fresh)
+        && (previous == Freshness::Fresh) != (fresh == Freshness::Fresh)
+    {
+        changes.push(LiveChange::FreshnessChanged(source.clone()));
+    }
+
+    let cx = MeterContext {
+        now: input.now,
+        reading_at,
+        stale: match fresh {
+            Freshness::Stale(reason) => Some(reason),
+            Freshness::Fresh => None,
+        },
+        service_order: order,
+        history: input.history,
+        alert: input
+            .settings
+            .provider(svc.provider)
+            .and_then(|p| p.balance_alert.as_ref()),
+    };
+    let key = |id: &MeterId| MeterKey {
+        provider: svc.provider,
+        account: svc.account.key.clone(),
+        meter: id.clone(),
+    };
+    let mut meters: Vec<Assessment> = Vec::new();
+    for meter in snapshot.meters.iter().filter(|m| !hidden.contains(&m.id)) {
+        meters.push(assess_window(meter, key(&meter.id), &cx, memory, changes));
+    }
+    for balance in snapshot.balances.iter().filter(|b| !hidden.contains(&b.id)) {
+        meters.push(assess_balance(
+            balance,
+            key(&balance.id),
+            &cx,
+            memory,
+            changes,
+        ));
+    }
+    meters.sort_by_key(|a| a.meter_order);
+
+    ServiceEval {
+        source,
+        account,
+        service_order: order,
+        freshness: fresh,
+        loading: false,
+        first_fetch_failed: false,
+        status,
+        reading_at: Some(reading_at),
+        meters,
+    }
+}
+
+/// The readings of the window instance the meter's reading belongs to, ending with that reading
+/// (added when the history does not have it yet).
+fn instance_samples(
+    history: &dyn HistoryView,
+    key: &MeterKey,
+    meter: &Meter,
+    eff: &EffectiveWindow,
+    reading_at: Timestamp,
+) -> Vec<Sample> {
+    let since = match (eff.resets_at, eff.window) {
+        (Some(r), Some(len)) => sub(sub(r, len), SAME_WINDOW_TOLERANCE),
+        _ => sub(reading_at, INSTANCE_LOOKBACK),
+    };
+    let mut all: Vec<Sample> = history
+        .samples(key, since)
+        .iter()
+        .filter(|s| s.t <= reading_at)
+        .copied()
+        .collect();
+    if all.last().is_none_or(|s| s.t < reading_at) {
+        all.push(Sample::window(reading_at, meter.used, meter.resets_at));
+    }
+    current_instance(&all).to_vec()
+}
+
+/// Records the severity of a fresh meter and raises [`LiveChange::SeverityRose`] on a rise.
+fn record_severity(
+    key: &MeterKey,
+    outcome: &SeverityOutcome,
+    memory: &mut EvalMemory,
+    changes: &mut Vec<LiveChange>,
+) {
+    memory.severity.insert(key.clone(), outcome.memory);
+    let previous = memory
+        .last_severity
+        .insert(key.clone(), outcome.severity)
+        .unwrap_or(Severity::Ok);
+    if outcome.severity > previous {
+        changes.push(LiveChange::SeverityRose(key.clone()));
+    }
+}
+
+/// The display class of a fresh severity.
+fn class_of(severity: Severity) -> DisplayClass {
+    match severity {
+        Severity::Ok => DisplayClass::Ok,
+        Severity::Warning => DisplayClass::Warning,
+        Severity::Critical => DisplayClass::Critical,
+        Severity::Exhausted => DisplayClass::Exhausted,
+    }
+}
+
+/// R§3.2–R§3.5, R§3.7, R§3.9 and R§4.1 for one window meter.
+fn assess_window(
+    meter: &Meter,
+    key: MeterKey,
+    cx: &MeterContext<'_>,
+    memory: &mut EvalMemory,
+    changes: &mut Vec<LiveChange>,
+) -> Assessment {
+    let eff = effective_window(meter, cx.now);
+    let live = eff.view == ResetView::Live;
+    let used = sane_share(eff.used);
+    let exhausted = is_exhausted(used, meter.limited && live);
+    let pct = display_pct(used, exhausted);
+    // Stale meters are frozen at the reading; one drawn as reset shows the new window now.
+    let e_at = if cx.stale.is_some() && live {
+        cx.reading_at
+    } else {
+        cx.now
+    };
+    let elapsed = elapsed(eff.resets_at, eff.window, e_at);
+    let pace = elapsed.map(|e| pace(used, e));
+
+    let samples = if live {
+        instance_samples(cx.history, &key, meter, &eff, cx.reading_at)
+    } else {
+        Vec::new()
+    };
+    let forecast = if live && cx.stale.is_none() {
+        forecast(&samples, eff.resets_at, eff.window)
+    } else {
+        None
+    };
+    let runway_min = forecast
+        .and_then(|f| f.t_out)
+        .map(|t| runway_minutes(cx.now, t));
+    let exhausted_since = if live && exhausted {
+        // The start of the trailing run of used-up readings of this instance, known only when
+        // the history also has the reading before it (the moment it ran out was observed).
+        let run = samples.iter().rev().take_while(|s| s.value >= 1.0).count();
+        (run > 0 && run < samples.len()).then(|| samples[samples.len() - run].t)
+    } else {
+        None
+    };
+
+    // A new window instance clears the hysteresis (R§3.7, R§3.9); a reset time that passed or
+    // changed is announced (R§11), a window that merely starts (none → some) is not.
+    let previous = memory.instance.insert(key.clone(), eff.resets_at);
+    let new_instance = match previous {
+        Some(Some(prev)) => !same_window_instance(Some(prev), eff.resets_at),
+        Some(None) => eff.resets_at.is_some(),
+        None => false,
+    };
+    if new_instance {
+        memory.severity.remove(&key);
+        if matches!(previous, Some(Some(_))) {
+            changes.push(LiveChange::WindowReset(key.clone()));
+        }
+    }
+
+    let outcome = if cx.stale.is_none() {
+        let input = WindowSeverityInput {
+            pct,
+            exhausted,
+            valid: forecast.is_some_and(|f| f.valid),
+            runs_out: forecast.is_some_and(|f| f.runs_out),
+            projected: forecast.map(|f| f.projected),
+            runway_min,
+        };
+        let previous = memory.severity.get(&key).copied().unwrap_or_default();
+        let outcome = window_severity(&input, previous);
+        record_severity(&key, &outcome, memory, changes);
+        Some(outcome)
+    } else {
+        None
+    };
+
+    let state = match (cx.stale, eff.view, outcome) {
+        (Some(reason), _, _) => RowState::Stale(reason),
+        (None, ResetView::JustReset { .. }, _) => RowState::JustReset,
+        (None, ResetView::IdleAfterReset { .. }, _) => RowState::Idle,
+        (None, ResetView::Live, Some(o)) => match (o.severity, o.cause) {
+            (Severity::Exhausted, _) => RowState::Exhausted,
+            (Severity::Critical, Some(CriticalCause::Runway)) => RowState::CriticalRunway,
+            (Severity::Critical, _) => RowState::CriticalLevel,
+            (Severity::Warning, _) => RowState::Warning,
+            (Severity::Ok, _) if eff.resets_at.is_some() => RowState::Ok,
+            (Severity::Ok, _) if used <= 0.0 && meter.starts_on_use => RowState::Idle,
+            (Severity::Ok, _) => RowState::OkNoReset,
+        },
+        (None, ResetView::Live, None) => RowState::OkNoReset,
+    };
+    let class = match (cx.stale, outcome) {
+        (Some(_), _) => DisplayClass::Stale,
+        (None, Some(o)) => class_of(o.severity),
+        (None, None) => DisplayClass::Ok,
+    };
+    let pressure = if state == RowState::Idle {
+        0.0
+    } else {
+        let p = forecast.filter(|f| f.valid).map_or(used, |f| f.projected);
+        used.max(p)
+    };
+
+    Assessment {
+        key,
+        names: meter.names.clone(),
+        service_order: cx.service_order,
+        meter_order: meter.order,
+        meter: AssessedMeter::Window(WindowAssessment {
+            used,
+            pct,
+            exhausted,
+            resets_at: eff.resets_at,
+            window: eff.window,
+            starts_on_use: meter.starts_on_use,
+            elapsed,
+            pace,
+            reset: eff.view,
+            forecast,
+            runway_min,
+            cause: outcome.and_then(|o| o.cause),
+            reading_at: cx.reading_at,
+            exhausted_since,
+        }),
+        severity: outcome.map(|o| o.severity),
+        state,
+        class,
+        pressure,
+    }
+}
+
+/// R§3.6–R§3.7 and R§4.1 for one balance meter.
+fn assess_balance(
+    balance: &Balance,
+    key: MeterKey,
+    cx: &MeterContext<'_>,
+    memory: &mut EvalMemory,
+    changes: &mut Vec<LiveChange>,
+) -> Assessment {
+    // Stale balances are frozen at the reading (R§3.8).
+    let at = if cx.stale.is_some() {
+        cx.reading_at
+    } else {
+        cx.now
+    };
+    let samples: Vec<Sample> = cx
+        .history
+        .samples(&key, sub(at, BAL_REF_LOOKBACK))
+        .iter()
+        .filter(|s| s.t <= at)
+        .copied()
+        .collect();
+    let stats = balance_stats(balance.amount, balance.last_top_up, &samples, at);
+    let pct = display_pct(stats.used_share, stats.exhausted);
+
+    let outcome = if cx.stale.is_none() {
+        // A top-up re-evaluates at once (R§3.7): no hysteresis carried over it.
+        let topped_up = match samples.as_slice() {
+            [.., before, last] if last.value.to_bits() == balance.amount.to_bits() => {
+                is_top_up(before.value, last.value)
+            }
+            [.., last] => is_top_up(last.value, balance.amount),
+            [] => false,
+        };
+        let previous = if topped_up {
+            SeverityMemory::default()
+        } else {
+            memory.severity.get(&key).copied().unwrap_or_default()
+        };
+        let input = BalanceSeverityInput {
+            exhausted: stats.exhausted,
+            days_left: stats.days_left,
+        };
+        let outcome = balance_severity(&input, previous, cx.alert);
+        record_severity(&key, &outcome, memory, changes);
+        Some(outcome)
+    } else {
+        None
+    };
+    let state = match (cx.stale, outcome.map(|o| o.severity)) {
+        (Some(reason), _) => RowState::Stale(reason),
+        (None, Some(Severity::Exhausted)) => RowState::Exhausted,
+        (None, Some(Severity::Critical)) => RowState::CriticalRunway,
+        (None, Some(Severity::Warning)) => RowState::Warning,
+        (None, _) => RowState::OkBalance,
+    };
+    let class = match (cx.stale, outcome) {
+        (Some(_), _) => DisplayClass::Stale,
+        (None, Some(o)) => class_of(o.severity),
+        (None, None) => DisplayClass::Ok,
+    };
+
+    Assessment {
+        key,
+        names: balance.names.clone(),
+        service_order: cx.service_order,
+        meter_order: balance.order,
+        meter: AssessedMeter::Balance(BalanceAssessment {
+            amount: balance.amount,
+            unit: balance.unit.clone(),
+            pct,
+            reading_at: cx.reading_at,
+            stats,
+        }),
+        severity: outcome.map(|o| o.severity),
+        state,
+        class,
+        pressure: stats.used_share,
+    }
 }

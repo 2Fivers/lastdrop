@@ -1,11 +1,9 @@
 //! Freshness per service (R§3.8).
-#![expect(
-    unused_variables,
-    reason = "M1 contract stubs: remove once no todo!() is left here"
-)]
 
 use jiff::{SignedDuration, Timestamp};
 use serde::{Deserialize, Serialize};
+
+use crate::consts::{STALE_INTERVAL_FACTOR, STALE_MANUAL, STALE_MIN};
 
 /// Why a service has no fresh reading (R§3.8 `reason`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -68,7 +66,13 @@ pub struct ServiceStatus {
 /// `stale_after = max(15 min, 2 × poll_interval)`; manual refresh mode: 60 min (R§3.8).
 /// Interval 5 min → 15 min; 10 min → 20 min.
 pub fn stale_after(poll_interval: Option<SignedDuration>) -> SignedDuration {
-    todo!("M1: R§3.8 stale_after")
+    match poll_interval {
+        Some(interval) => interval
+            .checked_mul(STALE_INTERVAL_FACTOR)
+            .unwrap_or(SignedDuration::MAX)
+            .max(STALE_MIN),
+        None => STALE_MANUAL,
+    }
 }
 
 /// Freshness of a service at `now` (R§3.8):
@@ -85,5 +89,100 @@ pub fn stale_after(poll_interval: Option<SignedDuration>) -> SignedDuration {
 /// fetch that returned an old cached reading). A service without any success is reported by its
 /// caller as LOADING, not through this function.
 pub fn freshness(now: Timestamp, status: &ServiceStatus) -> Freshness {
-    todo!("M1: R§3.8 freshness")
+    let failure = status.last_failure.map(|(_, kind)| kind);
+    if status.sign_in_required || failure == Some(FailureKind::Auth) {
+        return Freshness::Stale(StaleReason::SignIn);
+    }
+    if status.paused {
+        return Freshness::Stale(StaleReason::Paused);
+    }
+    let reason = match failure {
+        Some(FailureKind::Offline) => StaleReason::Offline,
+        _ => StaleReason::NoData,
+    };
+    match status.last_success {
+        Some(t) if now.duration_since(t) > stale_after(status.poll_interval) => {
+            Freshness::Stale(reason)
+        }
+        Some(_) => Freshness::Fresh,
+        // No success at all: the caller shows LOADING (or "Couldn't read"); stale only when an
+        // attempt failed.
+        None if failure.is_some() => Freshness::Stale(reason),
+        None => Freshness::Fresh,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn ts(mins: i64) -> Timestamp {
+        Timestamp::from_second(mins * 60).expect("valid")
+    }
+
+    fn status(last_success_min: i64) -> ServiceStatus {
+        ServiceStatus {
+            last_success: Some(ts(last_success_min)),
+            poll_interval: Some(SignedDuration::from_mins(5)),
+            ..ServiceStatus::default()
+        }
+    }
+
+    #[test]
+    fn immediate_reasons_come_first() {
+        let paused = ServiceStatus {
+            paused: true,
+            ..status(100)
+        };
+        assert_eq!(
+            freshness(ts(100), &paused),
+            Freshness::Stale(StaleReason::Paused)
+        );
+        let sign_in = ServiceStatus {
+            sign_in_required: true,
+            ..paused
+        };
+        assert_eq!(
+            freshness(ts(100), &sign_in),
+            Freshness::Stale(StaleReason::SignIn)
+        );
+    }
+
+    #[test]
+    fn offline_only_after_stale_after() {
+        let offline = ServiceStatus {
+            last_failure: Some((ts(110), FailureKind::Offline)),
+            ..status(100)
+        };
+        assert_eq!(freshness(ts(110), &offline), Freshness::Fresh);
+        assert_eq!(
+            freshness(ts(116), &offline),
+            Freshness::Stale(StaleReason::Offline)
+        );
+        let manual = ServiceStatus {
+            poll_interval: None,
+            ..status(100)
+        };
+        assert_eq!(freshness(ts(160), &manual), Freshness::Fresh);
+        assert_eq!(
+            freshness(ts(161), &manual),
+            Freshness::Stale(StaleReason::NoData)
+        );
+    }
+
+    #[test]
+    fn without_any_success() {
+        assert_eq!(
+            freshness(ts(0), &ServiceStatus::default()),
+            Freshness::Fresh
+        );
+        let failed = ServiceStatus {
+            last_failure: Some((ts(0), FailureKind::NoData)),
+            ..ServiceStatus::default()
+        };
+        assert_eq!(
+            freshness(ts(0), &failed),
+            Freshness::Stale(StaleReason::NoData)
+        );
+    }
 }
