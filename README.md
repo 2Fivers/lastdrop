@@ -22,6 +22,10 @@ current pace will last until the next reset.
 Early development. The stack is being chosen by measuring idle memory and flyout latency
 of the candidates on a real machine before the first line of the app is written.
 
+## Plan
+
+See [docs/ROADMAP.md](docs/ROADMAP.md) for providers, features and milestones.
+
 ## License
 
 Proprietary. Copyright © 2026 Adinosaur AB, all rights reserved; distribution is not
