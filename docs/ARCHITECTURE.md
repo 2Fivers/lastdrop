@@ -135,6 +135,10 @@ Rules for every provider:
 
 - Slint with the **software renderer only** and the `fluent` style ([ADR 0001](adr/0001-rust-and-slint-software-renderer.md)).
   Static CRT. The About window shows Slint's `AboutSlint` (licence condition).
+- **Slint licence rule:** Slint is used under its Royalty-free License 2.0, which stays free
+  whether Lastdrop is closed or later open-sourced, but forbids an app that exposes Slint's APIs.
+  So themes, layouts and provider definitions are **data** (JSON), never `.slint` code loaded
+  at runtime, and nothing user-supplied reaches a Slint interpreter.
 - **Refresh scheduler:** per account, the provider's `min_interval` and the user's interval;
   adaptive (faster while the flyout is open, slower when idle); poll again shortly after a
   window's reset time; one job per credential source in flight.
