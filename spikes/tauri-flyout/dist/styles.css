@@ -1,0 +1,275 @@
+/* Lastdrop flyout - WinUI 3 look in plain CSS.
+   Colour values are the WinUI 3 theme resources (Common_themeresources_any.xaml):
+   TextFillColor*, CardBackgroundFillColorDefault, CardStrokeColorDefault,
+   SubtleFillColor*, DividerStrokeColorDefault, SystemFillColorSuccess.
+   Accent shades (--accent-*) are injected from Rust (UISettings.GetColorValue). */
+
+:root {
+  color-scheme: light;
+  /* fallbacks = Windows default blue accent palette */
+  --accent: #0078d4;
+  --accent-dark1: #005fb8;
+  --accent-dark2: #004c87;
+  --accent-dark3: #003b6f;
+  --accent-light1: #2b88d8;
+  --accent-light2: #60cdff;
+  --accent-light3: #99ebff;
+
+  --text-primary: rgba(0, 0, 0, 0.894);
+  --text-secondary: rgba(0, 0, 0, 0.62);
+  --text-tertiary: rgba(0, 0, 0, 0.447);
+  --card-bg: rgba(255, 255, 255, 0.7);
+  --card-stroke: rgba(0, 0, 0, 0.0578);
+  --subtle-hover: rgba(0, 0, 0, 0.0373);
+  --subtle-press: rgba(0, 0, 0, 0.0241);
+  --divider: rgba(0, 0, 0, 0.0803);
+  --track: rgba(0, 0, 0, 0.0803);
+  --footer-bg: rgba(0, 0, 0, 0.022);
+  --badge-bg: rgba(0, 0, 0, 0.0578);
+  --success: #0f7b0f;
+  --focus: rgba(0, 0, 0, 0.894);
+  --accent-fill: var(--accent-dark1);
+  --accent-text: var(--accent-dark2);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    color-scheme: dark;
+    --text-primary: #ffffff;
+    --text-secondary: rgba(255, 255, 255, 0.786);
+    --text-tertiary: rgba(255, 255, 255, 0.545);
+    --card-bg: rgba(255, 255, 255, 0.0512);
+    --card-stroke: rgba(0, 0, 0, 0.1);
+    --subtle-hover: rgba(255, 255, 255, 0.0605);
+    --subtle-press: rgba(255, 255, 255, 0.0419);
+    --divider: rgba(255, 255, 255, 0.0837);
+    --track: rgba(255, 255, 255, 0.0837);
+    --footer-bg: rgba(0, 0, 0, 0.16);
+    --badge-bg: rgba(255, 255, 255, 0.0605);
+    --success: #6ccb5f;
+    --focus: #ffffff;
+    --accent-fill: var(--accent-light2);
+    --accent-text: var(--accent-light3);
+  }
+}
+
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --text-primary: #ffffff;
+  --text-secondary: rgba(255, 255, 255, 0.786);
+  --text-tertiary: rgba(255, 255, 255, 0.545);
+  --card-bg: rgba(255, 255, 255, 0.0512);
+  --card-stroke: rgba(0, 0, 0, 0.1);
+  --subtle-hover: rgba(255, 255, 255, 0.0605);
+  --subtle-press: rgba(255, 255, 255, 0.0419);
+  --divider: rgba(255, 255, 255, 0.0837);
+  --track: rgba(255, 255, 255, 0.0837);
+  --footer-bg: rgba(0, 0, 0, 0.16);
+  --badge-bg: rgba(255, 255, 255, 0.0605);
+  --success: #6ccb5f;
+  --focus: #ffffff;
+  --accent-fill: var(--accent-light2);
+  --accent-text: var(--accent-light3);
+}
+
+*, *::before, *::after { box-sizing: border-box; }
+
+html, body {
+  margin: 0;
+  height: 100%;
+  overflow: hidden;
+  background: transparent; /* the DWM system backdrop (acrylic) shows through */
+}
+
+body {
+  font-family: "Segoe UI Variable Text", "Segoe UI Variable", "Segoe UI", system-ui, sans-serif;
+  font-size: 14px;
+  line-height: 20px;
+  color: var(--text-primary);
+  -webkit-user-select: none;
+  user-select: none;
+  cursor: default;
+  -webkit-font-smoothing: antialiased;
+  font-kerning: normal;
+}
+
+.glyph {
+  font-family: "Segoe Fluent Icons", "Segoe MDL2 Assets";
+  font-size: 16px;
+  line-height: 16px;
+  font-weight: normal;
+  font-style: normal;
+  display: inline-block;
+  width: 16px;
+  height: 16px;
+  text-align: center;
+}
+
+.flyout {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+}
+
+/* ---------- header ---------- */
+.hdr {
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  height: 40px;
+  padding: 2px 6px 0 16px;
+}
+.hdr-text { display: flex; align-items: baseline; gap: 8px; min-width: 0; }
+.app-title { font-size: 14px; line-height: 20px; font-weight: 600; }
+.updated { font-size: 12px; line-height: 16px; color: var(--text-tertiary); white-space: nowrap; }
+
+/* ---------- buttons (WinUI subtle button) ---------- */
+button {
+  font: inherit;
+  color: inherit;
+  border: 0;
+  margin: 0;
+  background: transparent;
+  outline: none;
+  -webkit-tap-highlight-color: transparent;
+}
+.icon-btn, .subtle-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  height: 32px;
+  border-radius: 4px;
+  color: var(--text-primary);
+  transition: background-color 83ms linear;
+}
+.icon-btn { width: 32px; }
+.subtle-btn { gap: 8px; padding: 0 11px; font-size: 14px; line-height: 20px; }
+.icon-btn:hover, .subtle-btn:hover { background: var(--subtle-hover); }
+.icon-btn:active, .subtle-btn:active { background: var(--subtle-press); color: var(--text-secondary); }
+.icon-btn:focus-visible, .subtle-btn:focus-visible {
+  box-shadow: 0 0 0 1px var(--card-bg), 0 0 0 3px var(--focus);
+}
+.icon-btn.spin .glyph { animation: spin 600ms cubic-bezier(0.1, 0.9, 0.2, 1); }
+@keyframes spin { to { transform: rotate(360deg); } }
+
+/* ---------- content + cards ---------- */
+.content {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding: 0 12px 4px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.card {
+  flex: none;
+  background: var(--card-bg);
+  border: 1px solid var(--card-stroke);
+  border-radius: 8px;
+  padding: 9px 14px 10px;
+  background-clip: padding-box;
+}
+
+.card-hd {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 20px;
+  margin-bottom: 8px;
+}
+.card-title { font-size: 14px; line-height: 20px; font-weight: 600; }
+.badge {
+  font-size: 11px;
+  line-height: 16px;
+  padding: 0 6px;
+  border-radius: 4px;
+  background: var(--badge-bg);
+  color: var(--text-secondary);
+}
+.card-hd .spacer { flex: 1; }
+
+.pace {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  line-height: 16px;
+  color: var(--text-secondary);
+  white-space: nowrap;
+}
+.dot { width: 6px; height: 6px; border-radius: 50%; background: var(--success); flex: none; }
+
+.big {
+  font-family: "Segoe UI Variable Display", "Segoe UI Variable", "Segoe UI", sans-serif;
+  font-size: 20px;
+  line-height: 24px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+.big-unit { font-size: 12px; line-height: 16px; color: var(--text-secondary); margin-left: 5px; }
+.split { display: flex; align-items: center; gap: 14px; }
+.stat { flex: none; }
+.big-row { display: flex; align-items: baseline; height: 24px; }
+.split .spark-holder { flex: 1 1 auto; min-width: 0; }
+.split .spark { margin-top: 0; }
+
+/* meter row: label · reset · percent, then a 4px bar */
+.meter + .meter { margin-top: 7px; }
+.meter-line {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  font-size: 12px;
+  line-height: 16px;
+}
+.meter-line .lbl { color: var(--text-primary); white-space: nowrap; }
+.meter-line .meta { flex: 1; text-align: right; color: var(--text-tertiary); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.meter-line .pct { width: 30px; text-align: right; font-weight: 600; font-variant-numeric: tabular-nums; }
+
+.bar {
+  position: relative;
+  height: 4px;
+  margin-top: 4px;
+  border-radius: 2px;
+  background: var(--track);
+  overflow: hidden;
+}
+.bar > .fill {
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: var(--v, 0%);
+  border-radius: 2px;
+  background: var(--accent-fill);
+}
+
+/* sparkline */
+.spark { display: block; width: 100%; margin-top: 8px; overflow: visible; }
+.spark .line { fill: none; stroke: var(--accent-fill); stroke-width: 1.5; stroke-linejoin: round; stroke-linecap: round; }
+.spark .area { fill: var(--accent-fill); opacity: 0.14; }
+.spark .end { fill: var(--accent-fill); }
+.spark .base { stroke: var(--divider); stroke-width: 1; }
+
+.caption {
+  margin-top: 0;
+  font-size: 12px;
+  line-height: 16px;
+  color: var(--text-secondary);
+}
+
+/* ---------- footer ---------- */
+.ftr {
+  flex: none;
+  display: flex;
+  justify-content: flex-end;
+  align-items: center;
+  height: 42px;
+  padding: 0 5px;
+  border-top: 1px solid var(--divider);
+  background: var(--footer-bg);
+}
+
+/* scrollbars: WebView2 Fluent overlay style (set from Rust, ScrollBarStyle::FluentOverlay) */

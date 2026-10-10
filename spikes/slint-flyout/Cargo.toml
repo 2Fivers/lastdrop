@@ -1,0 +1,52 @@
+[package]
+name = "lastdrop-slint"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+# Renderers are cargo features so each can be built alone (fair RAM comparison) or all together
+# (select at runtime with SLINT_BACKEND).
+[features]
+default = ["r-software", "r-femtovg", "r-skia"]
+r-software = ["slint/renderer-software", "slint/software-renderer-path"]
+r-femtovg = ["slint/renderer-femtovg"]
+r-femtovg-wgpu = ["slint/renderer-femtovg-wgpu"]
+r-skia = ["slint/renderer-skia", "slint/renderer-skia-opengl"]
+
+[dependencies]
+slint = { version = "=1.18.1", default-features = false, features = ["std", "compat-1-2", "backend-winit", "accessibility", "raw-window-handle-06", "unstable-winit-030"] }
+tray-icon = { version = "0.26.1", default-features = false }
+raw-window-handle = "0.6"
+
+[dependencies.windows]
+version = "0.62.2"
+features = [
+  "Win32_Foundation",
+  "Win32_Graphics_Dwm",
+  "Win32_Graphics_Gdi",
+  "Win32_UI_WindowsAndMessaging",
+  "Win32_UI_HiDpi",
+  "Win32_UI_Controls",
+  "Win32_UI_Shell",
+  "Win32_System_Registry",
+  "Win32_System_Threading",
+  "Win32_System_LibraryLoader",
+  "Foundation",
+  "UI",
+  "UI_ViewManagement",
+]
+
+[build-dependencies]
+slint-build = "=1.18.1"
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+strip = true
+panic = "abort"
+
+# Size-optimised variant of the same settings (only used to report the size difference).
+[profile.release-s]
+inherits = "release"
+opt-level = "s"

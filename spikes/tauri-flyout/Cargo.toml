@@ -1,0 +1,43 @@
+[package]
+name = "lastdrop-tauri"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "Lastdrop tray flyout spike - Tauri 2 + WebView2"
+
+[build-dependencies]
+tauri-build = { version = "=2.7.1", features = [] }
+
+[dependencies]
+# Latest stable 2.x (3.0 is alpha). default-features off to drop linux/dbus/x11 bits and dynamic ACL.
+tauri = { version = "=2.12.2", default-features = false, features = [
+    "wry",
+    "common-controls-v6",
+    "compression",
+    "custom-protocol",
+    "tray-icon",
+] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+# same version wry 0.57 uses; for ICoreWebView2 settings, visibility and memory target level
+webview2-com = "=0.39.1"
+windows = { version = "0.62", features = [
+    "Win32_Foundation",
+    "Win32_Graphics_Dwm",
+    "Win32_Graphics_Gdi",
+    "Win32_UI_WindowsAndMessaging",
+    "Win32_UI_HiDpi",
+    "Win32_UI_Shell",
+    "Win32_System_Registry",
+    "Win32_System_Threading",
+    "Win32_System_Diagnostics_ToolHelp",
+    "UI_ViewManagement",
+    "UI",
+] }
+
+[profile.release]
+opt-level = "s"
+lto = true
+codegen-units = 1
+strip = true
+panic = "abort"

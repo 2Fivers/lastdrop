@@ -1,0 +1,425 @@
+// Lastdrop flyout spike - Slint 1.18, styled after WinUI 3 / Windows 11 system flyouts.
+// Everything visual is custom-drawn; only the ScrollView comes from the fluent widget style.
+
+import { ScrollView } from "std-widgets.slint";
+
+// WinUI 3 theme resources (Light / Dark), see microsoft-ui-xaml Common_themeresources_any.xaml
+export global Theme {
+    in property <bool> dark: false;
+    // AccentFillColorDefault: SystemAccentColorDark1 (light) / SystemAccentColorLight2 (dark); set from Rust
+    in property <color> accent: #005fb8;
+    in property <string> text-font: "Segoe UI Variable Text";
+    in property <string> display-font: "Segoe UI Variable Display";
+    in property <string> icon-font: "Segoe Fluent Icons";
+
+    out property <color> text-primary: dark ? #ffffff : #000000e4;
+    out property <color> text-secondary: dark ? #ffffffc5 : #0000009e;
+    out property <color> text-tertiary: dark ? #ffffff87 : #00000072;
+    out property <color> card-fill: dark ? #ffffff0d : #ffffffb3;
+    out property <color> card-stroke: dark ? #0000001a : #0000000f;
+    out property <color> subtle-hover: dark ? #ffffff0f : #00000009;
+    out property <color> subtle-pressed: dark ? #ffffff0a : #00000006;
+    out property <color> track: dark ? #ffffff24 : #0000001c;
+    out property <color> divider: dark ? #ffffff14 : #0000000f;
+    out property <color> footer-fill: dark ? #00000030 : #0000000a;
+    out property <color> success: dark ? #6ccb5f : #0f7b0f;
+}
+
+export struct UsageRowData {
+    label: string,
+    value: float, // 0..1
+    detail: string,
+}
+
+component Bar inherits Rectangle {
+    in property <float> value;
+    height: 4px;
+    border-radius: 2px;
+    background: Theme.track;
+    accessible-role: progress-indicator;
+    accessible-value: round(root.value * 100) + "%";
+    accessible-value-minimum: 0;
+    accessible-value-maximum: 100;
+
+    Rectangle {
+        x: 0;
+        y: 0;
+        width: max(parent.height, parent.width * clamp(root.value, 0, 1));
+        height: parent.height;
+        border-radius: 2px;
+        background: Theme.accent;
+    }
+}
+
+component UsageRow inherits VerticalLayout {
+    in property <string> label;
+    in property <float> value;
+    in property <string> detail;
+    spacing: 6px;
+
+    HorizontalLayout {
+        spacing: 8px;
+        Text {
+            text: root.label;
+            color: Theme.text-primary;
+            font-size: 14px;
+            horizontal-stretch: 1;
+            overflow: elide;
+        }
+        Text {
+            text: round(root.value * 100) + "%";
+            color: Theme.text-secondary;
+            font-size: 14px;
+            horizontal-alignment: right;
+        }
+    }
+
+    Bar {
+        value: root.value;
+        accessible-label: root.label;
+    }
+
+    if root.detail != "": Text {
+        text: root.detail;
+        color: Theme.text-tertiary;
+        font-size: 12px;
+    }
+}
+
+component Card inherits Rectangle {
+    in property <string> title;
+    in property <string> subtitle;
+    background: Theme.card-fill;
+    border-color: Theme.card-stroke;
+    border-width: 1px;
+    border-radius: 8px;
+
+    VerticalLayout {
+        padding-left: 14px;
+        padding-right: 14px;
+        padding-top: 12px;
+        padding-bottom: 14px;
+        spacing: 12px;
+
+        HorizontalLayout {
+            spacing: 6px;
+            alignment: start;
+            Text {
+                text: root.title;
+                color: Theme.text-primary;
+                font-size: 14px;
+                font-weight: 600;
+                vertical-alignment: center;
+            }
+            if root.subtitle != "": Text {
+                text: root.subtitle;
+                color: Theme.text-tertiary;
+                font-size: 12px;
+                vertical-alignment: center;
+            }
+        }
+
+        @children
+    }
+}
+
+component Sparkline inherits Rectangle {
+    // Path commands in a 0..100 x 0..40 viewbox, computed in Rust.
+    in property <string> line;
+    in property <string> area;
+    in property <string> description;
+    height: 40px;
+    accessible-role: image;
+    accessible-label: root.description;
+
+    Path {
+        width: 100%;
+        height: 100%;
+        viewbox-x: 0;
+        viewbox-y: 0;
+        viewbox-width: 100;
+        viewbox-height: 40;
+        fit: fill;
+        commands: root.area;
+        fill: @linear-gradient(180deg, Theme.accent.with-alpha(0.28) 0%, Theme.accent.with-alpha(0.0) 100%);
+        stroke-width: 0px;
+    }
+
+    Path {
+        width: 100%;
+        height: 100%;
+        viewbox-x: 0;
+        viewbox-y: 0;
+        viewbox-width: 100;
+        viewbox-height: 40;
+        fit: fill;
+        commands: root.line;
+        fill: transparent;
+        stroke: Theme.accent;
+        stroke-width: 1.5px;
+    }
+}
+
+component IconButton inherits Rectangle {
+    in property <string> glyph;
+    in property <string> label;
+    callback clicked();
+    width: 32px;
+    height: 32px;
+    border-radius: 4px;
+    background: ta.pressed ? Theme.subtle-pressed : ta.has-hover ? Theme.subtle-hover : transparent;
+    accessible-role: button;
+    accessible-label: root.label;
+    accessible-action-default => { root.clicked(); }
+
+    Text {
+        text: root.glyph;
+        font-family: Theme.icon-font;
+        font-size: 16px;
+        color: ta.pressed ? Theme.text-secondary : Theme.text-primary;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+    }
+
+    ta := TouchArea {
+        clicked => { root.clicked(); }
+    }
+}
+
+component SubtleButton inherits Rectangle {
+    in property <string> glyph;
+    in property <string> text;
+    callback clicked();
+    height: 32px;
+    border-radius: 4px;
+    background: ta.pressed ? Theme.subtle-pressed : ta.has-hover ? Theme.subtle-hover : transparent;
+    accessible-role: button;
+    accessible-label: root.text;
+    accessible-action-default => { root.clicked(); }
+
+    HorizontalLayout {
+        padding-left: 11px;
+        padding-right: 11px;
+        spacing: 8px;
+        Text {
+            text: root.glyph;
+            font-family: Theme.icon-font;
+            font-size: 16px;
+            color: ta.pressed ? Theme.text-secondary : Theme.text-primary;
+            vertical-alignment: center;
+        }
+        Text {
+            text: root.text;
+            font-size: 14px;
+            color: ta.pressed ? Theme.text-secondary : Theme.text-primary;
+            vertical-alignment: center;
+        }
+    }
+
+    ta := TouchArea {
+        clicked => { root.clicked(); }
+    }
+}
+
+export component Flyout inherits Window {
+    title: "Lastdrop";
+    no-frame: true;
+    always-on-top: true;
+    background: transparent;
+    width: 360px;
+    // 440 logical px per the spike spec; `--height` overrides it for full-content screenshots
+    in property <length> flyout-height: 440px;
+    height: root.flyout-height;
+    default-font-family: Theme.text-font;
+    default-font-size: 14px;
+    forward-focus: fs;
+
+    // Toggled from Rust right before a programmatic show so the next frame is a full repaint
+    // (the window is hidden/shown with Win32 calls behind Slint's back, see main.rs).
+    in-out property <bool> repaint-tick: false;
+
+    in property <string> updated-text: "Updated 2 min ago";
+    in property <[UsageRowData]> claude-rows;
+    in property <string> claude-pace: "On pace — lasts until reset";
+    in property <[UsageRowData]> codex-rows;
+    in property <string> codex-line;
+    in property <string> codex-area;
+    in property <string> meshy-credits: "1,240";
+    in property <string> meshy-line;
+    in property <string> meshy-area;
+    in property <string> meshy-forecast: "≈ 9 days left at current pace";
+
+    callback refresh();
+    callback open-settings();
+    callback dismiss();
+
+    Rectangle {
+        background: root.repaint-tick ? #00000001 : #00000000;
+    }
+
+    fs := FocusScope {
+        key-pressed(event) => {
+            if (event.text == Key.Escape) {
+                root.dismiss();
+                return accept;
+            }
+            reject
+        }
+    }
+
+    VerticalLayout {
+        // Header
+        HorizontalLayout {
+            padding-left: 16px;
+            padding-right: 10px;
+            padding-top: 12px;
+            padding-bottom: 8px;
+            spacing: 8px;
+
+            VerticalLayout {
+                alignment: center;
+                horizontal-stretch: 1;
+                spacing: 0px;
+                Text {
+                    text: "Lastdrop";
+                    color: Theme.text-primary;
+                    font-size: 14px;
+                    font-weight: 600;
+                }
+                Text {
+                    text: root.updated-text;
+                    color: Theme.text-tertiary;
+                    font-size: 12px;
+                }
+            }
+
+            VerticalLayout {
+                alignment: center;
+                IconButton {
+                    glyph: "\u{E72C}";
+                    label: "Refresh";
+                    clicked => { root.refresh(); }
+                }
+            }
+        }
+
+        ScrollView {
+            vertical-stretch: 1;
+            content-width: self.visible-width;
+
+            VerticalLayout {
+                width: parent.width;
+                padding-left: 12px;
+                padding-right: 12px;
+                padding-top: 4px;
+                padding-bottom: 12px;
+                spacing: 8px;
+
+                Card {
+                    title: "Claude";
+                    subtitle: "Max";
+                    VerticalLayout {
+                        spacing: 14px;
+                        for row in root.claude-rows: UsageRow {
+                            label: row.label;
+                            value: row.value;
+                            detail: row.detail;
+                        }
+                    }
+                    HorizontalLayout {
+                        spacing: 8px;
+                        Rectangle {
+                            width: 8px;
+                            Rectangle {
+                                width: 8px;
+                                height: 8px;
+                                border-radius: 4px;
+                                background: Theme.success;
+                            }
+                        }
+                        Text {
+                            text: root.claude-pace;
+                            color: Theme.text-secondary;
+                            font-size: 12px;
+                            horizontal-stretch: 1;
+                        }
+                    }
+                }
+
+                Card {
+                    title: "Codex";
+                    subtitle: "Pro Lite";
+                    for row in root.codex-rows: UsageRow {
+                        label: row.label;
+                        value: row.value;
+                        detail: row.detail;
+                    }
+                    Sparkline {
+                        line: root.codex-line;
+                        area: root.codex-area;
+                        description: "Codex usage, last 14 days";
+                    }
+                }
+
+                Card {
+                    title: "Meshy";
+                    subtitle: "";
+                    HorizontalLayout {
+                        spacing: 6px;
+                        alignment: start;
+                        Text {
+                            text: root.meshy-credits;
+                            font-family: Theme.display-font;
+                            font-size: 28px;
+                            font-weight: 600;
+                            color: Theme.text-primary;
+                            vertical-alignment: bottom;
+                        }
+                        VerticalLayout {
+                            alignment: end;
+                            padding-bottom: 5px;
+                            Text {
+                                text: "credits";
+                                font-size: 14px;
+                                color: Theme.text-secondary;
+                            }
+                        }
+                    }
+                    Sparkline {
+                        line: root.meshy-line;
+                        area: root.meshy-area;
+                        description: "Meshy credits, last 30 days";
+                    }
+                    Text {
+                        text: root.meshy-forecast;
+                        color: Theme.text-secondary;
+                        font-size: 12px;
+                    }
+                }
+            }
+        }
+
+        // Footer, like the Quick Settings footer strip
+        Rectangle {
+            height: 1px;
+            background: Theme.divider;
+        }
+        Rectangle {
+            height: 48px;
+            background: Theme.footer-fill;
+            HorizontalLayout {
+                padding-left: 8px;
+                padding-right: 8px;
+                alignment: end;
+                VerticalLayout {
+                    alignment: center;
+                    SubtleButton {
+                        glyph: "\u{E713}";
+                        text: "Settings";
+                        clicked => { root.open-settings(); }
+                    }
+                }
+            }
+        }
+    }
+}

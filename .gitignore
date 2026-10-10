@@ -19,3 +19,9 @@ dist/
 *.swp
 Thumbs.db
 .DS_Store
+
+# Measurement output
+/tools/measure/results/
+
+# The Tauri spike keeps its frontend in dist/
+!/spikes/tauri-flyout/dist/
