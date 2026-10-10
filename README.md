@@ -3,7 +3,7 @@
 How much AI is left in the tank, one click away.
 
 Lastdrop is a Windows 11 tray app that shows your remaining usage across AI services —
-Claude, Codex, Meshy and more — without opening each service's usage page. Click the tray
+Claude, Codex, GitHub Copilot, Meshy and more — without opening each service's usage page. Click the tray
 icon and you see what is left, when it resets, what you used recently, and whether your
 current pace will last until the next reset.
 
