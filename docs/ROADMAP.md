@@ -49,13 +49,64 @@ Details _researching_.
   controls on right-click (refresh, pause, open settings, switch account, quit).
 - **Flyout** on left-click, anchored above the tray icon on whichever monitor and taskbar edge
   it is on, closing when it loses focus.
-- **Taskbar widget** (opt-in): a compact readout docked in the Windows taskbar. Windows 11 has
-  no supported API for this, and existing tools that do it report overlapping app buttons and
-  jumping between monitors, so it ships behind a setting once it is robust. Approach
-  _researching_.
-- **Multiple monitors**: flyout and widget follow the monitor and DPI of the taskbar they
-  belong to.
+- **Taskbar readout**: a compact readout docked in the taskbar, left of the tray, visible
+  without a click. A primary surface, on by default. CodeZeno's Claude Code Usage Monitor is the
+  reference (two rows, `5h ▮▮▮▮▯▯▯▯▯▯ 40% · 2h`, `7d … 6% · 4d`); Lastdrop does the same job
+  better — see [The taskbar readout](#the-taskbar-readout).
+- **Multiple monitors**: flyout and readout follow the monitor and DPI of the taskbar they
+  belong to; the readout can show on the primary taskbar only or on every taskbar.
 - **Windows startup**: per-user autostart, toggled in settings.
+
+### The taskbar readout
+
+What the reference gets right: always visible, two short rows, a number and a reset time,
+the most important meter repeated as a number in the tray icon. Where we go further:
+
+**Answer the real question.** The question is not "how much have I used" but "will I make it
+to the reset". Each bar carries a **pace marker** — a thin tick at the share of the window
+that has elapsed. Fill left of the tick: you are under pace. Fill past it: you are burning
+faster than the window lasts.
+
+**Colour means state, never decoration.** Neutral (system text colour or accent) while under
+pace; amber when the current pace runs out before the reset; red at 90 % or when the forecast
+runs out within 30 minutes. Colour is never the only signal: the marker and the text say the
+same thing, so it works for colour-blind users and in high-contrast mode.
+
+**Precise, not segmented.** A continuous bar drawn to the physical pixel at the taskbar's DPI,
+rounded ends, instead of ten 10 % blocks. A segmented look stays available as a theme.
+
+**Unambiguous text.** `40% · 2h` can be read as "two hours used" or "two hours left". Lastdrop
+writes `40% ↻2h` (resets in two hours) or the reset clock `↻14:32`, the user's choice; tabular
+digits so numbers don't jitter as they change.
+
+**Taskbar colours, not app colours.** The taskbar can be dark while apps are light: the readout
+follows the taskbar setting (`SystemUsesLightTheme`), the accent, transparency and
+high-contrast mode, and Segoe UI Variable at the taskbar's text size.
+
+**Several services without clutter.** The user pins the meters they want (for example Claude
+5h + Codex weekly); "auto" shows the most constrained ones. A tiny provider glyph tells the
+rows apart when more than one service is pinned.
+
+**Interaction.** Hover: a Windows 11 tooltip-card with the full picture (all windows, pace
+text, forecast, data age). Click: the flyout. Right-click: quick controls. Tray icon: the most
+constrained meter as a legible number, drawn separately for 16, 20, 24 and 32 px, dimmed when
+the data is stale.
+
+**Never in the way.** It sits left of the tray overflow chevron and moves when the tray grows
+or shrinks — driven by window events (location changes of the notification area,
+`TaskbarCreated` after an Explorer restart, display and DPI changes, settings changes), not by
+polling. When there is no room it collapses to one row, then to nothing, leaving the tray icon;
+it never covers app buttons. It handles left-aligned and centred taskbars, auto-hide and
+full-screen apps, and stays on the monitor it was placed on.
+
+**Cheap to keep alive.** Redrawn only when data changes and once a minute for the countdown;
+one small layered window; budget under 2 MB extra memory and ~0 % CPU at rest.
+
+**Bug-free by construction.** The placement logic is a pure function from taskbar geometry
+to a rectangle, unit-tested against a matrix of recorded layouts (bottom/top/left/right,
+centred/left, 100–200 % DPI, 1–3 monitors, auto-hide, overflow open). Releases pass a 24-hour
+soak test for memory, GDI and USER handle leaks, and a manual matrix on real multi-monitor
+setups.
 
 ### Settings
 
@@ -85,15 +136,16 @@ Details _researching_.
 | | Milestone | Content |
 |---|---|---|
 | M0 | **Stack spike** | Same flyout in Rust + Slint and Rust + Tauri; measure idle/open memory, flyout latency, size and look; pick one. _In progress._ |
-| M1 | **First useful build** | Core, tray icon, flyout, settings basics, autostart. Claude Code, Codex and Meshy. |
+| M1 | **First useful build** | Core, tray icon, taskbar readout, flyout, settings basics, autostart. Claude Code, Codex and Meshy. |
 | M2 | **More services** | Copilot, Cursor, Antigravity, OpenCode Go, Grok Build; declarative balance providers; multiple accounts for Claude Code and Codex. |
 | M3 | **Statistics** | History store, pace, forecasts, charts, threshold and reset notifications. |
-| M4 | **Make it yours** | Taskbar widget, themes and Theme Studio, languages, adaptive refresh. |
+| M4 | **Make it yours** | Readout on every taskbar, themes and Theme Studio, languages, adaptive refresh. |
 | M5 | **v0.1** | Updates, code signing, installer; decide on distribution and licensing. |
 
 ## Open questions
 
-- Taskbar widget: overlay technique robust enough for centred/left taskbars, auto-hide,
-  secondary-monitor taskbars and Explorer restarts?
+- Taskbar readout: which window technique (owned overlay vs child of the taskbar) survives
+  centred/left taskbars, auto-hide, secondary-monitor taskbars and Explorer restarts best?
+  Being read out of CodeZeno's source now.
 - Update and distribution channel while the app is proprietary and the repository private.
 - Theme Studio scope: colours and widget layout only, or free-form placement?
