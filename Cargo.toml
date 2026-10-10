@@ -37,6 +37,11 @@ raw-window-handle = "=0.6.2"
 
 # Win32. Each crate adds the API features it needs; keep the version in one place.
 windows = { version = "=0.62.2" }
+# The versions `windows` 0.62.2 itself depends on: Direct2D takes points as `windows_numerics`
+# types without re-exporting them, and `#[implement]` (COM objects such as the readout's UI
+# Automation provider) expands to `::windows_core` paths.
+windows-numerics = { version = "=0.3.1", default-features = false }
+windows-core = { version = "=0.62.2" }
 
 # Data
 serde = { version = "=1.0.229", features = ["derive"] }

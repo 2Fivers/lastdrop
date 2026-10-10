@@ -1,0 +1,67 @@
+{
+  "name": "synthetic-1080p-100-right-vertical",
+  "description": "A vertical taskbar on the right → hidden (R§14)",
+  "synthetic": true,
+  "geometry": {
+    "monitor": {
+      "left": 0,
+      "top": 0,
+      "right": 1920,
+      "bottom": 1080
+    },
+    "work_area": {
+      "left": 0,
+      "top": 0,
+      "right": 1858,
+      "bottom": 1080
+    },
+    "taskbar": {
+      "left": 1858,
+      "top": 0,
+      "right": 1920,
+      "bottom": 1080
+    },
+    "notification_area": {
+      "left": 1858,
+      "top": 900,
+      "right": 1920,
+      "bottom": 1080
+    },
+    "chevron": null,
+    "dpi": 96,
+    "edge": "Right",
+    "alignment": "Center",
+    "auto_hide": false,
+    "fullscreen_app": false,
+    "app_buttons": {
+      "rightmost_right": 600
+    }
+  },
+  "layout": {
+    "scale": 1.0,
+    "slot_h": 40,
+    "row_h": 16,
+    "y_row1": 4,
+    "y_row2": 20,
+    "y_single": 12,
+    "x_glyph": null,
+    "x_label": 6,
+    "label_w": 17,
+    "x_bar": 29,
+    "bar_w": 40,
+    "x_right": 75,
+    "right_w": 79,
+    "compact_w": 53,
+    "value_box_w": 24,
+    "time_x": 30,
+    "width_rows": 160,
+    "width_compact": 134
+  },
+  "prefs": {
+    "content": "TwoRows",
+    "previous": "TwoRows"
+  },
+  "expected": {
+    "Hidden": "VerticalTaskbar"
+  }
+}

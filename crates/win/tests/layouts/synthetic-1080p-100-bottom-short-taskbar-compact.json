@@ -1,0 +1,75 @@
+{
+  "name": "synthetic-1080p-100-bottom-short-taskbar-compact",
+  "description": "A 32 px taskbar is shorter than 40 → compact whatever the room; the 40 px slot is centred on it (overhanging by 4 px), so the compact row sits in the taskbar's middle",
+  "synthetic": true,
+  "geometry": {
+    "monitor": {
+      "left": 0,
+      "top": 0,
+      "right": 1920,
+      "bottom": 1080
+    },
+    "work_area": {
+      "left": 0,
+      "top": 0,
+      "right": 1920,
+      "bottom": 1048
+    },
+    "taskbar": {
+      "left": 0,
+      "top": 1048,
+      "right": 1920,
+      "bottom": 1080
+    },
+    "notification_area": {
+      "left": 1684,
+      "top": 1048,
+      "right": 1920,
+      "bottom": 1080
+    },
+    "chevron": null,
+    "dpi": 96,
+    "edge": "Bottom",
+    "alignment": "Center",
+    "auto_hide": false,
+    "fullscreen_app": false,
+    "app_buttons": {
+      "rightmost_right": 1000
+    }
+  },
+  "layout": {
+    "scale": 1.0,
+    "slot_h": 40,
+    "row_h": 16,
+    "y_row1": 4,
+    "y_row2": 20,
+    "y_single": 12,
+    "x_glyph": null,
+    "x_label": 6,
+    "label_w": 17,
+    "x_bar": 29,
+    "bar_w": 40,
+    "x_right": 75,
+    "right_w": 79,
+    "compact_w": 53,
+    "value_box_w": 24,
+    "time_x": 30,
+    "width_rows": 160,
+    "width_compact": 134
+  },
+  "prefs": {
+    "content": "TwoRows",
+    "previous": "TwoRows"
+  },
+  "expected": {
+    "Docked": {
+      "rect": {
+        "left": 1546,
+        "top": 1044,
+        "right": 1680,
+        "bottom": 1084
+      },
+      "form": "Compact"
+    }
+  }
+}
