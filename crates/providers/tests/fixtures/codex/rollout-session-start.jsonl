@@ -1,0 +1,2 @@
+{"timestamp":"2026-10-10T10:40:00.000Z","type":"session_meta","payload":{"id":"00000000-0000-4000-8000-000000000002","timestamp":"2026-10-10T10:40:00.000Z","cwd":"C:\\Users\\tester\\project","originator":"codex_exec","cli_version":"0.0.0-fixture","source":"exec"}}
+{"timestamp":"2026-10-10T10:40:01.000Z","type":"turn_context","payload":{"model":"gpt-fixture","effort":"low"}}

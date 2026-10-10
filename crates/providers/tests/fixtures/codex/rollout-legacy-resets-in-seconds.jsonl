@@ -1,0 +1,2 @@
+{"timestamp":"2026-10-10T09:59:00.000Z","type":"turn_context","payload":{"model":"gpt-fixture"}}
+{"timestamp":"2026-10-10T10:00:00.000Z","type":"event_msg","payload":{"type":"token_count","info":null,"rate_limits":{"primary":{"used_percent":12.5,"window_minutes":299,"resets_in_seconds":7200},"secondary":{"used_percent":30.0,"window_minutes":10079,"resets_in_seconds":86400}}}}
