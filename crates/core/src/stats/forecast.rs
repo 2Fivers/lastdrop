@@ -58,16 +58,49 @@ pub fn same_window_instance(a: Option<Timestamp>, b: Option<Timestamp>) -> bool 
     }
 }
 
-/// The longest suffix of `samples` (ascending) whose readings are in the same window instance as
-/// the last one (R§3.1).
-pub fn current_instance(samples: &[Sample]) -> &[Sample] {
-    let Some(last) = samples.last() else {
-        return samples;
-    };
-    let start = samples
+/// The window instance (its `R`) a reading belongs to, given the instance of the reading before
+/// it (R§3.1): the reading's own `R`; for a reading without a reset time, the previous reading's
+/// instance when it was taken before that instance's reset, else none.
+///
+/// A source that reports no reset times (Claude Desktop's history) says nothing about the
+/// instance, so its readings inside a known instance belong to that instance instead of starting
+/// a new one: losing the reset time is not a window reset (R§3.7, R§3.9). **Not from the spec**:
+/// R§3.1 defines instances by `R` only.
+pub fn instance_of(previous: Option<Timestamp>, sample: &Sample) -> Option<Timestamp> {
+    match sample.resets_at {
+        Some(r) => Some(r),
+        None => previous.filter(|&r| sample.t < r),
+    }
+}
+
+/// The instance of the last of `samples` (ascending), folding [`instance_of`] over them: the
+/// last reading's `R`, else the `R` of the newest reading that has one, while the last reading
+/// precedes it.
+pub fn latest_instance(samples: &[Sample]) -> Option<Timestamp> {
+    let last = samples.last()?;
+    if last.resets_at.is_some() {
+        return last.resets_at;
+    }
+    samples
         .iter()
-        .rposition(|s| !same_window_instance(s.resets_at, last.resets_at))
-        .map_or(0, |i| i + 1);
+        .rev()
+        .find_map(|s| s.resets_at)
+        .filter(|&r| last.t < r)
+}
+
+/// The longest suffix of `samples` (ascending) whose readings are in the same window instance as
+/// the last one (R§3.1), instances per [`instance_of`]: readings without a reset time inside a
+/// known instance belong to it.
+pub fn current_instance(samples: &[Sample]) -> &[Sample] {
+    let target = latest_instance(samples);
+    let mut start = 0;
+    let mut previous = None;
+    for (i, s) in samples.iter().enumerate() {
+        previous = instance_of(previous, s);
+        if !same_window_instance(previous, target) {
+            start = i + 1;
+        }
+    }
     &samples[start..]
 }
 
@@ -196,6 +229,45 @@ mod tests {
         ];
         assert_eq!(current_instance(&samples).len(), 2);
         assert!(current_instance(&[]).is_empty());
+    }
+
+    #[test]
+    fn readings_without_a_reset_time_stay_in_their_instance() {
+        let r = ts(300);
+        // OAuth readings with R, desktop-history readings without, inside one window.
+        let samples = [
+            Sample::window(ts(0), 0.1, Some(ts(290))),
+            Sample::window(ts(290), 0.0, None),
+            Sample::window(ts(300), 0.2, Some(ts(600))),
+            Sample::window(ts(310), 0.25, None),
+            Sample::window(ts(320), 0.3, Some(ts(601))),
+            Sample::window(ts(330), 0.35, None),
+        ];
+        assert_eq!(latest_instance(&samples), Some(ts(601)));
+        assert_eq!(current_instance(&samples).len(), 4);
+        assert_eq!(
+            instance_of(Some(r), &Sample::window(ts(299), 0.5, None)),
+            Some(r)
+        );
+        // Taken at or after the reset: the instance is over, the reading belongs to none.
+        assert_eq!(
+            instance_of(Some(r), &Sample::window(ts(300), 0.0, None)),
+            None
+        );
+        let after = [
+            Sample::window(ts(0), 0.9, Some(r)),
+            Sample::window(ts(100), 0.95, None),
+            Sample::window(ts(305), 0.1, None),
+            Sample::window(ts(310), 0.2, None),
+        ];
+        assert_eq!(latest_instance(&after), None);
+        assert_eq!(current_instance(&after).len(), 2);
+        // Only readings without reset times: one instance.
+        let none = [
+            Sample::window(ts(0), 0.1, None),
+            Sample::window(ts(10), 0.2, None),
+        ];
+        assert_eq!(current_instance(&none).len(), 2);
     }
 
     #[test]

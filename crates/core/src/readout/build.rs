@@ -115,13 +115,23 @@ fn can_appear<'a>(eval: &'a Evaluation, settings: &Settings) -> Vec<CanAppear<'a
             .any(|d| d.id == a.key.meter.0 && d.kind == MeterKind::Balance),
     };
     if let ReadoutContent::Pinned(pins) = &settings.readout.content {
+        // A pin whose meter the latest reading lacks keeps its room (`ServiceEval::absent`).
         let pinned: Vec<CanAppear<'a>> = pins
             .iter()
-            .filter_map(|k| eval.assessment(k))
-            .map(|(service, a)| CanAppear {
-                service,
-                names: a.names.clone(),
-                balance: is_balance(a),
+            .filter_map(|k| match eval.assessment(k) {
+                Some((service, a)) => Some(CanAppear {
+                    service,
+                    names: a.names.clone(),
+                    balance: is_balance(a),
+                }),
+                None => eval.services.iter().find_map(|service| {
+                    let m = service.absent.iter().find(|m| &m.key == k)?;
+                    Some(CanAppear {
+                        service,
+                        names: m.names.clone(),
+                        balance: m.balance,
+                    })
+                }),
             })
             .collect();
         if !pinned.is_empty() {
@@ -135,6 +145,15 @@ fn can_appear<'a>(eval: &'a Evaluation, settings: &Settings) -> Vec<CanAppear<'a
                 service,
                 names: a.names.clone(),
                 balance: is_balance(a),
+            });
+        }
+        // Meters reported earlier in this run that the latest reading lacks: widths never
+        // change with data (R§6.3).
+        for m in &service.absent {
+            out.push(CanAppear {
+                service,
+                names: m.names.clone(),
+                balance: m.balance,
             });
         }
         let hidden = settings
@@ -264,9 +283,11 @@ fn row_sentences(rows: &[(&ServiceEval, &Assessment)], cx: &TextContext<'_>) -> 
 /// "What can appear" (R§6.3, R§6.4) is: pinned mode — the pins; auto mode — every non-hidden
 /// meter of every enabled service, i.e. the catalogue meters ([`crate::model::catalog`]) plus
 /// the meters the evaluation holds that are not in the catalogue (Claude's per-model weeklies,
-/// so `Fable` widens the label column once it has been reported). Balance strings are included
-/// only when a balance meter can appear. The width inputs therefore change with settings, the
-/// locale or a newly reported meter, never with values.
+/// so `Fable` widens the label column once it has been reported) plus the meters a source
+/// reported earlier in this run and its latest reading lacks
+/// ([`crate::stats::ServiceEval::absent`]). Balance strings are included only when a balance
+/// meter can appear. The width inputs therefore change with settings, the locale or a newly
+/// reported meter, never with values or a reading that lacks a meter.
 pub fn build_readout(eval: &Evaluation, cx: &BuildContext<'_>) -> ReadoutModel {
     let t = &cx.text;
     let shown: Vec<(&ServiceEval, &Assessment)> = eval

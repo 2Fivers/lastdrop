@@ -81,7 +81,10 @@ the providers' behaviour; each provider confirms its own in a unit test against 
 - `limited` — provider says the limit is reached (optional flag).
 - `t_r` — `fetched_at` of the reading.
 - `history` — earlier readings of the same meter, ascending. Two readings belong to the **same window instance**
-  when their `R` differ by at most 2 minutes (providers jitter `resets_at` by seconds).
+  when their `R` differ by at most 2 minutes (providers jitter `resets_at` by seconds). A reading **without** `R`
+  that was taken before the `R` of the instance before it belongs to that instance and is shown with its `R`: a
+  source without reset times (Claude Desktop's history) says nothing about the instance, so losing `R` is never a
+  window reset (no cleared hysteresis, no announcement, no cut forecast history).
 
 ### 3.2 Elapsed share
 
@@ -366,6 +369,11 @@ runs_out && otherwise (WARNING)   → "Out " TIME(round_min(t_out))
   `59 min left`).
 - N never shows 0: when `t_out` has passed and the provider has not yet said `limited`, show `1 min left` until the
   next reading. Recomputed every minute (§12).
+- A WARNING held by hysteresis (§3.7 exit `p ≤ 0.97`) whose run-out moved to or past the reset (`!runs_out`) shows
+  **no run-out time** on any surface: readout ▲ + `pct` (as the compact cell); hover card title `{meter} limit is on
+  course for {p}% at the reset`, forecast `on course for {p}% at reset`; flyout verdict `… is on course for {p}% at
+  the reset`, right cluster ▲ `Resets 16:30`, trouble line `On course for {p}% at the 16:30 reset.`; UIA `warning,
+  on course for {p} percent at the reset …` (`p` rounded, at most 99 %).
 - Balance meters use the same rule with `t_out = now + days_left` (WARNING → `Out Thu`, CRITICAL → `40 h left`).
 
 ### 5.4 Age
@@ -455,7 +463,9 @@ present only when rows can come from more than one service (§6.4).
 ### 6.3 Widths (computed, never from the current data)
 
 Computed in device px with the actual fonts at the actual DPI, whenever the locale, DPI, pinned set or enabled
-services change — **never** when data changes, so the readout keeps one width in every state.
+services change — **never** when data changes, so the readout keeps one width in every state. A meter a source
+reported earlier in this run still *can appear* when a later reading lacks it (a per-model weekly that only the
+OAuth source reports while Claude Desktop's history answers).
 
 ```
 LW        = ceil(max width of short_label over every meter that can appear in the readout)     // 11 px font
@@ -912,13 +922,16 @@ and §8.2.
 | noreset | `–` |
 | age.m / h / d | `{n}m ago` / `{n}h ago` / `{n}d ago` |
 | card.title.ok.1 / 2 / n | `You'll make it to the reset` / `You'll make it to both resets` / `You'll make it to every reset` |
+| card.title.ok.noreset | `Within your limits` (no shown window has a reset time) |
 | card.title.warning | `{meter} limit runs out at {time}` (several services: `{service} {meter} limit …`) |
+| card.title.warning.course | `{meter} limit is on course for {p}% at the reset` (§5.3: WARNING without a run-out before the reset) |
 | card.title.critical.runway | `{meter} limit runs out in {duration}` (§5.0: `12 min`, `6 h 10 min`) |
 | card.title.critical.level | `{meter} limit is {pct}% used` |
 | card.title.exhausted | `{meter} limit is used up until {time}` |
 | card.title.stale / signin | `No new reading from {service} for {age}` / `{service} needs you to sign in again` |
-| card.sentence.ok | `{All limits are / It is} being used more slowly than time passes. At your recent pace about {100−p}% {of the session / of the week} will be left when {they reset / it resets}.` |
+| card.sentence.ok | `{All limits are / It is} being used more slowly than time passes. At your recent pace about {100−p}% {of the session / of the week} will be left when {they reset / it resets}.` Only what is known is said: the pace part needs `e` in every shown window, the "at your recent pace" part a valid forecast in at least one and speaks only of windows with `R`; with neither the sentence is empty |
 | card.sentence.warning | `You're using it faster than time passes: {pct}% used with {e}% of the window gone. At the pace of the last {S} it runs out {duration} before the {time} reset.` + ` The {other} limit is fine.` |
+| card.sentence.warning.course | `You're using it faster than time passes: {pct}% used with {e}% of the window gone. At the pace of the last {S} it reaches about {p}% by the {time} reset.` |
 | card.sentence.critical | `{pct}% used. At the pace of the last {S} it is empty at about {time}, {duration} before the reset at {time}.` |
 | card.sentence.level | `Nearly used up. At your recent pace it lasts until the reset at {time}.` |
 | card.sentence.exhausted | `Used up{ since {time}}. It is back at {time}, in {duration}.` |

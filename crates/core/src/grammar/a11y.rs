@@ -10,7 +10,7 @@
 use jiff::Timestamp;
 
 use super::TextContext;
-use super::cells::{pct, resets_at, t_out};
+use super::cells::{course_pct, pct, resets_at, t_out};
 use super::numbers::{amount, percent};
 use super::strings::{Msg, Strings, text};
 use super::time::{
@@ -142,10 +142,15 @@ fn row_core(a: &Assessment, service: &ServiceEval, cx: &TextContext<'_>) -> Stri
             Some(r) => with(Msg::A11yRowOk, &[("reset", r)]),
             None => no_reset(),
         },
-        RowState::Warning => match (t_out(a), &reset) {
-            (Some(t), Some(r)) => with(
+        RowState::Warning => match (t_out(a), course_pct(a), &reset) {
+            (Some(t), _, Some(r)) => with(
                 Msg::A11yRowWarning,
                 &[("time", &spoken_point(t, cx)), ("reset", r)],
+            ),
+            // Held by hysteresis without a run-out before the reset (R§5.3).
+            (None, Some(p), Some(r)) => with(
+                Msg::A11yRowWarningCourse,
+                &[("course", &p.to_string()), ("reset", r)],
             ),
             _ => no_reset(),
         },
@@ -163,7 +168,8 @@ fn row_core(a: &Assessment, service: &ServiceEval, cx: &TextContext<'_>) -> Stri
         },
         RowState::Exhausted => match &reset {
             Some(r) => with(Msg::A11yRowExhausted, &[("time", r)]),
-            None => no_reset(),
+            // Verdict first (R§11), as every row sentence.
+            None => with(Msg::A11yRowExhaustedNoReset, &[]),
         },
     }
 }

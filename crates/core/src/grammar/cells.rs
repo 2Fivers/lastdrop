@@ -1,10 +1,11 @@
 //! Readout cell texts by row state (R§5.7) and the compact cell (R§5.8).
 
 use super::TextContext;
-use super::numbers::{balance_duration, percent};
+use super::numbers::{balance_duration, percent, share_pct};
 use super::strings::{Msg, text};
 use super::time::{CountdownForm, age_token, countdown, runout_text, shows_countdown, time_token};
 use crate::color::ColorRole;
+use crate::consts::CARD_FORECAST_MAX_PCT;
 use crate::consts::layout::{RESET_GLYPH, RESET_GLYPH_GAP, SEVERITY_GLYPH, SEVERITY_GLYPH_GAP};
 use crate::glyph::{Icon, SeverityGlyph};
 use crate::readout::{CompactCell, GlyphKind, GlyphRun, RightCell, Run, TextRun, TextStyle};
@@ -38,12 +39,29 @@ pub(crate) fn severity_glyph(glyph: SeverityGlyph) -> Run {
     })
 }
 
-/// `t_out` of a meter (window forecast or balance), if it has one.
+/// `t_out` of a meter that runs out: a window whose forecast `runs_out` (R§3.5: `t_out < R`), or
+/// a balance with a forecast. `None` otherwise — also for a WARNING that hysteresis holds while
+/// `p ≤ 1` (R§3.7 exit `p ≤ 0.97`): its `t_out` lies at or after the reset, and R§5.3 defines the
+/// `Out` and countdown texts only for `runs_out`, so no surface may show it ([`course_pct`]
+/// words that state instead).
 pub(crate) fn t_out(a: &Assessment) -> Option<Timestamp> {
     match &a.meter {
-        AssessedMeter::Window(w) => w.forecast.and_then(|f| f.t_out),
+        AssessedMeter::Window(w) => w.forecast.filter(|f| f.runs_out).and_then(|f| f.t_out),
         AssessedMeter::Balance(b) => b.stats.t_out,
         AssessedMeter::Loading => None,
+    }
+}
+
+/// The projection `p` of a window with a valid forecast as a shown percent, capped at 99 % like
+/// the card's `on course for 78% at reset` (R§8.2): what a WARNING without a run-out before the
+/// reset says instead of a run-out time (`on course for 98% at the reset`).
+pub(crate) fn course_pct(a: &Assessment) -> Option<u8> {
+    match &a.meter {
+        AssessedMeter::Window(w) => w
+            .forecast
+            .filter(|f| f.valid)
+            .map(|f| share_pct(f.projected).min(CARD_FORECAST_MAX_PCT)),
+        AssessedMeter::Balance(_) | AssessedMeter::Loading => None,
     }
 }
 
@@ -83,8 +101,8 @@ pub(crate) fn back_text(a: &Assessment, cx: &TextContext<'_>) -> String {
     }
 }
 
-/// The run-out text of a WARNING or CRITICAL_RUNWAY row (R§5.3); `pct` when there is no run-out
-/// time to count down to (cannot happen for assessed meters; kept total).
+/// The run-out text of a WARNING or CRITICAL_RUNWAY row (R§5.3); `pct` when the meter does not
+/// run out before its reset (a WARNING held by hysteresis, [`t_out`]), as the compact cell shows.
 fn say_runout(a: &Assessment, critical: bool, cx: &TextContext<'_>) -> String {
     match t_out(a) {
         Some(t) => runout_text(t, critical, cx),

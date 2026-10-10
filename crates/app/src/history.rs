@@ -31,7 +31,8 @@ use lastdrop_core::model::{
     MeterId, MeterKey, MeterKind, ProviderId, Snapshot, WindowLen, catalog,
 };
 use lastdrop_core::stats::{
-    HistoryView, Sample, current_instance, is_exhausted, same_window_instance,
+    HistoryView, Sample, current_instance, instance_of, is_exhausted, latest_instance,
+    same_window_instance,
 };
 
 /// How far back samples stay in memory: 31 days (a calendar-month window; balances need 30).
@@ -454,8 +455,12 @@ impl HistoryStore {
         let due = series
             .last_persisted
             .is_none_or(|p| sample.t.duration_since(p) >= HISTORY_THIN_INTERVAL);
-        let new_instance = kind != Kind::Balance
-            && last.is_some_and(|l| !same_window_instance(l.resets_at, sample.resets_at));
+        // A reading without a reset time inside the current instance belongs to it
+        // (`instance_of`): a source without reset times does not start a new instance.
+        let new_instance = kind != Kind::Balance && last.is_some() && {
+            let last_instance = latest_instance(&series.samples);
+            !same_window_instance(last_instance, instance_of(last_instance, &sample))
+        };
         let changed = match last {
             None => true,
             Some(_) if kind == Kind::Balance => last.is_some_and(|l| l.value != sample.value),
@@ -849,6 +854,47 @@ mod tests {
         let reopened = HistoryStore::open(&dir.0, at(9)).expect("reopen");
         let on_disk = times(reopened.samples(&k, Timestamp::MIN));
         assert_eq!(on_disk, vec![at(2), at(3), at(8)]);
+    }
+
+    #[test]
+    fn a_reading_without_a_reset_time_stays_in_the_instance() {
+        let dir = TempDir::new("noreset");
+        let mut store = HistoryStore::open(&dir.0, t0()).expect("open");
+        let k = key(ProviderId::Claude, MeterId::FIVE_HOUR);
+        let weekly = meter(
+            MeterId::WEEKLY,
+            0.2,
+            Some(at(5000)),
+            WindowLen::Fixed(SignedDuration::from_hours(168)),
+        );
+        let without_reset = |used: f64| {
+            meter(
+                MeterId::FIVE_HOUR,
+                used,
+                None,
+                WindowLen::Fixed(SignedDuration::from_hours(5)),
+            )
+        };
+        let record = |store: &mut HistoryStore, m: i64, five: Meter| {
+            store
+                .record(&snapshot(at(m), vec![five, weekly.clone()], Vec::new()))
+                .expect("record");
+        };
+        record(&mut store, 0, five_hour(0.50, at(100)));
+        record(&mut store, 5, five_hour(0.55, at(100)));
+        // A desktop-history reading without `R`: the same instance, so only the 5-minute grid
+        // stores it (minute 6 replaces itself), and trimming keeps the instance.
+        record(&mut store, 6, without_reset(0.56));
+        record(&mut store, 7, without_reset(0.57));
+        assert_eq!(lines(&dir.file("claude.default.five_hour.jsonl")).len(), 2);
+        store.trim_memory(at(8));
+        assert_eq!(
+            times(store.samples(&k, Timestamp::MIN)),
+            vec![at(0), at(5), at(7)]
+        );
+        // After the reset time a reading without `R` belongs to no known instance.
+        record(&mut store, 101, without_reset(0.0));
+        assert_eq!(lines(&dir.file("claude.default.five_hour.jsonl")).len(), 4);
     }
 
     #[test]

@@ -1023,6 +1023,35 @@ fn a_429_backs_off_with_retry_after_while_other_sources_answer() {
 }
 
 #[test]
+fn after_a_failed_request_the_last_good_answer_still_lends_its_reset_times() {
+    let f = Fakes::new(now());
+    let p = provider();
+    with_credentials(&f, fixture!("credentials-valid.json"), now() - mins(60));
+    respond(&f, 200, fixture!("usage-200-two-windows.json"), &[]);
+    let snap = fetch(&p, &f).expect("OAuth");
+    assert_eq!(snap.source, SourceKind::ClaudeOAuthUsage);
+
+    // Six minutes later the endpoint fails and a newer desktop-history sample (no reset times)
+    // is the freshest reading: the reset times of the same windows come from the last good
+    // OAuth answer, not from the failed request.
+    f.clock.advance(mins(6));
+    respond(&f, 503, "", &[]);
+    with_desktop(
+        &f,
+        r#"{"version": 2, "samples": [{"t": 1791629220000, "u": {"fh": 45, "sd": 62}}]}"#,
+    );
+    let snap = fetch(&p, &f).expect("desktop");
+    assert_eq!(f.http.requests().len(), 2);
+    assert_eq!(snap.source, SourceKind::ClaudeDesktopHistory);
+    assert_eq!(ids(&snap), ["five_hour", "weekly"]);
+    assert_eq!(
+        snap.meters[0].resets_at,
+        Some(ts("2026-10-10T12:56:00.123456Z"))
+    );
+    assert_eq!(snap.meters[1].resets_at, Some(ts("2026-10-12T07:00:00Z")));
+}
+
+#[test]
 fn a_429_with_no_other_source_is_rate_limited() {
     let f = Fakes::new(now());
     let p = provider();

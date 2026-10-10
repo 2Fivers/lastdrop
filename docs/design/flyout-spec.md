@@ -118,8 +118,8 @@ tooltip.
 
 | Worst | Text |
 |---|---|
-| all OK | `All limits last until their reset` |
-| WARNING | `Claude 5-hour runs out at 15:20` |
+| all OK | `All limits last until their reset`; no window has a reset time: `Within your limits` |
+| WARNING | `Claude 5-hour runs out at 15:20`; without a run-out before the reset (R§5.3): `Claude 5-hour is on course for 97% at the reset` |
 | CRITICAL (runway) | `Claude 5-hour runs out in 12 min` (COUNTDOWN of R§5.3: `Claude weekly runs out in 6 h`) |
 | CRITICAL (level) | `Claude 5-hour is 92% used` |
 | EXHAUSTED | `Claude 5-hour is used up until 16:30` |
@@ -183,7 +183,7 @@ Trouble line  margin-top 4, 12/16 TextSecondary, one line, ellipsis (only in the
 | IDLE (window not started) | `Starts with your next use` (TextSecondary, no glyph); value `0%`; bar track only, no tick | — |
 | OK, no reset time / `L` unknown | `No reset time given` (TextSecondary); no tick | — |
 | JUST_RESET | ↺ `Resets Mon 19 Oct` (the new `R'`) | `Reset at 09:00 · waiting for the first reading` |
-| WARNING | ▲ + 4 + `Out 15:20` or `45 min left` (semibold, TextPrimary), as the readout (R§5.3) | `Runs out 1 h 10 min before the reset at 16:30.` |
+| WARNING | ▲ + 4 + `Out 15:20` or `45 min left` (semibold, TextPrimary), as the readout (R§5.3); without a run-out before the reset: ▲ `Resets 16:30` | `Runs out 1 h 10 min before the reset at 16:30.`; without a run-out before the reset: `On course for 97% at the 16:30 reset.` |
 | CRITICAL runway (incl. level + runs out) | ● + 4 + countdown, always (R§5.3): `12 min left`, `6 h left` | `Empty ≈ 15:02, 1 h 28 min before the 16:30 reset.` |
 | CRITICAL level, lasts | ↺ `Resets 16:30` | `Nearly used up. Lasts until the reset at your recent pace.` |
 | EXHAUSTED | ● + 4 + `Back 16:30` (no reset time: `Empty`) | `Used up since 14:58. Back in 1 h 32 min.` (`since` omitted if unknown) |

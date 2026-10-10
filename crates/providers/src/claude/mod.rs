@@ -12,7 +12,8 @@
 //!
 //! **Reset times.** Claude Desktop's history has no reset times. When the freshest reading lacks
 //! a window's `resets_at`, the provider takes it from an older reading of this fetch (the cache,
-//! or the OAuth source's last answer) of the **same window instance**: that reading's reset is
+//! or the OAuth source's last answer — its last *successful* answer when the latest request
+//! failed, so a 429 or 5xx does not lose the reset times) of the **same window instance**: that reading's reset is
 //! still ahead at the freshest reading's time and its usage is not higher (usage only grows
 //! within a window; one point of slack for the history's whole percentages). Otherwise the
 //! reset stays unknown (R§3.2 "no reset time").
@@ -124,6 +125,10 @@ struct OAuthMemory {
     throttled: u32,
     /// The last request's result, standing in for the source while it rests.
     last: Option<Result<ClaudeUsage, FetchError>>,
+    /// The last successful answer (with its `measured_at`), kept apart from `last`: after a
+    /// 429/5xx `last` holds the error, and the desktop history (which has no reset times) still
+    /// needs the reset times of the current windows from somewhere ([`fill_resets`]).
+    last_good: Option<ClaudeUsage>,
 }
 
 impl OAuthMemory {
@@ -144,6 +149,7 @@ impl OAuthMemory {
             },
             throttled: self.throttled,
             last: None,
+            last_good: None,
         }
     }
 }
@@ -155,6 +161,8 @@ struct OAuthOutcome {
     rejected: bool,
     /// The plan from the credentials file, when it was read.
     plan: Option<String>,
+    /// The source's last successful answer, a donor of reset times when `result` is an error.
+    last_good: Option<ClaudeUsage>,
 }
 
 /// A successful reading of one source.
@@ -206,9 +214,10 @@ impl ClaudeProvider {
             .cloned()
             .unwrap_or_default()
             .for_credential(fingerprint.as_ref());
-        let outcome = self.oauth_attempt(ctx, config_dir, started, memory);
-        self.memories().insert(key.clone(), outcome.1);
-        outcome.0
+        let (mut outcome, memory) = self.oauth_attempt(ctx, config_dir, started, memory);
+        outcome.last_good.clone_from(&memory.last_good);
+        self.memories().insert(key.clone(), memory);
+        outcome
     }
 
     fn oauth_attempt(
@@ -223,6 +232,7 @@ impl ClaudeProvider {
             result,
             rejected,
             plan,
+            last_good: None,
         };
         let credentials = match oauth::read_credentials(ctx, config_dir) {
             Ok(credentials) => credentials,
@@ -267,6 +277,9 @@ impl ClaudeProvider {
         let answered = ctx.clock.now();
         if let Ok(usage) = &mut result {
             usage.plan.clone_from(&plan);
+            let mut good = usage.clone();
+            good.measured_at.get_or_insert(answered);
+            memory.last_good = Some(good);
         }
         memory.rejected = matches!(result, Err(FetchError::Auth { .. }));
         if let Err(FetchError::RateLimited { retry_after, .. }) = &result {
@@ -332,10 +345,22 @@ impl Provider for ClaudeProvider {
                 &mut failures,
             );
         }
+        // Older answers that only lend reset times (module docs, "Reset times").
+        let mut donors = Vec::new();
         if options.oauth_usage {
             let outcome = self.oauth_source(ctx, key, config_dir, started);
             rejected = outcome.rejected;
             plan = outcome.plan;
+            if outcome.result.is_err()
+                && let Some(good) = outcome.last_good
+                && let Some(measured_at) = good.measured_at
+            {
+                donors.push(Candidate {
+                    source: SourceKind::ClaudeOAuthUsage,
+                    usage: good,
+                    measured_at,
+                });
+            }
             collect(
                 ctx,
                 SourceKind::ClaudeOAuthUsage,
@@ -360,6 +385,7 @@ impl Provider for ClaudeProvider {
             return Err(most_telling(failures));
         };
         let mut chosen = readings.swap_remove(best);
+        readings.append(&mut donors);
         fill_resets(&mut chosen, &readings);
         let account_ref = AccountRef {
             key: key.clone(),
