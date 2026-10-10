@@ -1,0 +1,21 @@
+# Rust
+/target/
+**/target/
+
+# Node (provider SDK, tooling)
+node_modules/
+dist/
+
+# Local data and secrets — never commit real usage logs or tokens
+*.local.json
+.env
+.env.*
+/.scratch/
+
+# Editors and OS
+.vs/
+.vscode/
+.idea/
+*.swp
+Thumbs.db
+.DS_Store
