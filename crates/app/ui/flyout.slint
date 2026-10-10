@@ -1,0 +1,535 @@
+// The flyout (flyout-spec). M1 placeholder layout with the FINAL property/struct interface of
+// F§11: Rust (lastdrop-core::flyout::FlyoutModel, converted in src/wiring.rs) fills these structs;
+// the layout below is a starting point to be finished against F§2–F§9 and the mock
+// (docs/design/final/flyout.html).
+
+import { ScrollView } from "std-widgets.slint";
+import { Theme, BarGeom, Tone, Glyph, GlyphData, SparkData, PaceBar, GlyphIcon, ProviderGlyph, Sparkline } from "common.slint";
+
+// One window meter row (F§4.4). right-kind (F§11): 0 reset (↺ + text, TextSecondary), 1 say
+// (severity glyph by right-glyph + semibold text), 2 none (no glyph; text in TextSecondary, empty
+// while LOADING).
+export struct MeterData {
+    name: string,
+    value: string,
+    value-dim: bool,
+    right-kind: int,
+    right-glyph: Tone,
+    right-text: string,
+    line: string,
+    tone: Tone,
+    bar: BarGeom,
+    a11y: string,
+    pct: int,
+}
+
+// One service card (F§4). glyph: the provider glyph (GlyphData, 12 × 12 grid).
+// msg-kind (lastdrop_core::flyout::MessageKind + 1): 0 none, 1 offline, 2 not answering,
+// 3 sign-in (info glyph + link Open sign-in…), 4 paused (link Resume), 5 first fetch failed
+// (critical glyph + link Retry), 6 API key missing (info glyph + link Enter key…). msg-text starts
+// with its separator. Balance cards: is-balance, amount, unit, forecast (+ forecast-tone glyph),
+// burn (BalanceBodyModel.spent: the "spent · burn" line), until, balance-a11y (F§10 balance body
+// text).
+export struct CardData {
+    glyph: GlyphData,
+    name: string,
+    plan: string,
+    age: string,
+    msg-kind: int,
+    msg-lead: string,
+    msg-text: string,
+    msg-action: string,
+    meters: [MeterData],
+    is-balance: bool,
+    amount: string,
+    unit: string,
+    forecast: string,
+    forecast-tone: Tone,
+    burn: string,
+    until: string,
+    balance-a11y: string,
+    spark: SparkData,
+    a11y: string,
+}
+
+component MeterRow inherits Rectangle {
+    in property <MeterData> data;
+    accessible-role: progress-indicator;
+    accessible-label: root.data.a11y;
+    accessible-value: root.data.pct;
+    accessible-value-minimum: 0;
+    accessible-value-maximum: 100;
+
+    VerticalLayout {
+        spacing: 4px;
+        HorizontalLayout {
+            height: 20px;
+            Text {
+                text: root.data.name;
+                font-family: Theme.font-text;
+                font-size: 14px;
+                color: Theme.text-primary;
+                overflow: elide;
+                horizontal-stretch: 1;
+                vertical-alignment: center;
+            }
+            HorizontalLayout {
+                spacing: 4px;
+                if root.data.right-kind == 0: GlyphIcon {
+                    glyph: Glyph.reset;
+                    size: 12px;
+                }
+                if root.data.right-kind == 1: GlyphIcon {
+                    glyph: root.data.right-glyph == Tone.caution ? Glyph.warning : Glyph.critical;
+                    size: 12px;
+                }
+                Text {
+                    text: root.data.right-text;
+                    font-family: Theme.font-small;
+                    font-size: 12px;
+                    font-weight: root.data.right-kind == 1 ? 600 : 400;
+                    color: root.data.right-kind == 1 ? Theme.text-primary : Theme.text-secondary;
+                    vertical-alignment: center;
+                }
+            }
+            Rectangle {
+                width: 12px;
+            }
+            Text {
+                text: root.data.value;
+                min-width: 36px;
+                horizontal-alignment: right;
+                font-family: Theme.font-text;
+                font-size: 14px;
+                font-weight: 600;
+                color: root.data.value-dim ? Theme.text-secondary : Theme.text-primary;
+                vertical-alignment: center;
+            }
+        }
+        PaceBar {
+            geom: root.data.bar;
+            tone: root.data.tone;
+        }
+        if root.data.line != "": Text {
+            text: root.data.line;
+            font-family: Theme.font-small;
+            font-size: 12px;
+            color: Theme.text-secondary;
+            overflow: elide;
+        }
+    }
+}
+
+component ServiceCard inherits Rectangle {
+    in property <CardData> data;
+    in property <int> index;
+    callback message-action(int);
+    callback open-dashboard(int);
+    callback menu(int, length, length);
+    background: Theme.card-fill;
+    border-width: 1px;
+    border-color: Theme.card-stroke;
+    border-radius: 8px;
+    accessible-role: groupbox;
+    accessible-label: root.data.a11y;
+
+    TouchArea {
+        pointer-event(event) => {
+            if (event.button == PointerEventButton.right && event.kind == PointerEventKind.up) {
+                root.menu(root.index, self.mouse-x, self.mouse-y);
+            }
+        }
+    }
+
+    VerticalLayout {
+        padding: 12px;
+        HorizontalLayout {
+            height: 20px;
+            spacing: 8px;
+            VerticalLayout {
+                alignment: center;
+                ProviderGlyph {
+                    glyph: root.data.glyph;
+                    size: 16px;
+                }
+            }
+            Text {
+                text: root.data.name;
+                font-family: Theme.font-text;
+                font-size: 14px;
+                font-weight: 600;
+                color: Theme.text-primary;
+                vertical-alignment: center;
+            }
+            if root.data.plan != "": Rectangle {
+                height: 18px;
+                border-radius: 4px;
+                background: Theme.badge-fill;
+                HorizontalLayout {
+                    padding-left: 6px;
+                    padding-right: 6px;
+                    Text {
+                        text: root.data.plan;
+                        font-family: Theme.font-small;
+                        font-size: 12px;
+                        color: Theme.text-secondary;
+                        vertical-alignment: center;
+                    }
+                }
+            }
+            Rectangle {
+                horizontal-stretch: 1;
+            }
+            Text {
+                text: root.data.age;
+                font-family: Theme.font-small;
+                font-size: 12px;
+                color: Theme.text-secondary;
+                vertical-alignment: center;
+            }
+            VerticalLayout {
+                alignment: center;
+                Sparkline {
+                    data: root.data.spark;
+                }
+            }
+        }
+        if root.data.msg-kind != 0: HorizontalLayout {
+            padding-top: 8px;
+            spacing: 6px;
+            GlyphIcon {
+                glyph: root.data.msg-kind == 3 || root.data.msg-kind == 6 ? Glyph.info
+                    : root.data.msg-kind == 5 ? Glyph.critical : Glyph.stale;
+                size: 12px;
+            }
+            Text {
+                text: root.data.msg-lead + root.data.msg-text;
+                font-family: Theme.font-small;
+                font-size: 12px;
+                color: Theme.text-secondary;
+                wrap: word-wrap;
+                horizontal-stretch: 1;
+            }
+            if root.data.msg-action != "": Text {
+                text: root.data.msg-action;
+                font-family: Theme.font-small;
+                font-size: 12px;
+                color: Theme.link;
+                accessible-role: button;
+                accessible-label: self.text;
+                TouchArea {
+                    clicked => {
+                        root.message-action(root.index);
+                    }
+                }
+            }
+        }
+        VerticalLayout {
+            padding-top: 10px;
+            spacing: 8px;
+            if !root.data.is-balance: VerticalLayout {
+                spacing: 8px;
+                for meter in root.data.meters: MeterRow {
+                    data: meter;
+                }
+            }
+            if root.data.is-balance: VerticalLayout {
+                spacing: 2px;
+                accessible-role: text;
+                accessible-label: root.data.balance-a11y;
+                HorizontalLayout {
+                    height: 28px;
+                    spacing: 6px;
+                    Text {
+                        text: root.data.amount;
+                        font-family: Theme.font-display;
+                        font-size: 20px;
+                        font-weight: 600;
+                        color: Theme.text-primary;
+                        vertical-alignment: bottom;
+                    }
+                    Text {
+                        text: root.data.unit;
+                        font-family: Theme.font-text;
+                        font-size: 14px;
+                        color: Theme.text-secondary;
+                        vertical-alignment: bottom;
+                        horizontal-stretch: 1;
+                    }
+                    GlyphIcon {
+                        glyph: root.data.forecast-tone == Tone.caution ? Glyph.warning
+                            : root.data.forecast-tone == Tone.critical ? Glyph.critical : Glyph.none;
+                        size: 12px;
+                    }
+                    Text {
+                        text: root.data.forecast;
+                        font-family: Theme.font-text;
+                        font-size: 14px;
+                        font-weight: root.data.forecast-tone == Tone.calm ? 400 : 600;
+                        color: Theme.text-primary;
+                        vertical-alignment: bottom;
+                    }
+                }
+                HorizontalLayout {
+                    height: 16px;
+                    spacing: 8px;
+                    Text {
+                        text: root.data.burn;
+                        font-family: Theme.font-small;
+                        font-size: 12px;
+                        color: Theme.text-secondary;
+                        overflow: elide;
+                        horizontal-stretch: 1;
+                    }
+                    Text {
+                        text: root.data.until;
+                        font-family: Theme.font-small;
+                        font-size: 12px;
+                        color: Theme.text-secondary;
+                    }
+                }
+            }
+        }
+    }
+}
+
+export component Flyout inherits Window {
+    title: "Lastdrop";
+    no-frame: true;
+    always-on-top: true;
+    background: transparent;
+    width: 360px;
+    default-font-family: Theme.font-text;
+    default-font-size: 14px;
+    forward-focus: keys;
+
+    // The window height, set from Rust: min(content-height, F§1.2 max height) (logical px).
+    in property <length> flyout-height: 478px;
+    height: root.flyout-height;
+    // Toggled from Rust right before a programmatic show so the next frame is a full repaint
+    // (the window is shown and hidden with Win32 behind Slint's back, as in the spike).
+    in-out property <bool> repaint-tick: false;
+
+    in property <string> title-text: "Lastdrop";
+    in property <string> verdict-text;
+    // FlyoutModel.verdict.glyph: none (all OK), warning, critical, stale, info (sign-in).
+    in property <Glyph> verdict-glyph: Glyph.none;
+    // FlyoutModel.announce (F§10: a severity rose while open): set once, read by screen readers
+    // through a polite live region; Rust clears it after the announcement.
+    in property <string> announcement;
+    in property <bool> refreshing: false;
+    in property <string> refresh-name: "Refresh all services";
+    in property <string> refresh-tooltip: "Refresh (F5)";
+    in property <[CardData]> cards;
+    in property <string> settings-label: "Settings";
+    in property <string> footer-text;
+    in property <string> footer-link;
+    // Card to scroll into view and focus (sign-in, R§10); -1 = none.
+    in property <int> focus-card: -1;
+    // Header 40 + list + footer 48 (F§1.2), for Rust to size the window.
+    out property <length> content-height: 40px + list.preferred-height + 48px;
+
+    callback open-settings();
+    callback refresh();
+    callback open-service-dashboard(int);
+    // `close` would shadow Window's builtin close() (Slint 1.18), hence `dismiss`.
+    callback dismiss();
+    callback message-action(int);
+    callback footer-action();
+    callback card-menu(int, length, length);
+
+    Rectangle {
+        background: root.repaint-tick ? #00000001 : #00000000;
+    }
+    Rectangle {
+        background: Theme.window-fill;
+    }
+    // F§10: the window's description is the header verdict; announcements go through a live
+    // region.
+    Rectangle {
+        width: 0px;
+        height: 0px;
+        accessible-role: text;
+        accessible-label: root.verdict-text;
+    }
+    Rectangle {
+        width: 0px;
+        height: 0px;
+        accessible-role: text;
+        accessible-label: root.announcement;
+        accessible-live-region: polite;
+    }
+
+    keys := FocusScope {
+        key-pressed(event) => {
+            if (event.text == Key.Escape) {
+                root.dismiss();
+                return accept;
+            }
+            if (event.text == Key.F5 || (event.modifiers.control && (event.text == "r" || event.text == "R"))) {
+                root.refresh();
+                return accept;
+            }
+            reject
+        }
+    }
+
+    VerticalLayout {
+        HorizontalLayout {
+            height: 40px;
+            padding-left: 16px;
+            padding-right: 4px;
+            spacing: 8px;
+            Text {
+                text: root.title-text;
+                font-family: Theme.font-text;
+                font-size: 14px;
+                font-weight: 600;
+                color: Theme.text-primary;
+                vertical-alignment: center;
+            }
+            HorizontalLayout {
+                spacing: 4px;
+                horizontal-stretch: 1;
+                VerticalLayout {
+                    alignment: center;
+                    GlyphIcon {
+                        glyph: root.verdict-glyph;
+                        size: 12px;
+                    }
+                }
+                Text {
+                    text: root.verdict-text;
+                    font-family: Theme.font-small;
+                    font-size: 12px;
+                    color: Theme.text-secondary;
+                    overflow: elide;
+                    horizontal-stretch: 1;
+                    vertical-alignment: center;
+                }
+            }
+            VerticalLayout {
+                alignment: center;
+                refresh := Rectangle {
+                    width: 32px;
+                    height: 32px;
+                    border-radius: 4px;
+                    background: refresh-touch.pressed ? Theme.subtle-pressed : refresh-touch.has-hover ? Theme.subtle-hover : transparent;
+                    accessible-role: button;
+                    accessible-label: root.refresh-name;
+                    accessible-enabled: !root.refreshing;
+                    Text {
+                        // M1: a 16 px indeterminate progress ring (accent) while refreshing (F§3).
+                        text: root.refreshing ? "\u{E895}" : "\u{E72C}";
+                        font-family: Theme.font-icons;
+                        font-size: 16px;
+                        color: root.refreshing ? Theme.accent : Theme.text-primary;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                    }
+                    refresh-touch := TouchArea {
+                        enabled: !root.refreshing;
+                        clicked => {
+                            root.refresh();
+                        }
+                    }
+                }
+            }
+        }
+
+        ScrollView {
+            vertical-stretch: 1;
+            list := VerticalLayout {
+                padding-left: 12px;
+                padding-right: 12px;
+                padding-bottom: 12px;
+                spacing: 8px;
+                for card[i] in root.cards: ServiceCard {
+                    data: card;
+                    index: i;
+                    message-action(index) => {
+                        root.message-action(index);
+                    }
+                    open-dashboard(index) => {
+                        root.open-service-dashboard(index);
+                    }
+                    menu(index, x, y) => {
+                        root.card-menu(index, x, y);
+                    }
+                }
+            }
+        }
+
+        Rectangle {
+            height: 1px;
+            background: Theme.divider;
+        }
+        Rectangle {
+            height: 47px;
+            background: Theme.footer-fill;
+            HorizontalLayout {
+                padding-left: 8px;
+                padding-right: 8px;
+                spacing: 4px;
+                if root.footer-text != "": Text {
+                    text: root.footer-text;
+                    font-family: Theme.font-small;
+                    font-size: 12px;
+                    color: Theme.text-secondary;
+                    vertical-alignment: center;
+                }
+                if root.footer-link != "": Text {
+                    text: root.footer-link;
+                    font-family: Theme.font-small;
+                    font-size: 12px;
+                    color: Theme.link;
+                    vertical-alignment: center;
+                    accessible-role: button;
+                    accessible-label: self.text;
+                    TouchArea {
+                        clicked => {
+                            root.footer-action();
+                        }
+                    }
+                }
+                Rectangle {
+                    horizontal-stretch: 1;
+                }
+                VerticalLayout {
+                    alignment: center;
+                    Rectangle {
+                        height: 32px;
+                        border-radius: 4px;
+                        background: settings-touch.pressed ? Theme.subtle-pressed : settings-touch.has-hover ? Theme.subtle-hover : transparent;
+                        accessible-role: button;
+                        accessible-label: root.settings-label;
+                        HorizontalLayout {
+                            padding-left: 11px;
+                            padding-right: 11px;
+                            spacing: 8px;
+                            Text {
+                                text: "\u{E713}";
+                                font-family: Theme.font-icons;
+                                font-size: 16px;
+                                color: Theme.text-primary;
+                                vertical-alignment: center;
+                            }
+                            Text {
+                                text: root.settings-label;
+                                font-family: Theme.font-text;
+                                font-size: 14px;
+                                color: Theme.text-primary;
+                                vertical-alignment: center;
+                            }
+                        }
+                        settings-touch := TouchArea {
+                            clicked => {
+                                root.open-settings();
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}

@@ -1,0 +1,76 @@
+# Lastdrop workspace. Layout and dependency direction: docs/ARCHITECTURE.md ("Workspace").
+#   app -> win, providers -> core.  `core` has no Windows dependencies and no I/O.
+[workspace]
+resolver = "3"
+members = ["crates/core", "crates/providers", "crates/win", "crates/app"]
+# The stack spikes are kept for reference and are built on their own (ADR 0001).
+exclude = ["spikes"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.99"
+authors = ["Adinosaur AB"]
+license = "LicenseRef-Proprietary"
+publish = false
+
+[workspace.dependencies]
+# Our crates
+lastdrop-core = { path = "crates/core" }
+lastdrop-providers = { path = "crates/providers" }
+lastdrop-win = { path = "crates/win" }
+
+# UI: Slint with the software renderer only and the fluent style (ADR 0001). No GPU renderer is
+# compiled in. Feature set from the spike's `r-software` build.
+slint = { version = "=1.18.1", default-features = false, features = [
+  "std",
+  "compat-1-2",
+  "backend-winit",
+  "renderer-software",
+  "software-renderer-path",
+  "accessibility",
+  "raw-window-handle-06",
+  "unstable-winit-030",
+] }
+slint-build = "=1.18.1"
+raw-window-handle = "=0.6.2"
+
+# Win32. Each crate adds the API features it needs; keep the version in one place.
+windows = { version = "=0.62.2" }
+
+# Data
+serde = { version = "=1.0.229", features = ["derive"] }
+serde_json = "=1.0.152"
+# Time. `core` only needs instants, durations and caller-supplied time zones; the binary adds
+# the system time zone and the bundled tzdb on Windows (crates/app/Cargo.toml).
+jiff = { version = "=0.2.38", default-features = false, features = ["std", "serde", "perf-inline"] }
+
+# HTTP: blocking, no async runtime, TLS through SChannel (native-tls) with the system roots.
+ureq = { version = "=3.4.2", default-features = false, features = ["native-tls-no-default"] }
+
+# Errors and logging (our own tiny file logger lives in crates/app/src/logger.rs).
+thiserror = "=2.0.21"
+log = { version = "=0.4.34", features = ["std"] }
+
+[workspace.lints.rust]
+# Every public item says what it means and which spec section it implements.
+missing_docs = "warn"
+unsafe_op_in_unsafe_fn = "warn"
+unused_qualifications = "warn"
+
+[workspace.lints.clippy]
+# Every unsafe block carries a `// SAFETY:` comment.
+undocumented_unsafe_blocks = "warn"
+# Nothing prints: the app is a GUI program and output could carry secrets. Log instead.
+print_stdout = "warn"
+print_stderr = "warn"
+dbg_macro = "warn"
+
+# CI runs `cargo clippy --workspace --all-targets -- -D warnings`, so every warning above fails it.
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+strip = true
+panic = "abort"

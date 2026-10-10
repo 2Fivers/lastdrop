@@ -1,0 +1,3 @@
+# Static C runtime: the exe needs no Visual C++ redistributable (ADR 0001, "Consequences").
+[target.x86_64-pc-windows-msvc]
+rustflags = ["-C", "target-feature=+crt-static"]

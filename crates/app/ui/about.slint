@@ -1,0 +1,38 @@
+// About Lastdrop. Shows Slint's AboutSlint widget: the condition of Slint's Royalty-free License
+// 2.0 for a closed-source desktop app (ADR 0001, ARCHITECTURE "App"). Reachable from the tray
+// menu ("About Lastdrop", R§10).
+
+import { AboutSlint, Button } from "std-widgets.slint";
+
+export component AboutWindow inherits Window {
+    title: "About Lastdrop";
+    preferred-width: 420px;
+
+    in property <string> version;
+    in property <string> copyright: "© 2026 Adinosaur AB. All rights reserved.";
+    // `close` would shadow Window's builtin close() (Slint 1.18), hence `dismiss`.
+    callback dismiss();
+
+    VerticalLayout {
+        padding: 24px;
+        spacing: 12px;
+        Text {
+            text: "Lastdrop " + root.version;
+            font-size: 20px;
+            font-weight: 600;
+        }
+        Text {
+            text: root.copyright;
+        }
+        AboutSlint { }
+        HorizontalLayout {
+            alignment: end;
+            Button {
+                text: "Close";
+                clicked => {
+                    root.dismiss();
+                }
+            }
+        }
+    }
+}

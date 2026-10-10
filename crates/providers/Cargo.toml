@@ -1,0 +1,23 @@
+[package]
+name = "lastdrop-providers"
+description = "Lastdrop's service providers (Claude, Codex, Meshy) with I/O behind small traits."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+publish.workspace = true
+
+# No UI and no Win32 windows (docs/ARCHITECTURE.md). Processes are spawned with std
+# (CREATE_NO_WINDOW through `std::os::windows::process::CommandExt`).
+[dependencies]
+lastdrop-core.workspace = true
+jiff.workspace = true
+log.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+ureq.workspace = true
+
+[lints]
+workspace = true

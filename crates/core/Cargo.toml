@@ -1,0 +1,18 @@
+[package]
+name = "lastdrop-core"
+description = "Lastdrop's pure logic: data model, statistics, text grammar, surface models, settings schema, refresh policy."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+publish.workspace = true
+
+# No Windows dependencies and no I/O (docs/ARCHITECTURE.md). Time zones come from the caller.
+[dependencies]
+jiff.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+
+[lints]
+workspace = true

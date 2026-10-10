@@ -1,0 +1,279 @@
+// The hover card (readout-spec §8). M1 placeholder layout with the FINAL property/struct
+// interface: Rust (lastdrop-core::readout::hovercard::HoverCardModel, converted in src/wiring.rs)
+// fills these structs. Width 320, padding 12 (inner 296); height = content; when the content is
+// taller than the space, Rust lowers `also-visible`, then clears `show-sentence` (R§8.1).
+
+import { Theme, BarGeom, Tone, Glyph, GlyphData, PaceBar, GlyphIcon, ProviderGlyph } from "common.slint";
+
+// One meter block (R§8.2). Window meters use elapsed-line/forecast/reset-line/reset-in; balance
+// meters use left-line/forecast/rate-line/until. Empty strings are not shown.
+export struct CardMeterData {
+    is-balance: bool,
+    name: string,
+    value: string,
+    value-semibold: bool,
+    bar: BarGeom,
+    tone: Tone,
+    elapsed-line: string,
+    forecast: string,
+    forecast-semibold: bool,
+    reset-line: string,
+    reset-in: string,
+    left-line: string,
+    rate-line: string,
+    until: string,
+}
+
+// One service section (R§8.2).
+export struct CardServiceData {
+    glyph: GlyphData,
+    name: string,
+    plan: string,
+    age: string,
+    meters: [CardMeterData],
+}
+
+// One "Also tracked" line (R§8.2): the time part of that meter's readout cell
+// (lastdrop_core::readout::hovercard::AlsoTime). time-dim: the text's role is not TextPrimary
+// (stale status, `–`); time-link: `Sign in` in AccentText.
+export struct AlsoLineData {
+    glyph: GlyphData,
+    label: string,
+    value: string,
+    value-semibold: bool,
+    time-glyph: Glyph,
+    time-text: string,
+    time-semibold: bool,
+    time-dim: bool,
+    time-link: bool,
+}
+
+component MeterBlock inherits VerticalLayout {
+    in property <CardMeterData> data;
+    padding-top: 10px;
+    HorizontalLayout {
+        height: 16px;
+        Text {
+            text: root.data.name;
+            font-size: 12px;
+            font-weight: 600;
+            color: Theme.text-primary;
+            horizontal-stretch: 1;
+        }
+        Text {
+            text: root.data.value;
+            font-size: 12px;
+            font-weight: root.data.value-semibold ? 600 : 400;
+            color: Theme.text-primary;
+        }
+    }
+    VerticalLayout {
+        padding-top: 1px;
+        padding-bottom: 1px;
+        PaceBar {
+            geom: root.data.bar;
+            tone: root.data.tone;
+            calm-fill: Theme.text-primary;
+        }
+    }
+    HorizontalLayout {
+        height: 16px;
+        if !root.data.is-balance: Rectangle {
+            // Tick key: a 1 × 9 px line, 3 px left margin, 6 px right margin (R§8.2).
+            width: 10px;
+            Rectangle {
+                x: 3px;
+                width: 1px;
+                height: 9px;
+                background: Theme.text-primary;
+            }
+        }
+        Text {
+            text: root.data.is-balance ? root.data.left-line : root.data.elapsed-line;
+            font-size: 12px;
+            color: Theme.text-secondary;
+            horizontal-stretch: 1;
+        }
+        Text {
+            text: root.data.forecast;
+            font-size: 12px;
+            font-weight: root.data.forecast-semibold ? 600 : 400;
+            color: Theme.text-primary;
+        }
+    }
+    HorizontalLayout {
+        height: 16px;
+        spacing: 3px;
+        if !root.data.is-balance: GlyphIcon {
+            glyph: Glyph.reset;
+            size: 11px;
+        }
+        Text {
+            text: root.data.is-balance ? root.data.rate-line : root.data.reset-line;
+            font-size: 12px;
+            color: Theme.text-secondary;
+            horizontal-stretch: 1;
+        }
+        Text {
+            text: root.data.is-balance ? root.data.until : root.data.reset-in;
+            font-size: 12px;
+            color: Theme.text-secondary;
+        }
+    }
+}
+
+export component HoverCard inherits Window {
+    title: "Lastdrop";
+    no-frame: true;
+    always-on-top: true;
+    background: transparent;
+    width: 320px;
+    default-font-family: Theme.font-small;
+    default-font-size: 12px;
+
+    // The window height, set from Rust from content-height (logical px).
+    in property <length> card-height: 200px;
+    height: root.card-height;
+
+    in property <Glyph> header-glyph: Glyph.none;
+    in property <string> title-text;
+    in property <string> sentence;
+    in property <bool> show-sentence: true;
+    in property <[CardServiceData]> services;
+    in property <string> also-header;
+    in property <[AlsoLineData]> also;
+    // How many "Also tracked" lines fit (R§8.1 drops lines from the bottom first).
+    in property <int> also-visible: 4;
+    in property <string> also-more;
+    // UIA ToolTip name: title + sentence (R§11).
+    in property <string> uia-name;
+    out property <length> content-height: content.preferred-height;
+
+    // A click that reaches the card hides it (R§8.1).
+    callback clicked();
+
+    accessible-role: none;
+    accessible-label: root.uia-name;
+
+    Rectangle {
+        background: Theme.window-fill;
+    }
+    TouchArea {
+        clicked => {
+            root.clicked();
+        }
+    }
+
+    content := VerticalLayout {
+        padding: 12px;
+        HorizontalLayout {
+            spacing: 8px;
+            GlyphIcon {
+                glyph: root.header-glyph;
+                size: 16px;
+            }
+            Text {
+                text: root.title-text;
+                font-family: Theme.font-text;
+                font-size: 14px;
+                font-weight: 600;
+                color: Theme.text-primary;
+                wrap: word-wrap;
+                horizontal-stretch: 1;
+            }
+        }
+        if root.show-sentence: Text {
+            text: root.sentence;
+            color: Theme.text-primary;
+            wrap: word-wrap;
+        }
+        for service in root.services: VerticalLayout {
+            padding-top: 12px;
+            Rectangle {
+                height: 1px;
+                background: Theme.divider;
+            }
+            HorizontalLayout {
+                padding-top: 10px;
+                height: 26px;
+                spacing: 6px;
+                ProviderGlyph {
+                    glyph: service.glyph;
+                    size: 16px;
+                }
+                Text {
+                    text: service.name;
+                    font-weight: 600;
+                    color: Theme.text-primary;
+                }
+                Text {
+                    text: service.plan;
+                    color: Theme.text-secondary;
+                    horizontal-stretch: 1;
+                }
+                Text {
+                    text: service.age;
+                    color: Theme.text-secondary;
+                }
+            }
+            for meter in service.meters: MeterBlock {
+                data: meter;
+            }
+        }
+        if root.also.length > 0: VerticalLayout {
+            padding-top: 12px;
+            Rectangle {
+                height: 1px;
+                background: Theme.divider;
+            }
+            Text {
+                height: 26px;
+                vertical-alignment: bottom;
+                text: root.also-header;
+                color: Theme.text-secondary;
+            }
+            for line[i] in root.also: HorizontalLayout {
+                height: i < root.also-visible ? 20px : 0px;
+                visible: i < root.also-visible;
+                spacing: 6px;
+                ProviderGlyph {
+                    glyph: line.glyph;
+                    size: 12px;
+                }
+                Text {
+                    text: line.label;
+                    color: Theme.text-primary;
+                    horizontal-stretch: 1;
+                    vertical-alignment: center;
+                }
+                Text {
+                    text: line.value;
+                    font-weight: line.value-semibold ? 600 : 400;
+                    color: Theme.text-primary;
+                    vertical-alignment: center;
+                }
+                HorizontalLayout {
+                    min-width: 56px;
+                    spacing: 2px;
+                    GlyphIcon {
+                        glyph: line.time-glyph;
+                        size: 12px;
+                    }
+                    Text {
+                        text: line.time-text;
+                        font-weight: line.time-semibold ? 600 : 400;
+                        color: line.time-link ? Theme.link
+                            : line.time-dim ? Theme.stale : Theme.text-primary;
+                        vertical-alignment: center;
+                    }
+                }
+            }
+            if root.also-more != "": Text {
+                height: 20px;
+                text: root.also-more;
+                color: Theme.text-secondary;
+                vertical-alignment: center;
+            }
+        }
+    }
+}

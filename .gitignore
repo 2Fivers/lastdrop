@@ -25,3 +25,6 @@ Thumbs.db
 
 # The Tauri spike keeps its frontend in dist/
 !/spikes/tauri-flyout/dist/
+
+# Claude Code session files and workflow worktrees
+/.claude/

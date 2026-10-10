@@ -1,0 +1,113 @@
+// Settings window: M1 "settings basics" (ROADMAP M1). Placeholder; the settings design is out of
+// scope of both specs (F§12), so this interface may still change. The Meshy API key is passed to
+// Rust once and stored in Credential Manager, never kept in a property or settings.json.
+
+import { Button, CheckBox, LineEdit, ComboBox } from "std-widgets.slint";
+
+export struct ProviderRow {
+    id: string,
+    name: string,
+    enabled: bool,
+}
+
+// One meter of an enabled service (settings `hidden_meters`, F§2.2; readout pins, R§4.3).
+// label: `{service} {short_name}`; pinned: one of the 1–2 readout pins (Rust keeps at most two,
+// in the order picked).
+export struct MeterChoice {
+    label: string,
+    shown: bool,
+    pinned: bool,
+}
+
+export component SettingsWindow inherits Window {
+    title: "Lastdrop settings";
+    preferred-width: 480px;
+    preferred-height: 420px;
+
+    in-out property <[ProviderRow]> providers;
+    // Refresh interval: index into interval-choices ("Manual", "1 min", …), localized by Rust.
+    in property <[string]> interval-choices;
+    in-out property <int> interval-index;
+    in-out property <bool> readout-enabled;
+    // Readout content (R§4.3): 0 auto, 1 pinned meters.
+    in-out property <int> readout-content-index;
+    // "Show times as" (R§5.2): 0 clock times, 1 time remaining.
+    in-out property <int> time-style-index;
+    in property <[MeterChoice]> meters;
+    // Scroll to and highlight the pins (tray menu "Taskbar readout ▸ Pinned meters…", R§10).
+    in property <bool> focus-pins;
+    in-out property <bool> start-with-windows;
+    in property <bool> meshy-key-stored;
+
+    callback provider-toggled(int, bool);
+    callback meter-shown-toggled(int, bool);
+    callback meter-pinned-toggled(int, bool);
+    callback set-meshy-key(string);
+    callback clear-meshy-key();
+    callback apply();
+    // `close` would shadow Window's builtin close() (Slint 1.18), hence `dismiss`.
+    callback dismiss();
+
+    VerticalLayout {
+        padding: 24px;
+        spacing: 12px;
+        Text {
+            text: "Settings";
+            font-size: 20px;
+            font-weight: 600;
+        }
+        for row[i] in root.providers: CheckBox {
+            text: row.name;
+            checked: row.enabled;
+            toggled => {
+                root.provider-toggled(i, self.checked);
+            }
+        }
+        ComboBox {
+            model: root.interval-choices;
+            current-index <=> root.interval-index;
+        }
+        CheckBox {
+            text: "Show the taskbar readout";
+            checked <=> root.readout-enabled;
+        }
+        CheckBox {
+            text: "Start with Windows";
+            checked <=> root.start-with-windows;
+        }
+        HorizontalLayout {
+            spacing: 8px;
+            key := LineEdit {
+                placeholder-text: root.meshy-key-stored ? "Meshy API key stored" : "Meshy API key";
+                input-type: password;
+            }
+            Button {
+                text: "Save key";
+                clicked => {
+                    root.set-meshy-key(key.text);
+                    key.text = "";
+                }
+            }
+        }
+        Rectangle {
+            vertical-stretch: 1;
+        }
+        HorizontalLayout {
+            alignment: end;
+            spacing: 8px;
+            Button {
+                text: "Apply";
+                primary: true;
+                clicked => {
+                    root.apply();
+                }
+            }
+            Button {
+                text: "Close";
+                clicked => {
+                    root.dismiss();
+                }
+            }
+        }
+    }
+}

@@ -1,0 +1,8 @@
+// Entry point of the Slint compile (build.rs): re-exports every window and every struct the Rust
+// side fills, so `slint::include_modules!()` generates them all.
+
+export { Theme, Seg, BarGeom, Tone, Glyph, GlyphData, SparkCol, SparkData } from "common.slint";
+export { MeterData, CardData, Flyout } from "flyout.slint";
+export { CardMeterData, CardServiceData, AlsoLineData, HoverCard } from "hovercard.slint";
+export { ProviderRow, MeterChoice, SettingsWindow } from "settings.slint";
+export { AboutWindow } from "about.slint";

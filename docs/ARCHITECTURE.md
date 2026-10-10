@@ -43,7 +43,7 @@ Windows-specific and has no I/O.
 
 | Thread | Owns | Never does |
 |---|---|---|
-| **main** | Slint event loop: flyout, hover card, settings and about windows; the tray icon (`tray-icon` + `muda`); the app state | blocking I/O |
+| **main** | Slint event loop: flyout, hover card, settings and about windows; the tray icon (our own `Shell_NotifyIcon`, version 4); the app state | blocking I/O |
 | **readout** | the taskbar readout: a hidden top-level window that receives `TaskbarCreated`, the layered readout window parented into the taskbar, the WinEvent hook on the taskbar, its own message loop and drawing | I/O, waiting on locks held by other threads, synchronous cross-process calls while holding a lock |
 | **occupancy** | a UI Automation client (MTA) that measures where the taskbar's app buttons are, with connection and transaction timeouts | anything else |
 | **refresh workers** | provider fetches (files, HTTP, `codex app-server`), one job per credential source at a time | touching UI objects |
@@ -65,13 +65,14 @@ Messages between threads: workers send results to the main thread with
   `ClaudeDesktopHistory`, `ClaudeOAuthUsage`, `CodexAppServer`, `CodexRollout`, `MeshyApi`),
   `meters`, `balances`, and `health` (`Ok`, `Stale`, `SignInRequired`, `Error`).
 - **Meter** — a usage window: stable id (`five_hour`, `weekly`, `weekly:fable`, …), label,
-  `used` (0–100, may exceed 100 when the service says so), window length (optional),
-  `resets_at` (optional).
+  `used` as a share (1.0 = the limit; may exceed 1 when the service says so), whether the limit
+  is reached, window length (fixed, calendar month or unknown), `resets_at` (optional) and
+  whether the window starts on use (Claude's 5-hour session).
 - **Balance** — an amount that only goes down until topped up: id, label, amount, unit
   (credits or a currency).
 - **Assessment** — pure function of a meter, the clock and (later) history: elapsed share,
-  on/ahead of pace, projected use at reset, run-out time, severity (`Calm`, `Warning`,
-  `Critical`, `Unknown`). The formulas and thresholds are the ones in
+  on/ahead of pace, forecast from the recent rate, run-out time, severity (`Ok`, `Warning`,
+  `Critical`, `Exhausted`) with hysteresis; unknown stays unknown. The formulas and thresholds are the ones in
   [`docs/design/readout-spec.md`](design/readout-spec.md); each is a unit test.
 - **ReadoutModel / TrayModel / FlyoutModel** — exactly what each surface draws, including
   every string (already formatted by the text grammar) and the UI Automation name. Surfaces
