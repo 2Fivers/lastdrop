@@ -349,8 +349,15 @@ const MAX_LINE_BYTES: usize = 1 << 20;
 /// waits, so a chatty child cannot grow our memory.
 const LINE_QUEUE: usize = 16;
 
-/// How long [`ChildIo::kill`] waits for the child to exit.
+/// How long [`ChildIo::kill`] waits for the child to exit after it was terminated.
 const KILL_WAIT: Duration = Duration::from_secs(2);
+
+/// How long [`ChildIo::kill`] lets the child exit by itself once its input is closed, before it
+/// is terminated (**not from the spec**). `codex app-server` renews Codex's own sign-in; a
+/// termination between OpenAI replacing the single-use refresh token and Codex saving the new one
+/// would sign the user out of Codex (ARCHITECTURE goal 2). At the end of its input the app-server
+/// finishes what it is doing and exits on its own.
+pub const EXIT_GRACE: Duration = Duration::from_secs(5);
 
 impl Spawner for RealSpawner {
     fn spawn(&self, spec: &SpawnSpec) -> io::Result<Box<dyn ChildIo>> {
@@ -409,6 +416,7 @@ fn spawn_child(spec: &SpawnSpec) -> io::Result<RealChild> {
         job,
         killed: false,
         label,
+        grace: EXIT_GRACE,
     };
     let reader = std::thread::Builder::new()
         .name("lastdrop-child-stdout".to_owned())
@@ -436,6 +444,8 @@ struct RealChild {
     job: Option<OwnedHandle>,
     killed: bool,
     label: String,
+    /// [`EXIT_GRACE`] (shorter in tests).
+    grace: Duration,
 }
 
 impl ChildIo for RealChild {
@@ -478,8 +488,26 @@ impl ChildIo for RealChild {
             return Ok(());
         }
         self.killed = true;
-        // Closing stdin first lets a child that waits for input see the end of it.
+        // Closing stdin lets the child see the end of its input and exit by itself; it is
+        // terminated only if it is still running after the grace period ([`EXIT_GRACE`]).
         self.stdin = None;
+        if job::wait(&self.child, self.grace).unwrap_or(false) {
+            let _ = self.child.try_wait();
+            // The child itself is done; anything it left running (its own children, its
+            // console host) ends with the job.
+            if let Some(job) = self.job.take()
+                && let Err(e) = job::terminate(&job)
+            {
+                log::debug!("{}: leftover processes not terminated: {e}", self.label);
+            }
+            log::debug!("{}: exited", self.label);
+            return Ok(());
+        }
+        log::debug!(
+            "{}: still running after {:?}; terminating",
+            self.label,
+            self.grace
+        );
         let via_job = self
             .job
             .as_ref()
@@ -1157,6 +1185,24 @@ mod tests {
         assert!(child.child.try_wait().expect("status").is_some());
         // Idempotent.
         child.kill().expect("second kill");
+    }
+
+    #[test]
+    fn kill_lets_the_child_exit_by_itself_before_terminating_it() {
+        // Exits 0 at the end of its input: not terminated (TerminateJobObject would give 1).
+        let mut child = spawn_child(&spec(&["/c", "set /p WAIT=&exit 0"])).expect("spawn");
+        child.kill().expect("kill");
+        let status = child.child.try_wait().expect("status").expect("exited");
+        assert_eq!(status.code(), Some(0), "exited by itself");
+
+        // Ignores its input: terminated after the grace period.
+        let mut busy = spawn_child(&spec(&["/c", "for /l %i in (0,0,1) do @rem"])).expect("spawn");
+        busy.grace = Duration::from_millis(200);
+        let started = Instant::now();
+        busy.kill().expect("kill");
+        assert!(started.elapsed() >= Duration::from_millis(200));
+        let status = busy.child.try_wait().expect("status").expect("exited");
+        assert_eq!(status.code(), Some(1), "terminated");
     }
 
     #[test]

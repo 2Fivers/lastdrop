@@ -1,9 +1,11 @@
 //! Source 1: `codex app-server` (JSON-RPC 2.0, one JSON object per line over stdio).
 //!
 //! Sequence: spawn (no window, `CODEX_HOME` set) → `initialize` request (8 s) → `initialized`
-//! notification → `account/read` (3 s) → `account/rateLimits/read` (3 s) → kill. Lines that are
-//! not the awaited response (notifications, server requests, logs) are skipped. The app-server
-//! renews Codex's own sign-in; Lastdrop never touches `auth.json`.
+//! notification → `account/read` (3 s) → `account/rateLimits/read` (3 s) → end (stdin closed,
+//! up to `real::EXIT_GRACE` to exit by itself, then terminated). Lines that are not the awaited
+//! response (notifications, server requests, logs) are skipped. The app-server renews Codex's
+//! own sign-in, which is why it is never terminated before it had the chance to exit on its own;
+//! Lastdrop never touches `auth.json`.
 //!
 //! Wire shapes (checked against `codex app-server generate-json-schema` of codex-cli 0.162):
 //! messages omit the `"jsonrpc"` field; `account/read` answers

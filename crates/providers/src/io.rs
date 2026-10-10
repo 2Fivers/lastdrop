@@ -286,7 +286,9 @@ pub trait ChildIo: Send {
     /// `ErrorKind::TimedOut` when nothing complete arrives within `timeout`.
     fn read_line(&mut self, timeout: Duration) -> io::Result<Option<String>>;
 
-    /// Kills the child (and waits for it, briefly). Idempotent.
+    /// Ends the child: closes its stdin, lets it exit by itself for a grace period
+    /// (`real::EXIT_GRACE`: `codex app-server` may be saving a renewed sign-in), then terminates
+    /// it and waits for it, briefly. Idempotent.
     fn kill(&mut self) -> io::Result<()>;
 }
 

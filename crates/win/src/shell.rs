@@ -14,9 +14,10 @@ use windows::Win32::Foundation::E_INVALIDARG;
 use windows::Win32::System::Com::CoTaskMemFree;
 use windows::Win32::System::Threading::CREATE_NEW_CONSOLE;
 use windows::Win32::UI::Shell::{
-    FOLDERID_System, KF_FLAG_DEFAULT, SHGetKnownFolderPath, ShellExecuteW,
+    FOLDERID_Profile, FOLDERID_System, KF_FLAG_DEFAULT, SHGetKnownFolderPath, ShellExecuteW,
 };
 use windows::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
+use windows::core::GUID;
 use windows::core::{Error, PCWSTR, w};
 
 /// Longest URL handed to the shell.
@@ -89,6 +90,11 @@ fn is_allowed_url(url: &str) -> bool {
 /// every token is quoted, so `&|<>^` stay literal; tokens containing `"`, `%` (which `cmd` would
 /// expand even inside quotes) or control characters are refused with `InvalidInput`. Put paths
 /// with such characters in `env` instead, which `cmd` never parses.
+///
+/// A bare `program` (`claude`) is looked up by `cmd`, which searches the current folder before
+/// `PATH`. So the console never starts in Lastdrop's own folder (which may be Downloads, where a
+/// planted `claude.cmd` would run): without `cwd` it starts in the user's profile folder, and
+/// `NoDefaultCurrentDirectoryInExePath` keeps `cmd` from searching the current folder at all.
 pub fn open_console(
     program: &OsStr,
     args: &[OsString],
@@ -98,14 +104,20 @@ pub fn open_console(
     let line = console_line(program, args)?;
     let mut command = Command::new(system_cmd()?);
     command.raw_arg("/d /v:off /s /k").raw_arg(line);
+    command.env("NoDefaultCurrentDirectoryInExePath", "1");
     for (name, value) in env {
         match value {
             Some(value) => command.env(name, value),
             None => command.env_remove(name),
         };
     }
-    if let Some(cwd) = cwd {
-        command.current_dir(cwd);
+    match cwd {
+        Some(cwd) => {
+            command.current_dir(cwd);
+        }
+        None => {
+            command.current_dir(known_folder(&FOLDERID_Profile)?);
+        }
     }
     // A GUI process has no standard handles, so std leaves STARTF_USESTDHANDLES unset and the
     // child uses its new console.
@@ -152,17 +164,22 @@ fn console_line(program: &OsStr, args: &[OsString]) -> std::io::Result<OsString>
 /// `%SystemRoot%\System32\cmd.exe` from the known-folder API (never a `cmd.exe` found next to
 /// Lastdrop or on `PATH`).
 fn system_cmd() -> std::io::Result<PathBuf> {
+    Ok(known_folder(&FOLDERID_System)?.join("cmd.exe"))
+}
+
+/// A known folder's path (`SHGetKnownFolderPath`).
+fn known_folder(id: &GUID) -> std::io::Result<PathBuf> {
     // SAFETY: returns a CoTaskMem string that is freed below after copying.
-    let path = unsafe { SHGetKnownFolderPath(&FOLDERID_System, KF_FLAG_DEFAULT, None) }
+    let path = unsafe { SHGetKnownFolderPath(id, KF_FLAG_DEFAULT, None) }
         .map_err(std::io::Error::other)?;
     // SAFETY: `path` is a valid NUL-terminated string until CoTaskMemFree.
-    let system = unsafe {
+    let folder = unsafe {
         let s = path.to_string();
         CoTaskMemFree(Some(path.0 as *const _));
         s
     }
     .map_err(std::io::Error::other)?;
-    Ok(PathBuf::from(system).join("cmd.exe"))
+    Ok(PathBuf::from(folder))
 }
 
 #[cfg(test)]
@@ -234,6 +251,13 @@ mod tests {
         }
         assert!(console_line(OsStr::new(""), &[]).is_err());
         assert!(console_line(OsStr::new("co\"dex"), &[]).is_err());
+    }
+
+    #[test]
+    fn the_console_starts_in_the_profile_folder() {
+        let profile = known_folder(&FOLDERID_Profile).expect("profile");
+        assert!(profile.is_absolute());
+        assert!(profile.is_dir());
     }
 
     #[test]
