@@ -48,7 +48,6 @@ fn every_layout_file_parses_and_is_named_after_its_file() {
 }
 
 #[test]
-#[ignore = "M1 implementation"]
 fn placement_matches_every_recorded_layout() {
     for (path, case) in cases() {
         let got = place(&case.geometry, &case.layout, &case.prefs);

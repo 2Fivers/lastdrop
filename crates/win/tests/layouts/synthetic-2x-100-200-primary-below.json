@@ -1,0 +1,75 @@
+{
+  "name": "synthetic-2x-100-200-primary-below",
+  "description": "A 200 % primary monitor below a 100 % one (y 1080–3240)",
+  "synthetic": true,
+  "geometry": {
+    "monitor": {
+      "left": 0,
+      "top": 1080,
+      "right": 3840,
+      "bottom": 3240
+    },
+    "work_area": {
+      "left": 0,
+      "top": 1080,
+      "right": 3840,
+      "bottom": 3144
+    },
+    "taskbar": {
+      "left": 0,
+      "top": 3144,
+      "right": 3840,
+      "bottom": 3240
+    },
+    "notification_area": {
+      "left": 3200,
+      "top": 3144,
+      "right": 3840,
+      "bottom": 3240
+    },
+    "chevron": null,
+    "dpi": 192,
+    "edge": "Bottom",
+    "alignment": "Center",
+    "auto_hide": false,
+    "fullscreen_app": false,
+    "app_buttons": {
+      "rightmost_right": 2400
+    }
+  },
+  "layout": {
+    "scale": 2.0,
+    "slot_h": 80,
+    "row_h": 32,
+    "y_row1": 8,
+    "y_row2": 40,
+    "y_single": 24,
+    "x_glyph": null,
+    "x_label": 12,
+    "label_w": 33,
+    "x_bar": 57,
+    "bar_w": 80,
+    "x_right": 149,
+    "right_w": 157,
+    "compact_w": 105,
+    "value_box_w": 48,
+    "time_x": 60,
+    "width_rows": 318,
+    "width_compact": 266
+  },
+  "prefs": {
+    "content": "TwoRows",
+    "previous": "TwoRows"
+  },
+  "expected": {
+    "Docked": {
+      "rect": {
+        "left": 2874,
+        "top": 3152,
+        "right": 3192,
+        "bottom": 3232
+      },
+      "form": "TwoRows"
+    }
+  }
+}

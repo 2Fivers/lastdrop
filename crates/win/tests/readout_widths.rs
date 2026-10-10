@@ -5,6 +5,15 @@
 use lastdrop_core::readout::layout::BalanceWidthInputs;
 use lastdrop_core::readout::{WidthInputs, compute_layout};
 use lastdrop_win::render::{RenderFactory, TextMeasurer};
+use windows::Win32::System::Com::{COINIT_APARTMENTTHREADED, CoInitializeEx};
+
+/// The factories of the test thread (COM must be initialized on the thread, as on the readout
+/// and main threads).
+fn factory() -> RenderFactory {
+    // SAFETY: initializes COM on the test thread; S_FALSE (already initialized) is fine.
+    let _ = unsafe { CoInitializeEx(None, COINIT_APARTMENTTHREADED) };
+    RenderFactory::new().expect("factories")
+}
 
 fn strings(list: &[&str]) -> Vec<String> {
     list.iter().map(|s| (*s).to_owned()).collect()
@@ -43,9 +52,8 @@ fn inputs(labels: &[&str], glyph_column: bool) -> WidthInputs {
 }
 
 #[test]
-#[ignore = "M1 implementation"]
 fn widths_at_100_percent_match_r6_3() {
-    let factory = RenderFactory::new().expect("factories");
+    let factory = factory();
     let measure = TextMeasurer::new(&factory);
 
     let one_service = compute_layout(&inputs(&["5h", "Wk"], false), 1.0, &measure);
@@ -64,11 +72,10 @@ fn widths_at_100_percent_match_r6_3() {
 }
 
 #[test]
-#[ignore = "M1 implementation"]
 fn widths_scale_per_constant_at_125_percent() {
     // R§0: each constant converts on its own (6 → 8, 40 → 50, 12 → 15, 4 → 5); text is measured
     // at the em size × 1.25 and ceiled. The sum must equal the sum of the converted parts.
-    let factory = RenderFactory::new().expect("factories");
+    let factory = factory();
     let measure = TextMeasurer::new(&factory);
     let mut inputs = inputs(&["5h", "Wk", "Cr"], true);
     inputs.balance = Some(BalanceWidthInputs {

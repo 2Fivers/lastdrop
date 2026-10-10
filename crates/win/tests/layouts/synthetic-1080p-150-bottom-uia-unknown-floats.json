@@ -1,0 +1,73 @@
+{
+  "name": "synthetic-1080p-150-bottom-uia-unknown-floats",
+  "description": "Floating at 150 %: 6 px above the taskbar",
+  "synthetic": true,
+  "geometry": {
+    "monitor": {
+      "left": 0,
+      "top": 0,
+      "right": 1920,
+      "bottom": 1080
+    },
+    "work_area": {
+      "left": 0,
+      "top": 0,
+      "right": 1920,
+      "bottom": 1008
+    },
+    "taskbar": {
+      "left": 0,
+      "top": 1008,
+      "right": 1920,
+      "bottom": 1080
+    },
+    "notification_area": {
+      "left": 1500,
+      "top": 1008,
+      "right": 1920,
+      "bottom": 1080
+    },
+    "chevron": null,
+    "dpi": 144,
+    "edge": "Bottom",
+    "alignment": "Center",
+    "auto_hide": false,
+    "fullscreen_app": false,
+    "app_buttons": null
+  },
+  "layout": {
+    "scale": 1.5,
+    "slot_h": 60,
+    "row_h": 24,
+    "y_row1": 6,
+    "y_row2": 30,
+    "y_single": 18,
+    "x_glyph": null,
+    "x_label": 9,
+    "label_w": 25,
+    "x_bar": 43,
+    "bar_w": 60,
+    "x_right": 112,
+    "right_w": 118,
+    "compact_w": 79,
+    "value_box_w": 36,
+    "time_x": 45,
+    "width_rows": 239,
+    "width_compact": 200
+  },
+  "prefs": {
+    "content": "TwoRows",
+    "previous": "TwoRows"
+  },
+  "expected": {
+    "Floating": {
+      "rect": {
+        "left": 1255,
+        "top": 942,
+        "right": 1494,
+        "bottom": 1002
+      },
+      "form": "TwoRows"
+    }
+  }
+}

@@ -1,0 +1,75 @@
+{
+  "name": "synthetic-2160p-150-bottom-left-aligned",
+  "description": "3840×2160 at 150 %, left-aligned buttons ending at x 900: two rows 239 px wide, 60 px slot",
+  "synthetic": true,
+  "geometry": {
+    "monitor": {
+      "left": 0,
+      "top": 0,
+      "right": 3840,
+      "bottom": 2160
+    },
+    "work_area": {
+      "left": 0,
+      "top": 0,
+      "right": 3840,
+      "bottom": 2088
+    },
+    "taskbar": {
+      "left": 0,
+      "top": 2088,
+      "right": 3840,
+      "bottom": 2160
+    },
+    "notification_area": {
+      "left": 3400,
+      "top": 2088,
+      "right": 3840,
+      "bottom": 2160
+    },
+    "chevron": null,
+    "dpi": 144,
+    "edge": "Bottom",
+    "alignment": "Left",
+    "auto_hide": false,
+    "fullscreen_app": false,
+    "app_buttons": {
+      "rightmost_right": 900
+    }
+  },
+  "layout": {
+    "scale": 1.5,
+    "slot_h": 60,
+    "row_h": 24,
+    "y_row1": 6,
+    "y_row2": 30,
+    "y_single": 18,
+    "x_glyph": null,
+    "x_label": 9,
+    "label_w": 25,
+    "x_bar": 43,
+    "bar_w": 60,
+    "x_right": 112,
+    "right_w": 118,
+    "compact_w": 79,
+    "value_box_w": 36,
+    "time_x": 45,
+    "width_rows": 239,
+    "width_compact": 200
+  },
+  "prefs": {
+    "content": "TwoRows",
+    "previous": "TwoRows"
+  },
+  "expected": {
+    "Docked": {
+      "rect": {
+        "left": 3155,
+        "top": 2094,
+        "right": 3394,
+        "bottom": 2154
+      },
+      "form": "TwoRows"
+    }
+  }
+}
