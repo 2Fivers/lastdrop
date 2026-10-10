@@ -1,8 +1,9 @@
 #!/bin/sh
 # build.sh <readout|flyout|both>: generate the final mocks, measure page height, render PNGs.
-S="${TMPDIR:-/tmp}/lastdrop-final"
-F="F:/Homelab/Sites/2Fivers/lastdrop/docs/design/final"
-FW='F:\Homelab\Sites\2Fivers\lastdrop\docs\design\final'
+# Run from Git Bash. S = this tools folder, F = docs/design/final (POSIX), FW = the same as a Windows path.
+S="$(cd "$(dirname "$0")" && pwd)"
+F="$(cygpath -m "$(cd "$S/.." && pwd)")"   # F:/... form, which both Git Bash and Edge's file:/// accept
+FW="$(cygpath -w "$F")"
 EDGE="/c/Program Files (x86)/Microsoft/Edge/Application/msedge.exe"
 cd "$S" || exit 1
 height() {
