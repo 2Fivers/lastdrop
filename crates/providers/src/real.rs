@@ -4,16 +4,21 @@
 //! `lastdrop-win::credentials`, adapted to [`crate::io::Secrets`] by the app.
 
 use std::ffi::OsString;
+use std::fmt;
 use std::fs::File;
-use std::io::{self, BufReader, Read, Seek, SeekFrom};
+use std::io::{self, BufRead, BufReader, Read, Seek, SeekFrom};
+use std::os::windows::io::OwnedHandle;
+use std::os::windows::process::CommandExt;
 use std::path::{Path, PathBuf};
+use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
+use std::sync::mpsc::{self, Receiver, RecvTimeoutError, SyncSender};
 use std::time::Duration;
 
 use jiff::Timestamp;
 
 use crate::io::{
-    ChildIo, Clock, DirEntry, Env, FileMeta, Fs, Http, HttpError, HttpRequest, HttpResponse,
-    SpawnSpec, Spawner, wildcard_match,
+    ChildIo, Clock, DirEntry, Env, FileMeta, Fs, HeaderValue, Http, HttpError, HttpRequest,
+    HttpResponse, MAX_BODY_BYTES, Method, SpawnSpec, Spawner, wildcard_match,
 };
 
 /// The system clock.
@@ -120,17 +125,31 @@ impl Fs for RealFs {
     }
 }
 
+// ---- HTTP ---------------------------------------------------------------------------------------
+
 /// The blocking HTTP client: `ureq` with native-tls (SChannel) and the Windows root store, no
 /// redirects (a redirect off the documented endpoint is an error), 4xx/5xx returned as
 /// responses, bodies capped at [`crate::io::MAX_BODY_BYTES`].
+///
+/// Only `https://` URLs are sent. Header values marked [`HeaderValue::Secret`] are sent as
+/// sensitive `http` header values and never appear in this type's errors or logs (ureq's own
+/// debug log redacts every header outside a short allow-list).
+///
+/// Needs ureq's `native-tls` feature: with only `native-tls-no-default` ureq compiles no TLS
+/// connector and panics on the first `https://` request (an abort in release builds).
 pub struct UreqHttp {
-    #[expect(dead_code, reason = "read by request() once implemented (M1)")]
     agent: ureq::Agent,
 }
 
 impl UreqHttp {
     /// `User-Agent: Lastdrop/<version>`.
     pub fn new() -> UreqHttp {
+        UreqHttp::with_proxy(ureq::Proxy::try_from_env())
+    }
+
+    /// The client with an explicit proxy (`new` reads the usual `*_PROXY` variables); tests use
+    /// `None` so a proxy set on the machine cannot capture their loopback requests.
+    fn with_proxy(proxy: Option<ureq::Proxy>) -> UreqHttp {
         use ureq::tls::{RootCerts, TlsConfig, TlsProvider};
         let tls = TlsConfig::builder()
             .provider(TlsProvider::NativeTls)
@@ -140,6 +159,7 @@ impl UreqHttp {
             .tls_config(tls)
             .http_status_as_error(false)
             .max_redirects(0)
+            .proxy(proxy)
             .user_agent(concat!("Lastdrop/", env!("CARGO_PKG_VERSION")))
             .build();
         UreqHttp {
@@ -154,28 +174,967 @@ impl Default for UreqHttp {
     }
 }
 
-impl Http for UreqHttp {
-    #[expect(unused_variables, reason = "M1 contract stub")]
-    fn request(&self, request: &HttpRequest) -> Result<HttpResponse, HttpError> {
-        todo!("M1: send with ureq, per-request timeout, map transport errors to HttpError")
+impl fmt::Debug for UreqHttp {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("UreqHttp")
     }
 }
+
+/// `https://` only. Unit tests may also talk plain HTTP to a server of their own on the
+/// loopback address.
+fn scheme_allowed(url: &str) -> bool {
+    let lower = url.get(..8).map(str::to_ascii_lowercase);
+    if lower.as_deref() == Some("https://") {
+        return true;
+    }
+    cfg!(test) && url.starts_with("http://127.0.0.1:")
+}
+
+/// Adds the request's headers; secret values are marked sensitive. Errors name the header,
+/// never its value.
+fn with_headers<B>(
+    mut builder: ureq::RequestBuilder<B>,
+    headers: &[(String, HeaderValue)],
+) -> Result<ureq::RequestBuilder<B>, HttpError> {
+    use ureq::http::{HeaderName, HeaderValue as WireValue};
+    for (name, value) in headers {
+        let wire_name = HeaderName::from_bytes(name.as_bytes())
+            .map_err(|_| HttpError::Other(format!("invalid header name {name:?}")))?;
+        let mut wire_value = WireValue::from_str(value.as_str())
+            .map_err(|_| HttpError::Other(format!("invalid value for header {name}")))?;
+        wire_value.set_sensitive(matches!(value, HeaderValue::Secret(_)));
+        builder = builder.header(wire_name, wire_value);
+    }
+    Ok(builder)
+}
+
+/// Classifies a ureq failure. The texts carry no header values (ureq's errors never include
+/// them) and no body.
+fn map_ureq_error(error: ureq::Error) -> HttpError {
+    match error {
+        ureq::Error::Timeout(_) => HttpError::Timeout,
+        ureq::Error::HostNotFound | ureq::Error::ConnectionFailed => HttpError::Unreachable,
+        ureq::Error::BodyExceedsLimit(_) => HttpError::TooLarge,
+        ureq::Error::Tls(text) => HttpError::Tls(text.to_owned()),
+        ureq::Error::Io(e) => map_io_error(&e),
+        other => {
+            let text = other.to_string();
+            // native-tls and certificate errors exist only with ureq's `native-tls` feature;
+            // recognise them by their prefix so this compiles with any feature set.
+            if text.starts_with("native-tls") || text.starts_with("der:") {
+                HttpError::Tls(text)
+            } else {
+                HttpError::Other(text)
+            }
+        }
+    }
+}
+
+fn map_io_error(e: &io::Error) -> HttpError {
+    use io::ErrorKind as K;
+    match e.kind() {
+        K::TimedOut | K::WouldBlock => HttpError::Timeout,
+        K::ConnectionRefused
+        | K::AddrNotAvailable
+        | K::NetworkUnreachable
+        | K::HostUnreachable
+        | K::NetworkDown
+        | K::NotConnected => HttpError::Unreachable,
+        _ => HttpError::Other(format!("I/O: {e}")),
+    }
+}
+
+impl Http for UreqHttp {
+    fn request(&self, request: &HttpRequest) -> Result<HttpResponse, HttpError> {
+        if !scheme_allowed(&request.url) {
+            return Err(HttpError::Other(
+                "only https:// URLs are allowed".to_owned(),
+            ));
+        }
+        if request.timeout.is_zero() {
+            return Err(HttpError::Timeout);
+        }
+        let timeout = Some(request.timeout);
+        let url = request.url.as_str();
+        let result = match request.method {
+            Method::Get => {
+                if request.body.is_some() {
+                    return Err(HttpError::Other("a GET request has no body".to_owned()));
+                }
+                let builder = self.agent.get(url).config().timeout_global(timeout).build();
+                with_headers(builder, &request.headers)?.call()
+            }
+            Method::Post => {
+                let builder = self
+                    .agent
+                    .post(url)
+                    .config()
+                    .timeout_global(timeout)
+                    .build();
+                let body: &[u8] = request.body.as_deref().unwrap_or_default();
+                with_headers(builder, &request.headers)?.send(body)
+            }
+        };
+        let mut response = result.map_err(map_ureq_error)?;
+        let status = response.status().as_u16();
+        let headers = response
+            .headers()
+            .iter()
+            .map(|(name, value)| {
+                (
+                    name.as_str().to_owned(),
+                    String::from_utf8_lossy(value.as_bytes()).into_owned(),
+                )
+            })
+            .collect();
+        let body = response
+            .body_mut()
+            .with_config()
+            .limit(MAX_BODY_BYTES)
+            .read_to_vec()
+            .map_err(map_ureq_error)?;
+        log::debug!("HTTP {:?} {} -> {status}", request.method, request.url);
+        Ok(HttpResponse {
+            status,
+            headers,
+            body,
+        })
+    }
+}
+
+// ---- Processes ----------------------------------------------------------------------------------
 
 /// Starts processes with `CREATE_NO_WINDOW` (0x0800_0000) through
 /// `std::os::windows::process::CommandExt`, piped stdin/stdout, stderr to null. A reader thread
 /// per child turns stdout into lines so [`ChildIo::read_line`] can time out.
+///
+/// Every child is put in its own Job Object with `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`: killing
+/// the child terminates the job (the child and everything it started), and if Lastdrop exits or
+/// crashes the kernel closes the job handle and kills them too. The child joins the job a few
+/// microseconds after it is created (std cannot start it suspended); in that window it is still
+/// being loaded, so in practice nothing it starts escapes the job. If no job can be created or
+/// assigned, the child is still killed on its own ([`Child::kill`]) and a warning is logged.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct RealSpawner;
 
 /// `CREATE_NO_WINDOW` process creation flag.
 pub const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
+/// Longest stdout line passed on, 1 MiB (as [`MAX_BODY_BYTES`]); a longer line is reported as
+/// `ErrorKind::InvalidData` and skipped.
+const MAX_LINE_BYTES: usize = 1 << 20;
+
+/// Lines buffered between the reader thread and [`ChildIo::read_line`]; when full, the reader
+/// waits, so a chatty child cannot grow our memory.
+const LINE_QUEUE: usize = 16;
+
+/// How long [`ChildIo::kill`] waits for the child to exit.
+const KILL_WAIT: Duration = Duration::from_secs(2);
+
 impl Spawner for RealSpawner {
-    #[expect(unused_variables, reason = "M1 contract stub")]
     fn spawn(&self, spec: &SpawnSpec) -> io::Result<Box<dyn ChildIo>> {
-        todo!("M1: std::process::Command + CREATE_NO_WINDOW + line reader thread")
+        Ok(Box::new(spawn_child(spec)?))
+    }
+}
+
+/// Starts `spec` in its own kill-on-close job with the stdout reader thread running.
+fn spawn_child(spec: &SpawnSpec) -> io::Result<RealChild> {
+    let mut command = Command::new(&spec.program);
+    command
+        .args(&spec.args)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .creation_flags(CREATE_NO_WINDOW);
+    for (name, value) in &spec.env {
+        match value {
+            Some(value) => command.env(name, value),
+            None => command.env_remove(name),
+        };
+    }
+    if let Some(cwd) = &spec.cwd {
+        command.current_dir(cwd);
+    }
+    let label = program_label(&spec.program);
+
+    // The job exists before the child so a failure here cannot leave a child behind.
+    let job = match job::kill_on_close() {
+        Ok(job) => Some(job),
+        Err(e) => {
+            log::warn!("{label}: no job object ({e}); the child is killed on its own");
+            None
+        }
+    };
+    let mut child = command.spawn()?;
+    let job = job.and_then(|job| match job::assign(&job, &child) {
+        Ok(()) => Some(job),
+        Err(e) => {
+            log::warn!("{label}: not in a job object ({e}); the child is killed on its own");
+            None
+        }
+    });
+
+    let (Some(stdout), Some(stdin)) = (child.stdout.take(), child.stdin.take()) else {
+        // Both are piped above, so this does not happen; never leave the child running.
+        let _ = child.kill();
+        let _ = child.wait();
+        return Err(io::Error::other("child pipes missing"));
+    };
+    let (sender, lines) = mpsc::sync_channel(LINE_QUEUE);
+    let mut real = RealChild {
+        child,
+        stdin: Some(stdin),
+        lines,
+        job,
+        killed: false,
+        label,
+    };
+    let reader = std::thread::Builder::new()
+        .name("lastdrop-child-stdout".to_owned())
+        .spawn(move || read_lines(stdout, &sender));
+    if let Err(e) = reader {
+        let _ = real.kill();
+        return Err(e);
+    }
+    log::debug!("{}: started", real.label);
+    Ok(real)
+}
+
+/// The program's file name, for logs (no arguments, no folders).
+fn program_label(program: &Path) -> String {
+    program
+        .file_name()
+        .map_or_else(|| "child".to_owned(), |n| n.to_string_lossy().into_owned())
+}
+
+/// A running child with piped stdin/stdout. Dropping it kills the child.
+struct RealChild {
+    child: Child,
+    stdin: Option<ChildStdin>,
+    lines: Receiver<io::Result<String>>,
+    job: Option<OwnedHandle>,
+    killed: bool,
+    label: String,
+}
+
+impl ChildIo for RealChild {
+    fn write_line(&mut self, line: &str) -> io::Result<()> {
+        use std::io::Write as _;
+        if line.contains(['\n', '\r']) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "a line must not contain a line break",
+            ));
+        }
+        let stdin = self
+            .stdin
+            .as_mut()
+            .ok_or_else(|| io::Error::new(io::ErrorKind::BrokenPipe, "child killed"))?;
+        let mut buf = Vec::with_capacity(line.len() + 1);
+        buf.extend_from_slice(line.as_bytes());
+        buf.push(b'\n');
+        stdin.write_all(&buf)?;
+        stdin.flush()
+    }
+
+    fn read_line(&mut self, timeout: Duration) -> io::Result<Option<String>> {
+        if self.killed {
+            return Ok(None);
+        }
+        match self.lines.recv_timeout(timeout) {
+            Ok(Ok(line)) => Ok(Some(line)),
+            Ok(Err(e)) => Err(e),
+            Err(RecvTimeoutError::Timeout) => Err(io::Error::new(
+                io::ErrorKind::TimedOut,
+                "no complete line from the child in time",
+            )),
+            Err(RecvTimeoutError::Disconnected) => Ok(None),
+        }
+    }
+
+    fn kill(&mut self) -> io::Result<()> {
+        if self.killed {
+            return Ok(());
+        }
+        self.killed = true;
+        // Closing stdin first lets a child that waits for input see the end of it.
+        self.stdin = None;
+        let via_job = self
+            .job
+            .as_ref()
+            .is_some_and(|job| job::terminate(job).is_ok());
+        if !via_job {
+            match self.child.kill() {
+                Ok(()) => {}
+                // Already exited.
+                Err(e) if e.kind() == io::ErrorKind::InvalidInput => {}
+                Err(e) => return Err(e),
+            }
+        }
+        let exited = job::wait(&self.child, KILL_WAIT)?;
+        // Collects the exit status; the process object is released when `child` drops.
+        let _ = self.child.try_wait();
+        // Closing the job kills anything of the child's that is still running.
+        self.job = None;
+        if exited {
+            log::debug!("{}: stopped", self.label);
+            Ok(())
+        } else {
+            log::warn!("{}: did not exit within {KILL_WAIT:?}", self.label);
+            Err(io::Error::new(
+                io::ErrorKind::TimedOut,
+                "child did not exit after kill",
+            ))
+        }
+    }
+}
+
+impl Drop for RealChild {
+    fn drop(&mut self) {
+        if let Err(e) = self.kill() {
+            log::warn!("{}: kill on drop failed: {e}", self.label);
+        }
+    }
+}
+
+/// The reader thread: stdout → complete lines (without `\r\n`) → channel. Ends at end of stream,
+/// on a read error (sent on) or when the receiver is gone.
+fn read_lines(stdout: ChildStdout, sender: &SyncSender<io::Result<String>>) {
+    let mut reader = BufReader::new(stdout);
+    let mut buf = Vec::new();
+    loop {
+        let item = match read_capped_line(&mut reader, &mut buf, MAX_LINE_BYTES) {
+            Ok(LineRead::Eof) => return,
+            Ok(LineRead::Line) => {
+                while buf.last().is_some_and(|&b| b == b'\n' || b == b'\r') {
+                    buf.pop();
+                }
+                Ok(String::from_utf8_lossy(&buf).into_owned())
+            }
+            Ok(LineRead::TooLong) => Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "child output line longer than 1 MiB",
+            )),
+            Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
+            Err(e) => {
+                let _ = sender.send(Err(e));
+                return;
+            }
+        };
+        if sender.send(item).is_err() {
+            return;
+        }
+    }
+}
+
+/// What [`read_capped_line`] found.
+#[derive(Debug, PartialEq, Eq)]
+enum LineRead {
+    /// A line in `buf` (with its `\n`, or the last bytes before end of stream).
+    Line,
+    /// A line longer than the cap; its bytes were skipped up to and including the `\n`.
+    TooLong,
+    /// End of stream, nothing read.
+    Eof,
+}
+
+/// Reads one line into `buf` (cleared first) without ever holding more than `cap` bytes of it.
+fn read_capped_line(
+    reader: &mut impl BufRead,
+    buf: &mut Vec<u8>,
+    cap: usize,
+) -> io::Result<LineRead> {
+    buf.clear();
+    let mut too_long = false;
+    let mut read_any = false;
+    loop {
+        let available = reader.fill_buf()?;
+        if available.is_empty() {
+            return Ok(match (read_any, too_long) {
+                (false, _) => LineRead::Eof,
+                (true, true) => LineRead::TooLong,
+                (true, false) => LineRead::Line,
+            });
+        }
+        read_any = true;
+        let (chunk, done) = match available.iter().position(|&b| b == b'\n') {
+            Some(i) => (&available[..=i], true),
+            None => (available, false),
+        };
+        let used = chunk.len();
+        if !too_long {
+            if buf.len() + chunk.len() > cap {
+                too_long = true;
+                buf.clear();
+            } else {
+                buf.extend_from_slice(chunk);
+            }
+        }
+        reader.consume(used);
+        if done {
+            return Ok(if too_long {
+                LineRead::TooLong
+            } else {
+                LineRead::Line
+            });
+        }
     }
 }
 
 /// Default timeout of one HTTP call when the provider does not say (**not from the spec**).
 pub const DEFAULT_HTTP_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// The few kernel32 calls for Job Objects. Declared here because `lastdrop-providers` has no
+/// `windows` dependency (docs/ARCHITECTURE.md: Win32 lives in `lastdrop-win`; this is process
+/// management, not windows).
+mod job {
+    use std::ffi::c_void;
+    use std::io;
+    use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle, RawHandle};
+    use std::process::Child;
+    use std::time::Duration;
+
+    /// `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`.
+    const JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE: u32 = 0x0000_2000;
+    /// `JobObjectExtendedLimitInformation` (JOBOBJECTINFOCLASS).
+    const JOB_OBJECT_EXTENDED_LIMIT_INFORMATION: i32 = 9;
+    /// `JobObjectBasicAccountingInformation` (JOBOBJECTINFOCLASS).
+    #[cfg(test)]
+    const JOB_OBJECT_BASIC_ACCOUNTING_INFORMATION: i32 = 1;
+    /// `WAIT_OBJECT_0`.
+    const WAIT_OBJECT_0: u32 = 0;
+    /// `WAIT_TIMEOUT`.
+    const WAIT_TIMEOUT: u32 = 0x0000_0102;
+
+    /// `JOBOBJECT_BASIC_LIMIT_INFORMATION`.
+    #[repr(C)]
+    #[derive(Default)]
+    pub(super) struct BasicLimitInformation {
+        pub per_process_user_time_limit: i64,
+        pub per_job_user_time_limit: i64,
+        pub limit_flags: u32,
+        pub minimum_working_set_size: usize,
+        pub maximum_working_set_size: usize,
+        pub active_process_limit: u32,
+        pub affinity: usize,
+        pub priority_class: u32,
+        pub scheduling_class: u32,
+    }
+
+    /// `IO_COUNTERS`.
+    #[repr(C)]
+    #[derive(Default)]
+    pub(super) struct IoCounters {
+        pub read_operation_count: u64,
+        pub write_operation_count: u64,
+        pub other_operation_count: u64,
+        pub read_transfer_count: u64,
+        pub write_transfer_count: u64,
+        pub other_transfer_count: u64,
+    }
+
+    /// `JOBOBJECT_EXTENDED_LIMIT_INFORMATION`.
+    #[repr(C)]
+    #[derive(Default)]
+    pub(super) struct ExtendedLimitInformation {
+        pub basic_limit_information: BasicLimitInformation,
+        pub io_info: IoCounters,
+        pub process_memory_limit: usize,
+        pub job_memory_limit: usize,
+        pub peak_process_memory_used: usize,
+        pub peak_job_memory_used: usize,
+    }
+
+    /// `JOBOBJECT_BASIC_ACCOUNTING_INFORMATION`.
+    #[cfg(test)]
+    #[repr(C)]
+    #[derive(Default)]
+    pub(super) struct BasicAccountingInformation {
+        pub total_user_time: i64,
+        pub total_kernel_time: i64,
+        pub this_period_total_user_time: i64,
+        pub this_period_total_kernel_time: i64,
+        pub total_page_fault_count: u32,
+        pub total_processes: u32,
+        pub active_processes: u32,
+        pub total_terminated_processes: u32,
+    }
+
+    #[link(name = "kernel32")]
+    unsafe extern "system" {
+        fn CreateJobObjectW(attributes: *const c_void, name: *const u16) -> RawHandle;
+        fn SetInformationJobObject(
+            job: RawHandle,
+            class: i32,
+            info: *const c_void,
+            info_len: u32,
+        ) -> i32;
+        fn AssignProcessToJobObject(job: RawHandle, process: RawHandle) -> i32;
+        fn TerminateJobObject(job: RawHandle, exit_code: u32) -> i32;
+        fn WaitForSingleObject(handle: RawHandle, milliseconds: u32) -> u32;
+        #[cfg(test)]
+        fn QueryInformationJobObject(
+            job: RawHandle,
+            class: i32,
+            info: *mut c_void,
+            info_len: u32,
+            return_len: *mut u32,
+        ) -> i32;
+    }
+
+    fn check(ok: i32) -> io::Result<()> {
+        if ok == 0 {
+            Err(io::Error::last_os_error())
+        } else {
+            Ok(())
+        }
+    }
+
+    /// A new anonymous job whose processes are killed when its last handle closes.
+    pub(super) fn kill_on_close() -> io::Result<OwnedHandle> {
+        // SAFETY: both pointers may be null (default security, no name); the call has no other
+        // preconditions.
+        let raw = unsafe { CreateJobObjectW(std::ptr::null(), std::ptr::null()) };
+        if raw.is_null() {
+            return Err(io::Error::last_os_error());
+        }
+        // SAFETY: `raw` is a valid job handle that we own exclusively from here on.
+        let job = unsafe { OwnedHandle::from_raw_handle(raw) };
+        let mut info = ExtendedLimitInformation::default();
+        info.basic_limit_information.limit_flags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+        let len = u32::try_from(size_of::<ExtendedLimitInformation>())
+            .map_err(|_| io::Error::other("job information too large"))?;
+        // SAFETY: `job` is a live job handle; `info` is a properly laid out
+        // JOBOBJECT_EXTENDED_LIMIT_INFORMATION of `len` bytes that outlives the call.
+        check(unsafe {
+            SetInformationJobObject(
+                job.as_raw_handle(),
+                JOB_OBJECT_EXTENDED_LIMIT_INFORMATION,
+                (&raw const info).cast(),
+                len,
+            )
+        })?;
+        Ok(job)
+    }
+
+    /// Puts `child` in `job`.
+    pub(super) fn assign(job: &OwnedHandle, child: &Child) -> io::Result<()> {
+        // SAFETY: both handles are live for the duration of the call (borrowed from owners).
+        check(unsafe { AssignProcessToJobObject(job.as_raw_handle(), child.as_raw_handle()) })
+    }
+
+    /// Terminates every process in `job`.
+    pub(super) fn terminate(job: &OwnedHandle) -> io::Result<()> {
+        // SAFETY: `job` is a live job handle borrowed from its owner.
+        check(unsafe { TerminateJobObject(job.as_raw_handle(), 1) })
+    }
+
+    /// Waits up to `timeout` for `child` to exit; `Ok(true)` when it has.
+    pub(super) fn wait(child: &Child, timeout: Duration) -> io::Result<bool> {
+        let ms = u32::try_from(timeout.as_millis()).unwrap_or(u32::MAX - 1);
+        // SAFETY: the process handle is live while `child` is borrowed.
+        match unsafe { WaitForSingleObject(child.as_raw_handle(), ms) } {
+            WAIT_OBJECT_0 => Ok(true),
+            WAIT_TIMEOUT => Ok(false),
+            _ => Err(io::Error::last_os_error()),
+        }
+    }
+
+    /// The number of processes alive in `job` (tests).
+    #[cfg(test)]
+    pub(super) fn active_processes(job: &OwnedHandle) -> io::Result<u32> {
+        let mut info = BasicAccountingInformation::default();
+        let len = u32::try_from(size_of::<BasicAccountingInformation>())
+            .map_err(|_| io::Error::other("job information too large"))?;
+        // SAFETY: `job` is live; `info` is a writable JOBOBJECT_BASIC_ACCOUNTING_INFORMATION of
+        // `len` bytes; the returned-length pointer may be null.
+        check(unsafe {
+            QueryInformationJobObject(
+                job.as_raw_handle(),
+                JOB_OBJECT_BASIC_ACCOUNTING_INFORMATION,
+                (&raw mut info).cast(),
+                len,
+                std::ptr::null_mut(),
+            )
+        })?;
+        Ok(info.active_processes)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::ffi::OsString;
+    use std::io::{BufRead, BufReader, Read, Write};
+    use std::net::{TcpListener, TcpStream};
+    use std::path::PathBuf;
+    use std::thread::JoinHandle;
+    use std::time::{Duration, Instant};
+
+    use lastdrop_core::secret::SecretString;
+
+    use super::{LineRead, RealSpawner, UreqHttp, job, read_capped_line, spawn_child};
+    use crate::io::{
+        ChildIo, HeaderValue, Http, HttpError, HttpRequest, MAX_BODY_BYTES, Method, SpawnSpec,
+        Spawner,
+    };
+
+    // ---- HTTP against a loopback server of the test's own ---------------------------------------
+
+    /// What the loopback server received.
+    struct Received {
+        head: String,
+        body: Vec<u8>,
+    }
+
+    /// Serves one connection: reads the request, then writes `response` (unless `None`, which
+    /// holds the connection open for `hold` without answering).
+    fn serve_once(
+        response: Option<Vec<u8>>,
+        hold: Duration,
+    ) -> (String, JoinHandle<Option<Received>>) {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind loopback");
+        let port = listener.local_addr().expect("addr").port();
+        let handle = std::thread::spawn(move || {
+            let (stream, _) = listener.accept().ok()?;
+            stream.set_read_timeout(Some(Duration::from_secs(5))).ok()?;
+            let received = read_request(&stream)?;
+            let mut stream = stream;
+            match response {
+                Some(bytes) => {
+                    stream.write_all(&bytes).ok()?;
+                    stream.flush().ok()?;
+                }
+                None => std::thread::sleep(hold),
+            }
+            Some(received)
+        });
+        (format!("http://127.0.0.1:{port}"), handle)
+    }
+
+    fn read_request(stream: &TcpStream) -> Option<Received> {
+        let mut reader = BufReader::new(stream);
+        let mut head = String::new();
+        loop {
+            let mut line = String::new();
+            if reader.read_line(&mut line).ok()? == 0 {
+                return None;
+            }
+            if line == "\r\n" {
+                break;
+            }
+            head.push_str(&line);
+        }
+        let len = head
+            .lines()
+            .find_map(|l| {
+                let (k, v) = l.split_once(':')?;
+                k.eq_ignore_ascii_case("content-length")
+                    .then(|| v.trim().parse::<usize>().ok())
+                    .flatten()
+            })
+            .unwrap_or(0);
+        let mut body = vec![0; len];
+        reader.read_exact(&mut body).ok()?;
+        Some(Received { head, body })
+    }
+
+    fn client() -> UreqHttp {
+        UreqHttp::with_proxy(None)
+    }
+
+    fn get(url: String, headers: Vec<(String, HeaderValue)>) -> HttpRequest {
+        HttpRequest {
+            method: Method::Get,
+            url,
+            headers,
+            body: None,
+            timeout: Duration::from_secs(5),
+        }
+    }
+
+    #[test]
+    fn returns_status_headers_and_body_and_sends_headers() {
+        let (base, server) = serve_once(
+            Some(
+                b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nRetry-After: 7\r\n\
+                  Content-Length: 15\r\n\r\n{\"balance\": 10}"
+                    .to_vec(),
+            ),
+            Duration::ZERO,
+        );
+        let secret = SecretString::new("Bearer test-token-not-real".to_owned());
+        let request = get(
+            format!("{base}/openapi/v1/balance"),
+            vec![
+                ("Authorization".to_owned(), HeaderValue::Secret(secret)),
+                (
+                    "Accept".to_owned(),
+                    HeaderValue::Plain("application/json".to_owned()),
+                ),
+            ],
+        );
+        let response = client().request(&request).expect("response");
+        assert_eq!(response.status, 200);
+        assert_eq!(response.body, br#"{"balance": 10}"#);
+        assert_eq!(response.header("retry-after"), Some("7"));
+        assert_eq!(response.header("CONTENT-TYPE"), Some("application/json"));
+        let received = server.join().expect("server").expect("request");
+        let head = received.head.to_ascii_lowercase();
+        assert!(head.starts_with("get /openapi/v1/balance http/1.1"));
+        assert!(head.contains("authorization: bearer test-token-not-real"));
+        assert!(head.contains("accept: application/json"));
+        assert!(head.contains(&format!(
+            "user-agent: lastdrop/{}",
+            env!("CARGO_PKG_VERSION")
+        )));
+    }
+
+    #[test]
+    fn error_statuses_and_redirects_are_responses() {
+        for (raw, status) in [
+            (
+                &b"HTTP/1.1 401 Unauthorized\r\nContent-Length: 2\r\n\r\n{}"[..],
+                401,
+            ),
+            (
+                b"HTTP/1.1 503 Service Unavailable\r\nContent-Length: 0\r\n\r\n",
+                503,
+            ),
+            (
+                b"HTTP/1.1 302 Found\r\nLocation: http://127.0.0.1:1/elsewhere\r\n\
+                  Content-Length: 0\r\n\r\n",
+                302,
+            ),
+        ] {
+            let (base, server) = serve_once(Some(raw.to_vec()), Duration::ZERO);
+            let response = client()
+                .request(&get(format!("{base}/x"), Vec::new()))
+                .expect("a response, not an error");
+            assert_eq!(response.status, status);
+            server.join().expect("server").expect("request");
+        }
+    }
+
+    #[test]
+    fn posts_the_body() {
+        let (base, server) = serve_once(
+            Some(b"HTTP/1.1 204 No Content\r\n\r\n".to_vec()),
+            Duration::ZERO,
+        );
+        let request = HttpRequest {
+            method: Method::Post,
+            url: format!("{base}/rpc"),
+            headers: vec![(
+                "Content-Type".to_owned(),
+                HeaderValue::Plain("application/json".to_owned()),
+            )],
+            body: Some(br#"{"id":1}"#.to_vec()),
+            timeout: Duration::from_secs(5),
+        };
+        let response = client().request(&request).expect("response");
+        assert_eq!(response.status, 204);
+        let received = server.join().expect("server").expect("request");
+        assert!(received.head.starts_with("POST /rpc HTTP/1.1"));
+        assert_eq!(received.body, br#"{"id":1}"#);
+    }
+
+    #[test]
+    fn a_body_over_the_cap_is_too_large() {
+        let len = usize::try_from(MAX_BODY_BYTES).expect("fits") + 1;
+        let mut raw = format!("HTTP/1.1 200 OK\r\nContent-Length: {len}\r\n\r\n").into_bytes();
+        raw.resize(raw.len() + len, b'x');
+        let (base, server) = serve_once(Some(raw), Duration::ZERO);
+        let err = client()
+            .request(&get(format!("{base}/big"), Vec::new()))
+            .expect_err("too large");
+        assert_eq!(err, HttpError::TooLarge);
+        let _ = server.join();
+    }
+
+    #[test]
+    fn a_silent_server_times_out_within_the_request_timeout() {
+        let (base, server) = serve_once(None, Duration::from_secs(1));
+        let mut request = get(format!("{base}/slow"), Vec::new());
+        request.timeout = Duration::from_millis(300);
+        let started = Instant::now();
+        let err = client().request(&request).expect_err("timeout");
+        assert_eq!(err, HttpError::Timeout);
+        assert!(started.elapsed() < Duration::from_secs(2));
+        let _ = server.join();
+    }
+
+    #[test]
+    fn a_refused_connection_is_unreachable() {
+        let port = {
+            let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+            listener.local_addr().expect("addr").port()
+        };
+        let err = client()
+            .request(&get(format!("http://127.0.0.1:{port}/"), Vec::new()))
+            .expect_err("refused");
+        assert_eq!(err, HttpError::Unreachable);
+    }
+
+    #[test]
+    fn only_https_is_sent_and_a_zero_timeout_sends_nothing() {
+        for url in [
+            "http://example.invalid/",
+            "ftp://example.invalid/",
+            "balance",
+        ] {
+            let err = client()
+                .request(&get(url.to_owned(), Vec::new()))
+                .expect_err("refused scheme");
+            assert!(matches!(err, HttpError::Other(_)), "{url}: {err:?}");
+        }
+        let mut request = get("https://example.invalid/".to_owned(), Vec::new());
+        request.timeout = Duration::ZERO;
+        assert_eq!(client().request(&request), Err(HttpError::Timeout));
+    }
+
+    #[test]
+    fn invalid_headers_are_errors_that_do_not_show_the_value() {
+        let secret = SecretString::new("bad\nvalue-not-real".to_owned());
+        let request = get(
+            "http://127.0.0.1:9/".to_owned(),
+            vec![("Authorization".to_owned(), HeaderValue::Secret(secret))],
+        );
+        let err = client().request(&request).expect_err("invalid value");
+        let text = format!("{err} {err:?}");
+        assert!(text.contains("Authorization"));
+        assert!(!text.contains("value-not-real"));
+    }
+
+    /// The TLS path, against a loopback server that answers in plain text: the handshake must
+    /// fail as an error. Ignored until the workspace enables ureq's `native-tls` feature; with
+    /// only `native-tls-no-default`, ureq has no TLS connector and panics on every https request.
+    #[test]
+    #[ignore = "needs ureq's native-tls feature in the workspace Cargo.toml"]
+    fn https_fails_cleanly_against_a_server_without_tls() {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind loopback");
+        let port = listener.local_addr().expect("addr").port();
+        let server = std::thread::spawn(move || {
+            if let Ok((mut stream, _)) = listener.accept() {
+                let _ = stream.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n");
+            }
+        });
+        let mut request = get(format!("https://127.0.0.1:{port}/"), Vec::new());
+        request.timeout = Duration::from_secs(3);
+        let err = client()
+            .request(&request)
+            .expect_err("no TLS on the server");
+        assert!(
+            matches!(err, HttpError::Tls(_) | HttpError::Other(_)),
+            "{err:?}"
+        );
+        let _ = server.join();
+    }
+
+    // ---- Lines ----------------------------------------------------------------------------------
+
+    #[test]
+    fn capped_lines() {
+        let mut input: &[u8] = b"one\r\ntwo\nthree-is-long\nfour";
+        let mut buf = Vec::new();
+        assert_eq!(
+            read_capped_line(&mut input, &mut buf, 8).ok(),
+            Some(LineRead::Line)
+        );
+        assert_eq!(buf, b"one\r\n");
+        assert_eq!(
+            read_capped_line(&mut input, &mut buf, 8).ok(),
+            Some(LineRead::Line)
+        );
+        assert_eq!(buf, b"two\n");
+        assert_eq!(
+            read_capped_line(&mut input, &mut buf, 8).ok(),
+            Some(LineRead::TooLong)
+        );
+        assert_eq!(
+            read_capped_line(&mut input, &mut buf, 8).ok(),
+            Some(LineRead::Line)
+        );
+        assert_eq!(buf, b"four");
+        assert_eq!(
+            read_capped_line(&mut input, &mut buf, 8).ok(),
+            Some(LineRead::Eof)
+        );
+    }
+
+    // ---- Processes ------------------------------------------------------------------------------
+
+    fn cmd_exe() -> PathBuf {
+        let root = std::env::var_os("SystemRoot").unwrap_or_else(|| OsString::from(r"C:\Windows"));
+        PathBuf::from(root).join("System32").join("cmd.exe")
+    }
+
+    fn spec(args: &[&str]) -> SpawnSpec {
+        SpawnSpec {
+            program: cmd_exe(),
+            args: args.iter().map(OsString::from).collect(),
+            env: Vec::new(),
+            cwd: None,
+        }
+    }
+
+    fn spawn_boxed(spec: &SpawnSpec) -> Box<dyn ChildIo> {
+        RealSpawner.spawn(spec).expect("spawn cmd.exe")
+    }
+
+    #[test]
+    fn a_job_kills_the_whole_tree() {
+        // The outer cmd starts an inner cmd that waits for input: two processes in the job.
+        // (conhost.exe may be counted too.)
+        let mut child = spawn_child(&spec(&["/c", "cmd /c set /p WAIT="])).expect("spawn");
+        let job = child.job.as_ref().expect("in a job");
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while job::active_processes(job).expect("query") < 2 && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        std::thread::sleep(Duration::from_millis(300));
+        assert!(job::active_processes(job).expect("query") >= 2);
+        let job_copy = job.try_clone().expect("clone job handle");
+        child.kill().expect("kill");
+        assert_eq!(job::active_processes(&job_copy).expect("query"), 0);
+        assert!(child.child.try_wait().expect("status").is_some());
+        // Idempotent.
+        child.kill().expect("second kill");
+    }
+
+    #[test]
+    fn dropping_the_child_kills_it() {
+        let child = spawn_child(&spec(&["/c", "set /p WAIT="])).expect("spawn");
+        let job = child
+            .job
+            .as_ref()
+            .expect("in a job")
+            .try_clone()
+            .expect("clone job handle");
+        drop(child);
+        assert_eq!(job::active_processes(&job).expect("query"), 0);
+    }
+
+    #[test]
+    fn the_job_layout_matches_windows() {
+        // x64 sizes from winnt.h.
+        assert_eq!(size_of::<job::ExtendedLimitInformation>(), 144);
+        assert_eq!(size_of::<job::BasicAccountingInformation>(), 48);
+    }
+
+    #[test]
+    fn a_line_waits_for_a_write_and_times_out_without_one() {
+        let mut child = spawn_boxed(&spec(&["/v:on", "/c", "set /p LINE=&echo got:!LINE!"]));
+        let err = child
+            .read_line(Duration::from_millis(200))
+            .expect_err("nothing written yet");
+        assert_eq!(err.kind(), std::io::ErrorKind::TimedOut);
+        child.write_line("ping-1").expect("write");
+        assert_eq!(
+            child.read_line(Duration::from_secs(10)).expect("line"),
+            Some("got:ping-1".to_owned())
+        );
+        assert_eq!(child.read_line(Duration::from_secs(10)).expect("eof"), None);
+        assert!(child.write_line("two\nlines").is_err());
+        child.kill().expect("kill");
+    }
+}
