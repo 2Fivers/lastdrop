@@ -1,0 +1,390 @@
+//! The dialog process (ARCHITECTURE "Processes"): `lastdrop.exe --settings`, `--settings-pins`
+//! and `--about` show the settings window or the about window in a short-lived process of their
+//! own, which ends when its last window closes.
+//!
+//! Why a process: the tray process measured 10.1–10.3 MB private working set fresh and
+//! 11.9–12.25 MB once Settings had been opened. Slint's own caches kept only about 0.2 MB of
+//! that; the rest (about 1.4 MB) is what Windows sets up once per thread for a real decorated
+//! window with text fields (text services and IME, DWM, theme, UI Automation) and keeps for the
+//! life of the process. In a process of its own it goes away with the dialog.
+//!
+//! - The tray process starts this one with [`spawn`] and forgets it (no wait, no handles kept).
+//! - Single instance: the `Local\Lastdrop.Dialog` mutex. A second launch posts the dialog it
+//!   wants ([`DialogKind::to_wparam`]) to the running dialog process, which opens it or brings
+//!   it to the front, and exits.
+//! - What the dialog changed reaches the tray process as one posted message ([`notify`],
+//!   [`Changes`]): it re-reads `settings.json` and applies it, or lifts Meshy's sign-in stop.
+//!
+//! Threading: the main thread runs the Slint event loop and every window; the log has its own
+//! writer thread ([`crate::logger`], file `settings.log`).
+
+use std::any::Any;
+use std::cell::RefCell;
+use std::process::{ExitCode, Stdio};
+use std::time::{Duration, Instant};
+
+use lastdrop_win::single_instance::{self, Instance, InstanceGuard};
+use slint::ComponentHandle;
+use slint::winit_030::WinitWindowAccessor;
+use windows::Win32::UI::WindowsAndMessaging::{
+    AllowSetForegroundWindow, IsIconic, SW_RESTORE, SetForegroundWindow, ShowWindow,
+};
+
+use crate::persist::Paths;
+use crate::{AppError, logger, settings_window, ui, wiring};
+
+/// How long a second launch keeps trying to reach a dialog process that is just starting (no
+/// listener yet) or just ending (listener gone, mutex not yet released).
+pub const FORWARD_WAIT: Duration = Duration::from_secs(2);
+
+/// A dialog of the dialog process.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DialogKind {
+    /// `--settings`: the settings window.
+    Settings,
+    /// `--settings-pins`: the settings window scrolled to the readout's pins (tray menu
+    /// "Taskbar readout ▸ Pinned meters…", R§10).
+    SettingsPins,
+    /// `--about`: the about window (R§10 "About Lastdrop", Slint licence).
+    About,
+}
+
+impl DialogKind {
+    /// Every dialog.
+    pub const ALL: [DialogKind; 3] = [
+        DialogKind::Settings,
+        DialogKind::SettingsPins,
+        DialogKind::About,
+    ];
+
+    /// Its command-line flag.
+    pub fn flag(self) -> &'static str {
+        match self {
+            DialogKind::Settings => "--settings",
+            DialogKind::SettingsPins => "--settings-pins",
+            DialogKind::About => "--about",
+        }
+    }
+
+    /// The dialog of a command-line flag.
+    pub fn from_flag(flag: &str) -> Option<DialogKind> {
+        DialogKind::ALL.into_iter().find(|k| k.flag() == flag)
+    }
+
+    /// The `WPARAM` a second launch posts for it (never 0, so a stray message asks for nothing).
+    pub fn to_wparam(self) -> usize {
+        match self {
+            DialogKind::Settings => 1,
+            DialogKind::SettingsPins => 2,
+            DialogKind::About => 3,
+        }
+    }
+
+    /// The dialog of a posted `WPARAM`; `None` for anything else.
+    pub fn from_wparam(wparam: usize) -> Option<DialogKind> {
+        DialogKind::ALL
+            .into_iter()
+            .find(|k| k.to_wparam() == wparam)
+    }
+}
+
+/// What the dialog process changed, as the flags of the settings-changed message's `WPARAM`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Changes {
+    /// `settings.json` was written (Apply): re-read and apply it.
+    pub settings: bool,
+    /// The Meshy API key was saved or removed: lift Meshy's sign-in stop and read again.
+    pub meshy_key: bool,
+}
+
+impl Changes {
+    /// The flag of [`Changes::settings`].
+    const SETTINGS: usize = 1;
+    /// The flag of [`Changes::meshy_key`].
+    const MESHY_KEY: usize = 2;
+
+    /// The flags as a `WPARAM`.
+    pub fn to_wparam(self) -> usize {
+        let mut flags = 0;
+        if self.settings {
+            flags |= Changes::SETTINGS;
+        }
+        if self.meshy_key {
+            flags |= Changes::MESHY_KEY;
+        }
+        flags
+    }
+
+    /// The flags of a posted `WPARAM`; unknown bits (a newer build's) are ignored.
+    pub fn from_wparam(wparam: usize) -> Changes {
+        Changes {
+            settings: wparam & Changes::SETTINGS != 0,
+            meshy_key: wparam & Changes::MESHY_KEY != 0,
+        }
+    }
+}
+
+/// From the tray process: starts `lastdrop.exe <flag>` (this executable) for `kind`, without a
+/// console and without waiting; its handles are closed at once. Passes the foreground right to
+/// it so the dialog can come to the front. A dialog process that runs already gets the request
+/// from the new one ([`run`]).
+pub fn spawn(kind: DialogKind) -> std::io::Result<()> {
+    let exe = std::env::current_exe()?;
+    let child = std::process::Command::new(exe)
+        .arg(kind.flag())
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()?;
+    let pid = child.id();
+    // Dropping the `Child` closes its process and thread handles; nothing waits for it.
+    drop(child);
+    // SAFETY: plain call. Failure only means the dialog may open behind the foreground window.
+    if let Err(e) = unsafe { AllowSetForegroundWindow(pid) } {
+        log::debug!("dialog: AllowSetForegroundWindow failed: {e}");
+    }
+    log::info!("dialog process started ({})", kind.flag());
+    Ok(())
+}
+
+/// From the dialog process: tells the tray process what changed. Not running is fine: it reads
+/// `settings.json` and Credential Manager when it starts.
+pub fn notify(changes: Changes) {
+    match single_instance::signal_settings_changed(changes.to_wparam()) {
+        Ok(true) => {}
+        Ok(false) => log::info!("Lastdrop is not running; it reads the change when it starts"),
+        Err(e) => log::warn!("cannot tell Lastdrop about the change: {e}"),
+    }
+}
+
+/// The dialog process's `main` (`lastdrop.exe --settings | --settings-pins | --about`): the
+/// dialog mutex (or the request forwarded to the dialog process that runs already), folders, its
+/// own log file, the Slint backend, the requested window, the event loop until the last window
+/// closes.
+pub fn run(kind: DialogKind) -> ExitCode {
+    let guard = match first_or_forward(kind) {
+        Ok(Some(guard)) => guard,
+        Ok(None) => return ExitCode::SUCCESS,
+        Err(_) => return ExitCode::FAILURE,
+    };
+    let Ok(paths) = Paths::from_env() else {
+        return ExitCode::FAILURE;
+    };
+    let _ = logger::init_named(&paths.logs, logger::DIALOG_STEM, log::LevelFilter::Info);
+    log::info!(
+        "Lastdrop {} dialog process starting ({})",
+        env!("CARGO_PKG_VERSION"),
+        kind.flag()
+    );
+    let code = match run_dialogs(&guard, &paths, kind) {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(e) => {
+            log::error!("{e}");
+            ExitCode::FAILURE
+        }
+    };
+    // A later launch finds no dialog process from here on and starts its own.
+    drop(guard);
+    log::info!("dialog process stopped");
+    logger::shutdown();
+    code
+}
+
+/// The dialog mutex, or `None` once the request reached the dialog process that runs already. A
+/// dialog process that is starting or ending is retried for up to [`FORWARD_WAIT`]; after that
+/// the request is dropped (the user can ask again).
+fn first_or_forward(kind: DialogKind) -> std::io::Result<Option<InstanceGuard>> {
+    let deadline = Instant::now() + FORWARD_WAIT;
+    loop {
+        match single_instance::acquire_dialog()? {
+            Instance::First(guard) => return Ok(Some(guard)),
+            Instance::Second => {
+                if single_instance::signal_dialog(kind.to_wparam())? {
+                    return Ok(None);
+                }
+            }
+        }
+        if Instant::now() >= deadline {
+            return Ok(None);
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
+/// The Slint backend, the dialog listener and the first window; then the event loop, which ends
+/// when the last window closes (Close, the title bar's ✕, About's Close).
+fn run_dialogs(guard: &InstanceGuard, paths: &Paths, kind: DialogKind) -> Result<(), AppError> {
+    wiring::select_backend()?;
+    let listen_paths = paths.clone();
+    let listener = guard.listen_for(Box::new(move |wparam| {
+        // A window procedure: open on the next turn of the event loop, never re-enter Slint.
+        let paths = listen_paths.clone();
+        slint::Timer::single_shot(Duration::ZERO, move || {
+            match DialogKind::from_wparam(wparam) {
+                Some(kind) => {
+                    log::info!("asked for {}", kind.flag());
+                    if let Err(e) = open(&paths, kind) {
+                        log::error!("{}: {e}", kind.flag());
+                    }
+                }
+                None => log::warn!("unknown dialog request {wparam}"),
+            }
+        });
+    }))?;
+    // Without a window the event loop would never end.
+    let ran = open(paths, kind).and_then(|()| Ok(slint::run_event_loop()?));
+    drop(listener);
+    // Every window is dropped here, before `main` returns, not by thread-local teardown at exit.
+    settings_window::release();
+    release_about();
+    drop_closed();
+    ran
+}
+
+/// Opens `kind`, or brings it to the front when it is open.
+fn open(paths: &Paths, kind: DialogKind) -> Result<(), AppError> {
+    match kind {
+        DialogKind::Settings => settings_window::open(paths, false),
+        DialogKind::SettingsPins => settings_window::open(paths, true),
+        DialogKind::About => open_about(),
+    }
+}
+
+/// Brings a dialog window to the front once winit has created it: restored when minimized, then
+/// `SetForegroundWindow`, which Windows allows because the tray process (or the second launch)
+/// passed its foreground right on.
+pub(crate) fn bring_to_front<T: ComponentHandle + 'static>(weak: slint::Weak<T>) {
+    let spawned = slint::spawn_local(async move {
+        let Some(window) = weak.upgrade() else {
+            return;
+        };
+        if let Err(e) = window.window().winit_window().await {
+            log::warn!("window not created: {e}");
+            return;
+        }
+        let Some(hwnd) = wiring::hwnd_of_window(window.window()) else {
+            return;
+        };
+        // SAFETY: plain calls on our own top-level window.
+        unsafe {
+            if IsIconic(hwnd).as_bool() {
+                let _ = ShowWindow(hwnd, SW_RESTORE);
+            }
+            if !SetForegroundWindow(hwnd).as_bool() {
+                log::debug!("dialog: SetForegroundWindow refused");
+            }
+        }
+    });
+    if let Err(e) = spawned {
+        log::warn!("cannot bring the window to the front: {e}");
+    }
+}
+
+thread_local! {
+    /// The about window while it is open (main thread).
+    static ABOUT: RefCell<Option<ui::AboutWindow>> = const { RefCell::new(None) };
+    /// Windows closed from their own callbacks, waiting to be dropped ([`release_later`]).
+    static CLOSED: RefCell<Vec<Box<dyn Any>>> = const { RefCell::new(Vec::new()) };
+}
+
+/// Drops a closed window (or what holds it) on the next turn of the event loop, never inside its
+/// own callback. When that closing ends the event loop, the turn never comes and [`run`] drops it
+/// after the loop instead; the timer itself holds nothing.
+pub(crate) fn release_later(closed: impl Any) {
+    CLOSED.with(|c| c.borrow_mut().push(Box::new(closed)));
+    slint::Timer::single_shot(Duration::ZERO, drop_closed);
+}
+
+/// Drops every window [`release_later`] holds.
+fn drop_closed() {
+    let closed = CLOSED.with(|c| std::mem::take(&mut *c.borrow_mut()));
+    drop(closed);
+}
+
+/// Opens the about window (R§10 "About Lastdrop", Slint licence), or brings it to the front.
+fn open_about() -> Result<(), AppError> {
+    let existing = ABOUT.with(|a| a.borrow().as_ref().map(ComponentHandle::clone_strong));
+    let window = match existing {
+        Some(window) => window,
+        None => {
+            let window = wiring::create_window(false, ui::AboutWindow::new)?;
+            window.set_version(env!("CARGO_PKG_VERSION").into());
+            window.on_dismiss(close_about);
+            window.window().on_close_requested(|| {
+                close_about();
+                slint::CloseRequestResponse::HideWindow
+            });
+            ABOUT.with(|a| *a.borrow_mut() = Some(window.clone_strong()));
+            window
+        }
+    };
+    if let Err(e) = window.show() {
+        release_about();
+        return Err(e.into());
+    }
+    bring_to_front(window.as_weak());
+    Ok(())
+}
+
+/// Closes the about window and releases it ([`release_later`]). The last window closing ends the
+/// event loop.
+fn close_about() {
+    let window = ABOUT.with(|a| a.borrow_mut().take());
+    if let Some(window) = window {
+        let _ = window.hide();
+        release_later(window);
+    }
+}
+
+/// Drops the about window (after the event loop).
+fn release_about() {
+    drop(ABOUT.with(|a| a.borrow_mut().take()));
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn dialog_requests_round_trip_through_the_wparam() {
+        for kind in DialogKind::ALL {
+            assert_eq!(DialogKind::from_wparam(kind.to_wparam()), Some(kind));
+            assert_eq!(DialogKind::from_flag(kind.flag()), Some(kind));
+            assert_ne!(kind.to_wparam(), 0, "0 asks for nothing");
+        }
+        let wparams: std::collections::BTreeSet<usize> =
+            DialogKind::ALL.iter().map(|k| k.to_wparam()).collect();
+        assert_eq!(wparams.len(), DialogKind::ALL.len(), "distinct");
+        assert_eq!(DialogKind::from_wparam(0), None);
+        assert_eq!(DialogKind::from_wparam(99), None);
+        assert_eq!(DialogKind::from_flag("--autostart"), None);
+    }
+
+    #[test]
+    fn change_flags_round_trip_and_ignore_unknown_bits() {
+        for settings in [false, true] {
+            for meshy_key in [false, true] {
+                let changes = Changes {
+                    settings,
+                    meshy_key,
+                };
+                assert_eq!(Changes::from_wparam(changes.to_wparam()), changes);
+            }
+        }
+        assert_eq!(Changes::default().to_wparam(), 0);
+        assert_eq!(
+            Changes::from_wparam(1 | 8),
+            Changes {
+                settings: true,
+                meshy_key: false
+            }
+        );
+        assert_eq!(
+            Changes::from_wparam(2),
+            Changes {
+                settings: false,
+                meshy_key: true
+            }
+        );
+    }
+}

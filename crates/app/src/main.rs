@@ -4,6 +4,10 @@
 //! locale, history, readout thread, refresh workers, Slint windows created hidden and kept alive,
 //! tray icon, minute tick, Slint event loop).
 //!
+//! `--settings`, `--settings-pins` and `--about` run the dialog process instead
+//! (`lastdrop_app::dialog`, ARCHITECTURE "Processes"): it has its own single-instance mutex and
+//! log file and never takes the app's mutex.
+//!
 //! `--preview-flyout <png>` / `--preview-hovercard <png>` are development tools that render the
 //! UI without starting the app (`lastdrop_app::preview`); they neither take the single-instance
 //! mutex nor write the log.
@@ -11,7 +15,7 @@
 
 use std::process::ExitCode;
 
-use lastdrop_app::{Args, logger, persist, preview, wiring};
+use lastdrop_app::{Args, dialog, logger, persist, preview, wiring};
 use lastdrop_win::single_instance::{self, Instance};
 
 fn main() -> ExitCode {
@@ -34,6 +38,11 @@ fn main() -> ExitCode {
                 ExitCode::FAILURE
             }
         };
+    }
+
+    // Settings and About: the short-lived dialog process, before (and without) the app's mutex.
+    if let Some(kind) = args.dialog {
+        return dialog::run(kind);
     }
 
     // 1. Single instance: a second launch asks the first to open its flyout and exits.
