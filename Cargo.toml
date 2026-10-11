@@ -51,7 +51,10 @@ serde_json = "=1.0.152"
 jiff = { version = "=0.2.38", default-features = false, features = ["std", "serde", "perf-inline"] }
 
 # HTTP: blocking, no async runtime, TLS through SChannel (native-tls) with the system roots.
-ureq = { version = "=3.4.2", default-features = false, features = ["native-tls-no-default"] }
+# The feature must be `native-tls`: ureq 3.4 compiles its native-tls connector only under that
+# name, and `native-tls-no-default` alone panics on the first https:// request. It also brings
+# Mozilla's roots (webpki-root-certs), which UreqHttp never selects (RootCerts::PlatformVerifier).
+ureq = { version = "=3.4.2", default-features = false, features = ["native-tls"] }
 
 # Decoders for bodies in Claude Desktop's Chromium HTTP cache (content codings and the cache's own
 # zstd), all pure Rust: no C toolchain, nothing that runs outside safe code we can audit.

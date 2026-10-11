@@ -190,9 +190,9 @@ impl Fs for RealFs {
 /// debug log redacts every header outside a short allow-list).
 ///
 /// Needs ureq's `native-tls` feature: with only `native-tls-no-default` ureq compiles no TLS
-/// connector and panics on the first `https://` request (an abort in release builds). Until the
-/// workspace enables it, [`TLS_COMPILED_IN`] is `false` and `https://` requests fail as
-/// [`HttpError::Tls`] instead of reaching ureq.
+/// connector and panics on the first `https://` request (an abort in release builds).
+/// [`TLS_COMPILED_IN`] records which one the workspace enables; when it is `false`, `https://`
+/// requests fail as [`HttpError::Tls`] instead of reaching ureq.
 pub struct UreqHttp {
     agent: ureq::Agent,
 }
@@ -239,14 +239,12 @@ impl fmt::Debug for UreqHttp {
 /// Whether ureq was built with its native-tls connector (the workspace's ureq feature
 /// `native-tls`, not `native-tls-no-default`).
 ///
-/// The workspace currently enables only `native-tls-no-default`: ureq then compiles the
-/// `native-tls` crate but not its connector, and panics on every `https://` request ("provider is
-/// NativeTls but feature is not enabled"), which aborts a release build. Enabling `native-tls`
-/// adds the `webpki-root-certs` crate, which has not been fetched yet. Until then this is `false`
-/// and [`UreqHttp`] answers `https://` requests with [`HttpError::Tls`] instead of panicking.
-/// Flip it together with the feature; the test `tls_switch_matches_ureqs_features` fails when
-/// the two disagree.
-pub const TLS_COMPILED_IN: bool = false;
+/// With only `native-tls-no-default`, ureq compiles the `native-tls` crate but not its connector,
+/// and panics on every `https://` request ("provider is NativeTls but feature is not enabled"),
+/// which aborts a release build. If the workspace ever drops back to that feature, set this to
+/// `false` and [`UreqHttp`] answers `https://` requests with [`HttpError::Tls`] instead of
+/// panicking. The test `tls_switch_matches_ureqs_features` fails when the two disagree.
+pub const TLS_COMPILED_IN: bool = true;
 
 /// `https://` only. Unit tests may also talk plain HTTP to a server of their own on the
 /// loopback address.
