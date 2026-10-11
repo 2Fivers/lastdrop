@@ -10,6 +10,7 @@ use jiff::{SignedDuration, Timestamp};
 use lastdrop_core::model::{
     AccountKey, AccountRef, Health, MeterId, ProviderId, SourceKind, WindowLen,
 };
+use lastdrop_core::refresh::CredentialFingerprint;
 use lastdrop_core::settings::CodexOptions;
 use lastdrop_providers::codex::{
     self, CodexProvider, CodexUsage, CodexWindow, app_server, meter, rollout, to_snapshot,
@@ -528,8 +529,7 @@ fn without_a_bundled_one_codex_exe_then_codex_cmd_come_from_path() {
         .with_var(
             "PATH",
             r"relative\bin;C:\Windows\System32;C:\Users\tester\AppData\Roaming\npm;C:\Tools",
-        )
-        .with_var("ComSpec", r"C:\Windows\System32\cmd.exe");
+        );
     f.fs.add_file(
         r"C:\Users\tester\AppData\Roaming\npm\codex.cmd",
         "@ECHO off\r\n",
@@ -544,19 +544,10 @@ fn without_a_bundled_one_codex_exe_then_codex_cmd_come_from_path() {
         "relative PATH entries are ignored"
     );
 
-    let spec = app_server::launch_spec(&ctx, &script_path, &codex_home());
-    assert_eq!(spec.program, PathBuf::from(r"C:\Windows\System32\cmd.exe"));
-    assert_eq!(
-        spec.args,
-        [
-            "/d".into(),
-            "/c".into(),
-            script_path.clone().into_os_string(),
-            "app-server".into(),
-            "-c".into(),
-            "features.plugins=false".into()
-        ]
-    );
+    // Started like an executable: the spawner runs a `.cmd` through cmd.exe itself.
+    let spec = app_server::spawn_spec(&script_path, &codex_home());
+    assert_eq!(spec.program, script_path);
+    assert_eq!(spec.args, ["app-server", "-c", "features.plugins=false"]);
     assert_eq!(
         spec.env,
         [("CODEX_HOME".into(), Some(codex_home().into_os_string()))]
@@ -578,23 +569,6 @@ fn local_app_data_defaults_to_the_profile_folder() {
         app_server::find_codex_exe(&f.context(budget()), None),
         Some(bundled_exe("a1b2c3d4e5f60718"))
     );
-}
-
-#[test]
-fn the_command_interpreter_falls_back_to_system_root() {
-    let mut f = Fakes::new(now());
-    f.env = f.env.clone().with_var("SystemRoot", r"C:\Windows");
-    assert_eq!(
-        app_server::command_interpreter(&f.context(budget())),
-        PathBuf::from(r"C:\Windows\System32\cmd.exe")
-    );
-    let spec = app_server::launch_spec(
-        &f.context(budget()),
-        Path::new(r"C:\x\codex.exe"),
-        &codex_home(),
-    );
-    assert_eq!(spec.program, PathBuf::from(r"C:\x\codex.exe"));
-    assert_eq!(spec.args, ["app-server", "-c", "features.plugins=false"]);
 }
 
 // ---- App-server: line parsing -------------------------------------------------------------------
@@ -1919,7 +1893,12 @@ fn provider_basics() {
 fn the_credential_fingerprint_follows_auth_json_metadata_only() {
     let f = fakes();
     let ctx = f.context(budget());
-    assert_eq!(provider().credential_fingerprint(&ctx, &account()), None);
+    let absent = provider().credential_fingerprint(&ctx, &account());
+    assert_eq!(
+        absent,
+        Some(CredentialFingerprint("absent".to_owned())),
+        "signed out: a fingerprint all the same, so signing in lifts an auth stop"
+    );
 
     let auth = codex_home().join("auth.json");
     f.fs.add_file(&auth, r#"{"auth_mode":"fixture"}"#, now());
@@ -1927,6 +1906,7 @@ fn the_credential_fingerprint_follows_auth_json_metadata_only() {
         .credential_fingerprint(&ctx, &account())
         .expect("fingerprint");
     assert!(!first.0.contains("fixture"), "never the contents");
+    assert_ne!(Some(first.clone()), absent, "signing in changes it");
     f.fs.add_file(
         &auth,
         r#"{"auth_mode":"fixture"}"#,

@@ -17,8 +17,11 @@
 //! - **Never log a secret** (tokens, keys, cookies, account ids, e-mail addresses). Secrets are
 //!   [`SecretString`]s, which print as `[redacted]`.
 //! - Undocumented endpoints are polled no more than every 5 minutes per credential, back off on
-//!   429/403, and stop on 401 until the credential file changes.
+//!   429/403 (`Retry-After` honoured up to 24 h), and stop on 401 until the credential file
+//!   changes (or appears: a missing file has a fingerprint too, so signing in lifts the stop).
 //! - Parsers tolerate unknown and missing fields; a missing value is `None`, never 0.
+//! - **Never panic.** Release builds abort on panic (`panic = "abort"`), so no `expect`,
+//!   `unwrap`, `unreachable!` or unchecked indexing on anything read or looked up.
 //! - No network traffic except to the documented endpoints of the service being read; no
 //!   telemetry.
 //! - Fixtures in tests are invented data, never copied from a real machine
@@ -33,6 +36,7 @@ pub mod codex;
 pub mod copilot;
 pub mod error;
 pub mod fakes;
+pub mod fingerprint;
 pub mod io;
 pub mod meshy;
 pub mod real;
@@ -74,9 +78,11 @@ pub trait Provider: Send + Sync {
         None
     }
 
-    /// A fingerprint of the account's credential (token file size + mtime), so the scheduler
-    /// can lift an auth stop when it changes (ARCHITECTURE: "stop on 401 until the credential
-    /// file changes"). `None` when the provider cannot tell.
+    /// A fingerprint of the account's credential (token file size + mtime,
+    /// [`fingerprint::file_fingerprint`]), so the scheduler can lift an auth stop when it changes
+    /// (ARCHITECTURE: "stop on 401 until the credential file changes"). A missing file has one
+    /// ([`fingerprint::ABSENT`]), so signing in lifts the stop. `None` when the provider cannot
+    /// tell: the stop then lasts until a manual refresh.
     fn credential_fingerprint(
         &self,
         ctx: &FetchContext<'_>,

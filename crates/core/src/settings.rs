@@ -124,10 +124,14 @@ impl Settings {
     /// Adds an entry, turned off, for every provider this build knows that the settings lack (a
     /// service added since the file was written), after the existing ones, so it shows in the
     /// settings window without starting to read by itself. Returns whether it added any.
+    ///
+    /// An entry this build cannot read but whose `id` it knows ([`ProviderEntry::id`]: a newer
+    /// build's option, a malformed field) counts as present: a second entry for the same service
+    /// would be turned off, and a newer build reading the file back would find two.
     pub fn add_new_providers(&mut self) -> bool {
         let missing: Vec<ProviderId> = ProviderId::ALL
             .into_iter()
-            .filter(|id| self.provider(*id).is_none())
+            .filter(|id| !self.providers.iter().any(|e| e.id() == Some(*id)))
             .collect();
         for id in &missing {
             self.providers
@@ -159,6 +163,19 @@ pub enum ProviderEntry {
 }
 
 impl ProviderEntry {
+    /// The service of the entry: a known entry's, or an unknown entry's `"id"` when this build
+    /// knows it (the entry itself could not be read); `None` for a service this build does not
+    /// know.
+    pub fn id(&self) -> Option<ProviderId> {
+        match self {
+            ProviderEntry::Known(p) => Some(p.id),
+            ProviderEntry::Unknown(raw) => raw
+                .get("id")
+                .and_then(serde_json::Value::as_str)
+                .and_then(ProviderId::from_id),
+        }
+    }
+
     /// The settings when the entry is known.
     pub fn known(&self) -> Option<&ProviderSettings> {
         match self {
@@ -462,6 +479,51 @@ mod tests {
         );
         assert!(!s.add_new_providers());
         assert!(!Settings::default().clone().add_new_providers());
+    }
+
+    #[test]
+    fn an_unreadable_entry_of_a_known_service_is_not_added_again() {
+        let json = r#"{
+            "version": 1,
+            "providers": [
+                { "id": "claude", "enabled": true, "interval": { "every_hour": 2 } },
+                { "id": "codex", "enabled": "yes" },
+                { "id": "someday", "enabled": true },
+                { "enabled": true }
+            ]
+        }"#;
+        let mut s: Settings = serde_json::from_str(json).expect("deserialize");
+        assert!(
+            s.providers
+                .iter()
+                .all(|e| matches!(e, ProviderEntry::Unknown(_)))
+        );
+        let ids: Vec<Option<ProviderId>> = s.providers.iter().map(ProviderEntry::id).collect();
+        assert_eq!(
+            ids,
+            vec![
+                Some(ProviderId::Claude),
+                Some(ProviderId::Codex),
+                None,
+                None
+            ]
+        );
+        assert!(s.add_new_providers());
+        let added: Vec<ProviderId> = s.providers[4..]
+            .iter()
+            .filter_map(ProviderEntry::known)
+            .map(|p| p.id)
+            .collect();
+        assert_eq!(
+            added,
+            vec![ProviderId::Copilot, ProviderId::Meshy],
+            "no second Claude or Codex entry"
+        );
+        let out = serde_json::to_value(&s).expect("serialize");
+        assert_eq!(
+            out["providers"][0]["interval"]["every_hour"], 2,
+            "kept verbatim"
+        );
     }
 
     #[test]

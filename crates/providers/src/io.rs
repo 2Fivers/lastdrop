@@ -24,6 +24,10 @@ pub trait Clock: Send + Sync {
 /// Largest response body read, 1 MiB. Usage responses are a few KiB; anything larger is an error.
 pub const MAX_BODY_BYTES: u64 = 1 << 20;
 
+/// Longest `Retry-After` honoured, for every service; a longer one is capped (**not from the
+/// spec**: guards against a malformed header stopping a source for weeks).
+pub const MAX_RETRY_AFTER: Duration = Duration::from_secs(24 * 60 * 60);
+
 /// HTTP method.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Method {
@@ -96,21 +100,26 @@ impl HttpResponse {
             .map(|(_, v)| v.as_str())
     }
 
-    /// `Retry-After` as a duration from `now`: delta-seconds or an HTTP-date (RFC 9110 §10.2.3);
-    /// `None` when absent or unreadable.
+    /// `Retry-After` as a duration from `now`: delta-seconds or an HTTP-date (RFC 9110 §10.2.3),
+    /// capped at [`MAX_RETRY_AFTER`]; `None` when absent or unreadable.
     ///
     /// An HTTP-date in the past is a wait of zero. Only the preferred IMF-fixdate form
     /// (`Sun, 06 Nov 1994 08:49:37 GMT`, RFC 5322 syntax) is read; the obsolete RFC 850 and
-    /// asctime forms give `None`.
+    /// asctime forms give `None`. Delta-seconds too large for a `u64` are capped too.
     pub fn retry_after(&self, now: Timestamp) -> Option<Duration> {
         static HTTP_DATE: jiff::fmt::rfc2822::DateTimeParser =
             jiff::fmt::rfc2822::DateTimeParser::new();
         let value = self.header("Retry-After")?.trim();
-        if !value.is_empty() && value.bytes().all(|b| b.is_ascii_digit()) {
-            return value.parse::<u64>().ok().map(Duration::from_secs);
-        }
-        let at = HTTP_DATE.parse_timestamp(value).ok()?;
-        Some(Duration::try_from(at.duration_since(now)).unwrap_or(Duration::ZERO))
+        let wait = if !value.is_empty() && value.bytes().all(|b| b.is_ascii_digit()) {
+            // All digits: only an overflow fails to parse, and that is a very long wait.
+            value
+                .parse::<u64>()
+                .map_or(MAX_RETRY_AFTER, Duration::from_secs)
+        } else {
+            let at = HTTP_DATE.parse_timestamp(value).ok()?;
+            Duration::try_from(at.duration_since(now)).unwrap_or(Duration::ZERO)
+        };
+        Some(wait.min(MAX_RETRY_AFTER))
     }
 }
 
@@ -285,7 +294,8 @@ pub trait Secrets: Send + Sync {
 /// secrets), `CREATE_NO_WINDOW`, never a console window.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SpawnSpec {
-    /// The executable (absolute path).
+    /// The executable (absolute path), or a `.cmd`/`.bat` script, which Rust's std runs through
+    /// `cmd.exe` with its quoting and escaping for it (npm's `codex.cmd`).
     pub program: PathBuf,
     /// Arguments.
     pub args: Vec<OsString>,
@@ -351,7 +361,7 @@ mod tests {
 
     use jiff::Timestamp;
 
-    use super::{HttpResponse, wildcard_match};
+    use super::{HttpResponse, MAX_RETRY_AFTER, wildcard_match};
 
     fn with_retry_after(value: &str) -> HttpResponse {
         HttpResponse {
@@ -385,6 +395,29 @@ mod tests {
         assert_eq!(with_retry_after("soon").retry_after(now), None);
         assert_eq!(with_retry_after("").retry_after(now), None);
         assert_eq!(HttpResponse::new(429, "").retry_after(now), None);
+    }
+
+    #[test]
+    fn retry_after_is_capped() {
+        let now: Timestamp = "2026-10-10T10:00:00Z".parse().expect("timestamp");
+        assert_eq!(
+            with_retry_after("99999999").retry_after(now),
+            Some(MAX_RETRY_AFTER)
+        );
+        assert_eq!(
+            with_retry_after("99999999999999999999999").retry_after(now),
+            Some(MAX_RETRY_AFTER),
+            "beyond u64"
+        );
+        assert_eq!(
+            with_retry_after("Fri, 01 Jan 2100 00:00:00 GMT").retry_after(now),
+            Some(MAX_RETRY_AFTER)
+        );
+        assert_eq!(
+            with_retry_after("86400").retry_after(now),
+            Some(MAX_RETRY_AFTER),
+            "the cap itself is honoured"
+        );
     }
 
     #[test]

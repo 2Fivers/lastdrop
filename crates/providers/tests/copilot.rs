@@ -8,6 +8,7 @@ use jiff::{SignedDuration, Timestamp};
 use lastdrop_core::model::{
     AccountKey, Health, MeterId, MeterNames, ProviderId, Snapshot, SourceKind, WindowLen, catalog,
 };
+use lastdrop_core::refresh::CredentialFingerprint;
 use lastdrop_core::settings::AccountSettings;
 use lastdrop_providers::copilot::{self, CopilotProvider};
 use lastdrop_providers::fakes::{FakeEnv, FakeLine, Fakes};
@@ -339,11 +340,17 @@ fn signing_in_again_changes_the_fingerprint() {
     let f = Fakes::new(now());
     let provider = CopilotProvider::new();
     let ctx = f.context(SignedDuration::from_secs(30));
-    assert_eq!(provider.credential_fingerprint(&ctx, &account()), None);
+    let absent = provider.credential_fingerprint(&ctx, &account());
+    assert_eq!(
+        absent,
+        Some(CredentialFingerprint("absent".to_owned())),
+        "never signed in: a fingerprint all the same, so the first sign-in lifts an auth stop"
+    );
     let hosts = config_dir().join("hosts.yml");
     f.fs.add_file(&hosts, "github.com:\n", now());
     let first = provider.credential_fingerprint(&ctx, &account());
     assert!(first.is_some());
+    assert_ne!(first, absent, "signing in changes it");
     f.fs.add_file(&hosts, "github.com:\n    user: x\n", now());
     assert_ne!(provider.credential_fingerprint(&ctx, &account()), first);
 }

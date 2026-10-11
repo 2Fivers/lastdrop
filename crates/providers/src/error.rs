@@ -10,7 +10,8 @@ use lastdrop_core::stats::FailureKind;
 use crate::io::HttpError;
 
 /// A failed fetch. `from` is the source whose failure is reported (a provider that tries several
-/// sources reports the most telling one: an auth error over a parse error over "not found").
+/// sources reports the most telling one, [`FetchError::most_telling`]: an auth error over a
+/// throttle over offline over a temporary failure over a parse error over "not found").
 #[derive(Clone, Debug, PartialEq, thiserror::Error)]
 pub enum FetchError {
     /// The sign-in expired or is missing (HTTP 401, no token, Meshy without an API key): stale
@@ -112,6 +113,41 @@ impl FetchError {
         }
     }
 
+    /// How telling the failure is when several sources failed, higher is more: Auth (the user
+    /// can act) over RateLimited over Offline over Transient over Parse over Unavailable.
+    pub fn rank(&self) -> u8 {
+        match self {
+            FetchError::Auth { .. } => 5,
+            FetchError::RateLimited { .. } => 4,
+            FetchError::Offline { .. } => 3,
+            FetchError::Transient { .. } => 2,
+            FetchError::Parse { .. } => 1,
+            FetchError::Unavailable { .. } => 0,
+        }
+    }
+
+    /// The failure a provider reports when none of its sources answered: the highest
+    /// [`rank`](Self::rank), the earlier source on a tie. `None` when there are no failures.
+    pub fn most_telling(failures: impl IntoIterator<Item = FetchError>) -> Option<FetchError> {
+        let mut best: Option<FetchError> = None;
+        for failure in failures {
+            if best.as_ref().is_none_or(|b| failure.rank() > b.rank()) {
+                best = Some(failure);
+            }
+        }
+        best
+    }
+
+    /// The more telling of `self` and a later source's `other`
+    /// ([`most_telling`](Self::most_telling) of the two): `self` on a tie.
+    pub fn or_more_telling(self, other: FetchError) -> FetchError {
+        if other.rank() > self.rank() {
+            other
+        } else {
+            self
+        }
+    }
+
     /// The short detail shown in the hover card's NO_DATA sentence and the flyout's
     /// "Couldn't read" line.
     pub fn detail(&self) -> String {
@@ -123,5 +159,87 @@ impl FetchError {
             | FetchError::Parse { detail, .. }
             | FetchError::Unavailable { detail } => detail.clone(),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::Duration;
+
+    use lastdrop_core::model::SourceKind;
+
+    use super::FetchError;
+
+    const FROM: SourceKind = SourceKind::CodexRollout;
+
+    fn auth() -> FetchError {
+        FetchError::Auth { from: FROM }
+    }
+    fn throttled() -> FetchError {
+        FetchError::RateLimited {
+            from: FROM,
+            retry_after: Some(Duration::from_secs(60)),
+        }
+    }
+    fn offline() -> FetchError {
+        FetchError::Offline { from: FROM }
+    }
+    fn transient(detail: &str) -> FetchError {
+        FetchError::Transient {
+            from: FROM,
+            detail: detail.to_owned(),
+            retry_after: None,
+        }
+    }
+    fn parse() -> FetchError {
+        FetchError::Parse {
+            from: FROM,
+            detail: "bad".to_owned(),
+        }
+    }
+    fn unavailable() -> FetchError {
+        FetchError::Unavailable {
+            detail: "none".to_owned(),
+        }
+    }
+
+    #[test]
+    fn ranking_puts_auth_over_throttle_over_offline() {
+        let ordered = [
+            auth(),
+            throttled(),
+            offline(),
+            transient("x"),
+            parse(),
+            unavailable(),
+        ];
+        for pair in ordered.windows(2) {
+            assert!(
+                pair[0].rank() > pair[1].rank(),
+                "{:?} > {:?}",
+                pair[0],
+                pair[1]
+            );
+        }
+    }
+
+    #[test]
+    fn most_telling_picks_the_highest_rank_and_the_earlier_on_a_tie() {
+        assert_eq!(FetchError::most_telling([]), None);
+        assert_eq!(
+            FetchError::most_telling([unavailable(), offline(), throttled(), parse()]),
+            Some(throttled())
+        );
+        assert_eq!(
+            FetchError::most_telling([transient("first"), transient("second")]),
+            Some(transient("first"))
+        );
+        assert_eq!(offline().or_more_telling(throttled()), throttled());
+        assert_eq!(throttled().or_more_telling(offline()), throttled());
+        assert_eq!(
+            transient("first").or_more_telling(transient("second")),
+            transient("first")
+        );
+        assert_eq!(parse().or_more_telling(auth()), auth());
     }
 }

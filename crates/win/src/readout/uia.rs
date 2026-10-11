@@ -12,7 +12,7 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use windows::Win32::Foundation::{E_ACCESSDENIED, HWND, LPARAM, WPARAM};
 use windows::Win32::System::Com::SAFEARRAY;
-use windows::Win32::System::Ole::{SafeArrayCreateVector, SafeArrayPutElement};
+use windows::Win32::System::Ole::{SafeArrayCreateVector, SafeArrayDestroy, SafeArrayPutElement};
 use windows::Win32::System::Variant::{VARIANT, VT_I4};
 use windows::Win32::UI::Accessibility::{
     IInvokeProvider, IInvokeProvider_Impl, IRangeValueProvider, IRangeValueProvider_Impl,
@@ -378,7 +378,9 @@ impl IRawElementProviderFragment_Impl for Row_Impl {
             i32::try_from(UiaAppendRuntimeId).unwrap_or(3),
             i32::try_from(self.index + 1).unwrap_or(i32::MAX),
         ];
-        // SAFETY: a two-element VT_I4 vector; each element is copied from a local.
+        // SAFETY: a two-element VT_I4 vector; each element is copied from a local. The array is
+        // ours until it is returned (UI Automation then owns it); when an element cannot be put,
+        // it is destroyed here once and not returned.
         unsafe {
             let array = SafeArrayCreateVector(VT_I4, 0, 2);
             if array.is_null() {
@@ -386,7 +388,10 @@ impl IRawElementProviderFragment_Impl for Row_Impl {
             }
             for (i, v) in id.iter().enumerate() {
                 let index = i32::try_from(i).unwrap_or(0);
-                SafeArrayPutElement(array, &index, core::ptr::from_ref(v).cast())?;
+                if let Err(e) = SafeArrayPutElement(array, &index, core::ptr::from_ref(v).cast()) {
+                    let _ = SafeArrayDestroy(array);
+                    return Err(e);
+                }
             }
             Ok(array)
         }
