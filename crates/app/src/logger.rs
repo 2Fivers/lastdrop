@@ -419,6 +419,13 @@ mod tests {
             "Authorization: Bearer [redacted]"
         );
         assert!(!redact("key sk-ant-test-0000000000000000000000000000").contains("sk-ant-test"));
+        // A GitHub CLI token (Copilot): `Authorization: token <t>` is not a scheme the logger
+        // knows, so the run's length must catch it.
+        assert!(
+            !redact("Authorization: token gho_testTOKENnotREAL0000000000000000abcd")
+                .contains("gho_test")
+        );
+        assert!(!redact("gh said gho_testTOKENnotREAL0000000000000000abcd").contains("gho_test"));
         assert!(
             !redact("user tester@example.invalid signed in").contains("tester@example.invalid")
         );

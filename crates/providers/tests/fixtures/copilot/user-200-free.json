@@ -1,0 +1,43 @@
+{
+  "login": "octo-tester",
+  "access_type_sku": "free_limited_copilot",
+  "copilot_plan": "individual",
+  "chat_enabled": true,
+  "some_new_flag": { "nested": [1, 2, 3] },
+  "quota_snapshots": {
+    "chat": {
+      "entitlement": 200,
+      "remaining": 180,
+      "quota_remaining": 180.0,
+      "percent_remaining": 90.0,
+      "overage_count": 0,
+      "overage_permitted": false,
+      "unlimited": false,
+      "quota_id": "chat"
+    },
+    "completions": {
+      "entitlement": 2000,
+      "remaining": 1500,
+      "quota_remaining": 1500.0,
+      "percent_remaining": 75.0,
+      "overage_count": 0,
+      "overage_permitted": false,
+      "unlimited": false,
+      "quota_id": "completions"
+    },
+    "premium_interactions": {
+      "entitlement": 0,
+      "remaining": 0,
+      "quota_remaining": 0.0,
+      "percent_remaining": 0.0,
+      "has_quota": false,
+      "overage_count": 0,
+      "overage_permitted": false,
+      "unlimited": false,
+      "quota_id": "premium_interactions"
+    },
+    "a_future_quota": { "entitlement": 10, "percent_remaining": 50.0 }
+  },
+  "quota_reset_date": "2026-11-01",
+  "quota_reset_date_utc": "2026-11-01T00:00:00.000Z"
+}

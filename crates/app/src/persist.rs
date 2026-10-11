@@ -117,7 +117,8 @@ pub fn load_settings(path: &Path) -> (Settings, LoadOutcome) {
 
 /// Reads settings without side effects: defaults with [`LoadOutcome::Missing`] when there is no
 /// file, [`LoadOutcome::Loaded`] or [`LoadOutcome::Migrated`] otherwise, and an error
-/// (`InvalidData` when the file is not understood) that leaves the file where it is. The tray
+/// (`InvalidData` when the file is not understood) that leaves the file where it is. Services
+/// added since the file was written get an entry, turned off (`Settings::add_new_providers`). The tray
 /// process re-reads with it when the dialog process says the file changed; [`load_settings`]
 /// adds setting a broken file aside.
 pub fn read_settings(path: &Path) -> std::io::Result<(Settings, LoadOutcome)> {
@@ -137,6 +138,12 @@ pub fn read_settings(path: &Path) -> std::io::Result<(Settings, LoadOutcome)> {
                 // The current version, or a newer build's file: unknown fields are kept.
                 serde_json::from_value::<Settings>(doc).map(|s| (s, LoadOutcome::Loaded))
             }
+        })
+        .map(|(mut settings, outcome)| {
+            if settings.add_new_providers() {
+                log::info!("settings: added the services this build reads, turned off");
+            }
+            (settings, outcome)
         })
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))
 }

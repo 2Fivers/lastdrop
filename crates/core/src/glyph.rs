@@ -145,6 +145,25 @@ const CODEX_PATHS: [GlyphPath; 2] = [
     stroke("M3.35 4.35 5.15 6 3.35 7.65M6.35 8.05h2.4", 1.1, true, true),
 ];
 
+const COPILOT_PATHS: [GlyphPath; 2] = [
+    // <rect x="0.9" y="2.6" width="10.2" height="7.9" rx="3"/>
+    stroke(
+        "M3.9 2.6H8.1A3 3 0 0 1 11.1 5.6V7.5A3 3 0 0 1 8.1 10.5H3.9         A3 3 0 0 1 0.9 7.5V5.6A3 3 0 0 1 3.9 2.6Z",
+        1.05,
+        false,
+        false,
+    ),
+    // The antenna, and the eyes: Appendix A's filled r 1.15 circles drawn as r 0.62 circles
+    // stroked at 1.05, which covers the same disc (0.62 + 0.525 ≈ 1.15) with the stroke alone, as
+    // the flyout's Slint glyph strokes every path with one width and never fills.
+    stroke(
+        "M6 2.6V1.2         M3.68 6.55A0.62 0.62 0 1 0 4.92 6.55A0.62 0.62 0 1 0 3.68 6.55Z         M7.08 6.55A0.62 0.62 0 1 0 8.32 6.55A0.62 0.62 0 1 0 7.08 6.55Z",
+        1.05,
+        true,
+        false,
+    ),
+];
+
 const MESHY_PATHS: [GlyphPath; 2] = [
     stroke("M6 1.3 11.1 10.4H0.9z", 1.05, false, true),
     stroke("M3.45 5.85h5.1L6 10.4z", 1.0, false, true),
@@ -155,6 +174,7 @@ pub const fn provider_paths(provider: ProviderId) -> &'static [GlyphPath] {
     match provider {
         ProviderId::Claude => &CLAUDE_PATHS,
         ProviderId::Codex => &CODEX_PATHS,
+        ProviderId::Copilot => &COPILOT_PATHS,
         ProviderId::Meshy => &MESHY_PATHS,
     }
 }

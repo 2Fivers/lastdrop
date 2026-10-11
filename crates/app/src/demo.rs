@@ -148,6 +148,7 @@ fn snapshot(provider: ProviderId, plan: &str, at: Timestamp) -> Snapshot {
         source: match provider {
             ProviderId::Claude => SourceKind::ClaudeOAuthUsage,
             ProviderId::Codex => SourceKind::CodexAppServer,
+            ProviderId::Copilot => SourceKind::CopilotApi,
             ProviderId::Meshy => SourceKind::MeshyApi,
         },
         measured_at: at,
@@ -322,10 +323,11 @@ impl Demo {
         credits_history.push(Sample::balance(meshy_at, amount));
         history.insert(key(ProviderId::Meshy, &credits.meter_id()), credits_history);
 
+        // The demo has readings of Claude, Codex and Meshy; Copilot is listed but off.
         let settings = Settings {
             providers: ProviderId::ALL
                 .into_iter()
-                .map(|p| ProviderEntry::Known(ProviderSettings::new(p, true)))
+                .map(|p| ProviderEntry::Known(ProviderSettings::new(p, p != ProviderId::Copilot)))
                 .collect(),
             ..Settings::default()
         };

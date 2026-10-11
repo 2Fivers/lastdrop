@@ -8,7 +8,8 @@
 //!   implementations, [`fakes`] the test ones.
 //! - [`AccountSource`]: where one account's data and credentials are.
 //! - [`FetchError`]: why a fetch failed, classified for freshness (R§3.8) and back-off.
-//! - [`claude`], [`codex`], [`meshy`]: the M1 services, sources per the ARCHITECTURE table.
+//! - [`claude`], [`codex`], [`meshy`]: the M1 services, sources per the ARCHITECTURE table;
+//!   [`copilot`] (M2).
 //!
 //! Rules for every provider (ARCHITECTURE "Rules for every provider"):
 //! - **Never write, refresh or copy another tool's credentials.** Read, use in memory, drop.
@@ -29,6 +30,7 @@
 pub mod account;
 pub mod claude;
 pub mod codex;
+pub mod copilot;
 pub mod error;
 pub mod fakes;
 pub mod io;
@@ -130,7 +132,7 @@ impl FetchContext<'_> {
     }
 }
 
-/// The M1 providers configured from settings, in [`ProviderId::ALL`] order. Recreated when the
+/// The providers configured from settings, in [`ProviderId::ALL`] order. Recreated when the
 /// provider options change. `Arc` because the main thread keeps one per source and hands clones
 /// to worker jobs (ARCHITECTURE "Threads").
 pub fn providers(settings: &Settings) -> Vec<Arc<dyn Provider>> {
@@ -138,6 +140,7 @@ pub fn providers(settings: &Settings) -> Vec<Arc<dyn Provider>> {
     vec![
         Arc::new(claude::ClaudeProvider::new(options.claude.clone())),
         Arc::new(codex::CodexProvider::new(options.codex.clone())),
+        Arc::new(copilot::CopilotProvider::new()),
         Arc::new(meshy::MeshyProvider::new()),
     ]
 }
