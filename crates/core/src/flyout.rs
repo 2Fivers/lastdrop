@@ -28,7 +28,7 @@ use crate::readout::build::BuildContext;
 use crate::readout::hovercard::{balance, before_reset, capitalise, last_reading, window};
 use crate::stats::{
     Assessment, DisplayClass, Evaluation, FailureKind, Freshness, HistoryView, LiveChange,
-    ResetView, RowState, Sample, ServiceEval, StaleReason, candidate, instance_of, runway_minutes,
+    ResetView, RowState, Sample, ServiceEval, StaleReason, instance_of, runway_minutes,
     same_window_instance,
 };
 use crate::util::{duration_from_hours, round_i32, sub};
@@ -380,14 +380,13 @@ fn spark_meter(service: &ServiceEval) -> (MeterKey, SparkKind, f64) {
         account: service.source.account.clone(),
         meter: id,
     };
-    let is_balance = |a: &&Assessment| candidate(a).is_balance;
-    if service.meters.iter().all(|a| is_balance(&a))
+    if service.meters.iter().all(Assessment::is_balance)
         && let Some(b) = service.meters.first()
     {
         let floor = balance(b).map_or(0.0, |b| b.stats.reference * SPARK_BALANCE_FLOOR_SHARE);
         return (b.key.clone(), SparkKind::Balance, floor);
     }
-    let windows: Vec<&Assessment> = service.meters.iter().filter(|a| !is_balance(a)).collect();
+    let windows: Vec<&Assessment> = service.meters.iter().filter(|a| !a.is_balance()).collect();
     let chosen = windows
         .iter()
         .find(|a| a.key.meter.0 == MeterId::WEEKLY)
@@ -1000,19 +999,15 @@ fn balance_body(a: &Assessment, service: &ServiceEval, cx: &TextContext<'_>) -> 
 /// A service card (F§4).
 fn card(service: &ServiceEval, history: &dyn HistoryView, cx: &TextContext<'_>) -> CardModel {
     let s = cx.strings;
-    let svc = service.display_name();
+    let svc = service.display_name().into_owned();
     let last = last_reading(service);
     let age = if service.loading {
         s.template(Msg::Loading).to_owned()
     } else {
         last.map(|t| age_long(t, cx)).unwrap_or_default()
     };
-    let windows: Vec<&Assessment> = service
-        .meters
-        .iter()
-        .filter(|a| !candidate(a).is_balance)
-        .collect();
-    let body = match service.meters.iter().find(|a| candidate(a).is_balance) {
+    let windows: Vec<&Assessment> = service.meters.iter().filter(|a| !a.is_balance()).collect();
+    let body = match service.meters.iter().find(|a| a.is_balance()) {
         Some(b) if windows.is_empty() => CardBody::Balance(balance_body(b, service, cx)),
         _ => CardBody::Meters(windows.iter().map(|a| meter_row(a, service, cx)).collect()),
     };

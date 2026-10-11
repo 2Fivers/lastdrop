@@ -84,7 +84,7 @@ The dialog process logs to `settings.log`, the tray process to `lastdrop.log`.
 |---|---|---|
 | **main** | Slint event loop: flyout and hover card; the tray icon (our own `Shell_NotifyIcon`, version 4); the app state | blocking I/O |
 | **readout** | the taskbar readout: a hidden top-level window that receives `TaskbarCreated`, the layered readout window (a topmost `WS_POPUP` over the taskbar, never parented into it; readout-spec §6.1), the WinEvent hooks on the taskbar, its own message loop and drawing | I/O, waiting on locks held by other threads, synchronous cross-process calls while holding a lock |
-| **occupancy** | a UI Automation client (MTA) that measures where the taskbar's app buttons are, with connection and transaction timeouts | anything else |
+| **occupancy** | a UI Automation client (MTA) that measures where the taskbar's app buttons are, with connection and transaction timeouts; COM and UI Automation are set up on the first measurement, so a readout that is off never loads them | anything else |
 | **refresh workers** | provider fetches (files, HTTP, `codex app-server`), one job per credential source at a time | touching UI objects |
 | **writer** | every file write after start-up, one job at a time in the order the main thread queued them: history appends and the daily compaction, settings and state saves (atomic replace); the log has a writer thread of its own | anything but writing files |
 
@@ -198,8 +198,10 @@ Rules for every provider:
   So themes, layouts and provider definitions are **data** (JSON), never `.slint` code loaded
   at runtime, and nothing user-supplied reaches a Slint interpreter.
 - **Refresh scheduler:** per account, the provider's `min_interval` and the user's interval;
-  adaptive (faster while the flyout is open, slower when idle); poll again shortly after a
-  window's reset time; one job per credential source in flight.
+  adaptive (faster while the flyout is open, slower when idle: after 10 minutes without keyboard
+  or mouse input, a locked session included, the interval × 3 up to 30 minutes; the minute tick
+  notices the user going or coming back and replans); poll again shortly after a window's reset
+  time; one job per credential source in flight.
 - **Persistence:** settings in `%APPDATA%\Lastdrop\settings.json` (atomic write, no
   secrets); history in `%LOCALAPPDATA%\Lastdrop\` (thinned to one sample per meter per
   5 minutes, 90 days); `%LOCALAPPDATA%\Lastdrop\state.json` (what the app remembers that is

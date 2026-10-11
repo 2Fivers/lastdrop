@@ -4,9 +4,9 @@
 //! read-only RangeValue (`pct`, 0–100).
 //!
 //! Threading: the provider is registered with `ProviderOptions_UseComThreading`, so UI
-//! Automation calls it on the readout thread (an STA with a message loop). Its data is a copy the
-//! readout thread swaps in after each frame ([`UiaData`]); the lock is held only to copy values,
-//! never across a Win32 or COM call.
+//! Automation calls it on the readout thread (an STA with a message loop). Its data is an
+//! immutable [`UiaData`] the readout thread swaps in when it changes; the lock is held only to
+//! swap it or take a reference to it (an `Arc`), never across a Win32 or COM call.
 
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
@@ -61,22 +61,24 @@ pub(super) struct UiaData {
 /// Shared provider data.
 #[derive(Default)]
 pub(super) struct Shared {
-    data: Mutex<UiaData>,
+    data: Mutex<Arc<UiaData>>,
 }
 
 impl Shared {
-    fn lock(&self) -> MutexGuard<'_, UiaData> {
+    fn lock(&self) -> MutexGuard<'_, Arc<UiaData>> {
         // Plain values: a panic elsewhere cannot leave them inconsistent.
         self.data.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
     /// Replaces the data (readout thread).
-    pub(super) fn set(&self, data: UiaData) {
+    pub(super) fn set(&self, data: Arc<UiaData>) {
         *self.lock() = data;
     }
 
-    fn snapshot(&self) -> UiaData {
-        self.lock().clone()
+    /// The data now, without copying it: property queries build their answers from it outside
+    /// the lock.
+    fn current(&self) -> Arc<UiaData> {
+        Arc::clone(&self.lock())
     }
 }
 
@@ -195,12 +197,11 @@ impl IRawElementProviderSimple_Impl for Root_Impl {
     }
 
     fn GetPropertyValue(&self, property: UIA_PROPERTY_ID) -> Result<VARIANT> {
-        let data = self.shared.snapshot();
         let p = property;
         Ok(if p == UIA_NamePropertyId {
-            VARIANT::from(data.name.as_str())
+            VARIANT::from(self.shared.current().name.as_str())
         } else if p == UIA_HelpTextPropertyId {
-            VARIANT::from(data.help.as_str())
+            VARIANT::from(self.shared.current().help.as_str())
         } else if p == UIA_ControlTypePropertyId {
             VARIANT::from(UIA_ButtonControlTypeId.0)
         } else if p == UIA_LiveSettingPropertyId {
@@ -307,8 +308,9 @@ struct Row {
 }
 
 impl Row_Impl {
-    fn data(&self) -> Option<UiaRow> {
-        self.shared.lock().rows.get(self.index).cloned()
+    /// A value of this row's data; `None` when the row is gone.
+    fn with_row<T>(&self, f: impl FnOnce(&UiaRow) -> T) -> Option<T> {
+        self.shared.lock().rows.get(self.index).map(f)
     }
 
     fn sibling(&self, index: usize) -> Result<IRawElementProviderFragment> {
@@ -338,10 +340,11 @@ impl IRawElementProviderSimple_Impl for Row_Impl {
     }
 
     fn GetPropertyValue(&self, property: UIA_PROPERTY_ID) -> Result<VARIANT> {
-        let row = self.data().unwrap_or_default();
         let p = property;
         Ok(if p == UIA_NamePropertyId {
-            VARIANT::from(row.name.as_str())
+            let data = self.shared.current();
+            let name = data.rows.get(self.index).map_or("", |r| r.name.as_str());
+            VARIANT::from(name)
         } else if p == UIA_ControlTypePropertyId {
             VARIANT::from(UIA_ProgressBarControlTypeId.0)
         } else if p == UIA_AutomationIdPropertyId {
@@ -398,7 +401,7 @@ impl IRawElementProviderFragment_Impl for Row_Impl {
     }
 
     fn BoundingRectangle(&self) -> Result<UiaRect> {
-        Ok(uia_rect(self.data().map(|r| r.rect).unwrap_or_default()))
+        Ok(uia_rect(self.with_row(|r| r.rect).unwrap_or_default()))
     }
 
     fn GetEmbeddedFragmentRoots(&self) -> Result<*mut SAFEARRAY> {
@@ -420,7 +423,7 @@ impl IRangeValueProvider_Impl for Row_Impl {
     }
 
     fn Value(&self) -> Result<f64> {
-        Ok(self.data().and_then(|r| r.value).map_or(0.0, f64::from))
+        Ok(self.with_row(|r| r.value).flatten().map_or(0.0, f64::from))
     }
 
     fn IsReadOnly(&self) -> Result<BOOL> {

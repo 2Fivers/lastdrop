@@ -930,13 +930,31 @@ impl Canvas {
 
     /// The pixels, premultiplied BGRA, top-down, stride `width × 4`.
     pub fn pixels(&self) -> windows::core::Result<Vec<u8>> {
-        let stride = self.width * 4;
-        let len = usize::try_from(u64::from(stride) * u64::from(self.height))
-            .map_err(|_| windows::core::Error::from(windows::Win32::Foundation::E_OUTOFMEMORY))?;
-        let mut buf = vec![0u8; len];
-        // SAFETY: a null rect copies the whole bitmap; `buf` holds `stride × height` bytes.
-        unsafe { self.bitmap.CopyPixels(std::ptr::null(), stride, &mut buf)? };
+        let mut buf = vec![0u8; self.pixels_len()?];
+        self.copy_pixels_into(&mut buf)?;
         Ok(buf)
+    }
+
+    /// Copies the pixels ([`Canvas::pixels`]' format) into the start of `out`, which must hold
+    /// at least `width × height × 4` bytes (`E_INVALIDARG` otherwise): straight into a DIB
+    /// section, without a buffer in between.
+    pub fn copy_pixels_into(&self, out: &mut [u8]) -> windows::core::Result<()> {
+        let len = self.pixels_len()?;
+        let Some(out) = out.get_mut(..len) else {
+            return Err(windows::Win32::Foundation::E_INVALIDARG.into());
+        };
+        // SAFETY: a null rect copies the whole bitmap; `out` holds exactly `stride × height`
+        // bytes.
+        unsafe {
+            self.bitmap
+                .CopyPixels(std::ptr::null(), self.width * 4, out)
+        }
+    }
+
+    /// `width × height × 4`.
+    fn pixels_len(&self) -> windows::core::Result<usize> {
+        usize::try_from(u64::from(self.width) * 4 * u64::from(self.height))
+            .map_err(|_| windows::Win32::Foundation::E_OUTOFMEMORY.into())
     }
 }
 
@@ -1435,6 +1453,18 @@ mod tests {
         assert_eq!(px(&p, 8, 4, 2), [0, 0, 255, 255]);
         assert_eq!(px(&p, 8, 5, 2), [0, 0, 0, 1]);
         assert_eq!(px(&p, 8, 2, 3), [0, 0, 0, 1]);
+
+        // Straight into a caller's buffer: the same bytes; the rest of a larger buffer is left
+        // alone, a smaller one is refused.
+        let mut into = vec![7u8; p.len() + 4];
+        c.copy_pixels_into(&mut into).unwrap();
+        assert_eq!(&into[..p.len()], &p[..]);
+        assert_eq!(&into[p.len()..], &[7; 4]);
+        let mut short = vec![0u8; p.len() - 1];
+        assert_eq!(
+            c.copy_pixels_into(&mut short).map_err(|e| e.code()),
+            Err(windows::Win32::Foundation::E_INVALIDARG)
+        );
     }
 
     #[test]

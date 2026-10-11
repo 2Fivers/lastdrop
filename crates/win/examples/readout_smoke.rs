@@ -577,7 +577,10 @@ fn main() {
                 match trayicon::render(&tray, size, &theme, factory) {
                     Ok(img) => {
                         let path = out.join(format!("tray-smoke-{}-{size}.png", state.name));
-                        let _ = write_png(&path, &img.rgba, img.size, img.size);
+                        let rgba: Vec<u8> = (img.bgra.as_chunks::<4>().0.iter())
+                            .flat_map(|p| [p[2], p[1], p[0], p[3]])
+                            .collect();
+                        let _ = write_png(&path, &rgba, img.size, img.size);
                     }
                     Err(e) => eprintln!("tray {size}: {e}"),
                 }

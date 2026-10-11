@@ -32,7 +32,9 @@ pub use freshness::{
     FailureKind, Freshness, ServiceStatus, StaleReason, freshness, stale_after, stale_after_paced,
 };
 pub use history::{HistoryView, NoHistory, Sample};
-pub use rank::{AutoRows, Candidate, DisplayClass, compare, rank, select_rows, winner};
+pub use rank::{
+    AutoRows, Candidate, DisplayClass, compare, rank, select_rows, select_rows_ranked, winner,
+};
 pub use reset::{EffectiveWindow, ResetView, effective_window, reset_refresh_at};
 pub use severity::{
     BalanceSeverityInput, CriticalCause, Severity, SeverityMemory, SeverityOutcome,
