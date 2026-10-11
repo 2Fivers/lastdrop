@@ -34,6 +34,7 @@ use crate::history::HistoryStore;
 use crate::scheduler::{Job, WorkerIo, run_job};
 use crate::state::AppState;
 use crate::wiring::{self, CardMenu};
+use crate::writer::Writer;
 use crate::{AppError, Args, demo, persist, png, ui};
 
 /// The hover card's tallest preview (it is as tall as its content; R§8.1 fits it on screen).
@@ -292,8 +293,14 @@ fn live_models() -> Result<LiveModels, AppError> {
     let theme = lastdrop_win::theme::read();
     let locale = lastdrop_win::locale::read(TimeZone::system());
     let now = Timestamp::now();
-    let history = HistoryStore::open(&paths.history, now)?;
+    // History writes of this read go through a writer of its own, drained when it drops at the
+    // end of this function (after `state`).
+    let writer = Writer::start()?;
+    let history = HistoryStore::open(&paths.history, now, writer.handle())?;
     let mut state = AppState::new(settings, history, theme, locale);
+    // The meters earlier runs saw keep their room, as in the app (read only: a preview never
+    // rewrites the state file).
+    state.restore_seen(&persist::load_state(&paths.state), now);
 
     let io = Arc::new(WorkerIo::new());
     let ctx = FetchContext {

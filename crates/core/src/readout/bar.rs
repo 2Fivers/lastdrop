@@ -251,9 +251,10 @@ pub fn bar_geometry(input: &BarInput, width: f32, row_h: f32, scale: f64) -> Bar
 }
 
 /// The bar inputs of an assessed meter (R§5.7 "Bar" column, R§6.6 colours): `u`, `e` (none for
-/// balances, LOADING, IDLE, no `R`/`L`), the mode (EXHAUSTED full length, LOADING track only),
-/// dashes and the stale colour when the service is stale, the fill role by state with `calm` for
-/// OK rows — TextPrimary on the taskbar and in the hover card, AccentFill in the flyout.
+/// balances, LOADING, IDLE, ENDED, no `R`/`L`), the mode (EXHAUSTED full length, LOADING and
+/// ENDED track only), dashes and the stale colour when the service is stale, the fill role by
+/// state with `calm` for OK rows — TextPrimary on the taskbar and in the hover card, AccentFill
+/// in the flyout.
 pub fn bar_input(a: &Assessment, calm: ColorRole) -> BarInput {
     let (used, elapsed, exhausted) = match &a.meter {
         AssessedMeter::Window(w) => (w.used, w.elapsed, w.exhausted),
@@ -262,7 +263,7 @@ pub fn bar_input(a: &Assessment, calm: ColorRole) -> BarInput {
     };
     let stale = matches!(a.state, RowState::Stale(_));
     let mode = match a.state {
-        RowState::Loading => BarMode::Loading,
+        RowState::Loading | RowState::Ended => BarMode::Loading,
         RowState::Exhausted => BarMode::Exhausted,
         // A stale reading that was used up is drawn full length, dashed.
         RowState::Stale(_) if exhausted => BarMode::Exhausted,
@@ -275,6 +276,7 @@ pub fn bar_input(a: &Assessment, calm: ColorRole) -> BarInput {
         }
         RowState::Stale(_) => ColorRole::Stale,
         RowState::Loading
+        | RowState::Ended
         | RowState::Ok
         | RowState::OkNoReset
         | RowState::Idle
@@ -283,7 +285,7 @@ pub fn bar_input(a: &Assessment, calm: ColorRole) -> BarInput {
     };
     BarInput {
         used,
-        elapsed: if a.state == RowState::Loading {
+        elapsed: if matches!(a.state, RowState::Loading | RowState::Ended) {
             None
         } else {
             elapsed

@@ -806,6 +806,12 @@ fn meter_row(a: &Assessment, service: &ServiceEval, cx: &TextContext<'_>) -> Met
         || w.is_some_and(|w| w.resets_at.is_none() && w.used <= 0.0 && w.starts_on_use);
     let right = match a.state {
         RowState::Ok | RowState::CriticalLevel | RowState::JustReset => reset_cluster(),
+        RowState::Ended => match w.map(|w| w.reset) {
+            Some(ResetView::Ended { by }) => {
+                plain(text(s, Msg::CardLineEnded, &[("time", &card_time(by, cx))]))
+            }
+            _ => plain(String::new()),
+        },
         RowState::Idle => plain(s.template(Msg::CardLineIdle).to_owned()),
         RowState::OkNoReset => plain(s.template(Msg::CardLineNoReset).to_owned()),
         RowState::OkBalance | RowState::Loading => plain(String::new()),
@@ -844,7 +850,7 @@ fn meter_row(a: &Assessment, service: &ServiceEval, cx: &TextContext<'_>) -> Met
                     &[("time", &card_time(previous, cx))],
                 ))
             }
-            ResetView::Live => None,
+            ResetView::Live | ResetView::Ended { .. } => None,
         },
         (RowState::Warning, _) => match (t_out(a), course_pct(a), reset) {
             (Some(t), _, Some(r)) => Some(text(
@@ -896,9 +902,11 @@ fn meter_row(a: &Assessment, service: &ServiceEval, cx: &TextContext<'_>) -> Met
         RowState::Warning => Tone::Caution,
         RowState::CriticalLevel | RowState::CriticalRunway | RowState::Exhausted => Tone::Critical,
         RowState::Stale(_) => Tone::Stale,
+        RowState::Ended if matches!(service.freshness, Freshness::Stale(_)) => Tone::Stale,
         _ => Tone::Calm,
     };
-    let loading = a.state == RowState::Loading;
+    // LOADING and ENDED rows have no value to show.
+    let loading = matches!(a.state, RowState::Loading | RowState::Ended);
     MeterRowModel {
         key: a.key.clone(),
         name: a.names.name.clone(),

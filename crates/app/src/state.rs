@@ -27,7 +27,8 @@ use lastdrop_win::geom::Rect;
 use lastdrop_win::placement::TaskbarEdge;
 use lastdrop_win::theme::ThemeInfo;
 
-use crate::history::HistoryStore;
+use crate::history::{HistoryStore, IN_MEMORY_SPAN};
+use crate::persist::{self, SavedState, SeenMap};
 use crate::scheduler::{JobResult, poll_interval};
 
 /// Everything known about one credential source.
@@ -119,6 +120,8 @@ pub struct AppState {
     /// options alone ([`reuse_providers`]): their memory (the Claude OAuth source's 401 stop,
     /// 5-minute rest and `Retry-After` back-off) must not reset on every Apply.
     pub providers: Vec<Arc<dyn Provider>>,
+    /// `memory.seen` as the state file has it ([`AppState::state_to_save`]).
+    pub saved_seen: SeenMap,
 }
 
 /// The providers for `after`: the existing instance of a provider whose options did not change
@@ -357,6 +360,7 @@ impl AppState {
             flyout: FlyoutState::default(),
             readout: ReadoutState::default(),
             refreshing: false,
+            saved_seen: SeenMap::new(),
         }
     }
 
@@ -393,10 +397,40 @@ impl AppState {
             // The service was turned off while its fetch ran.
             return;
         };
-        if let Some(snapshot) = apply_to_source(source, result)
-            && let Err(e) = self.history.record(&snapshot)
-        {
-            log::warn!("history: {e}");
+        if let Some(snapshot) = apply_to_source(source, result) {
+            self.history.record(&snapshot);
+        }
+    }
+
+    /// Restores the meters earlier runs saw (the state file; `EvalMemory::seen`, so a meter a
+    /// later reading lacks keeps its room in the readout, R§6.3), keeping only those the history
+    /// has a reading of from the last [`IN_MEMORY_SPAN`] (31 days): a meter that no source has
+    /// reported for a month stops holding room. The first evaluation rewrites the file when
+    /// entries were dropped ([`AppState::state_to_save`]).
+    pub fn restore_seen(&mut self, saved: &SavedState, now: Timestamp) {
+        let since = now.checked_sub(IN_MEMORY_SPAN).unwrap_or(Timestamp::MIN);
+        let all = saved.seen_map();
+        self.memory.seen = all
+            .iter()
+            .filter(|(key, _)| !self.history.samples(key, since).is_empty())
+            .map(|(key, entry)| (key.clone(), entry.clone()))
+            .collect();
+        self.saved_seen = all;
+    }
+
+    /// The state file's new bytes when `EvalMemory::seen` changed since the last save (or the
+    /// restore); `None` otherwise. The caller queues them for the writer thread.
+    pub fn state_to_save(&mut self) -> Option<Vec<u8>> {
+        if self.memory.seen == self.saved_seen {
+            return None;
+        }
+        self.saved_seen = self.memory.seen.clone();
+        match persist::state_bytes(&SavedState::from_seen(&self.memory.seen)) {
+            Ok(bytes) => Some(bytes),
+            Err(e) => {
+                log::warn!("cannot encode the state file: {e}");
+                None
+            }
         }
     }
 
@@ -582,6 +616,123 @@ pub(crate) mod tests {
 
     fn ts(s: &str) -> Timestamp {
         s.parse().expect("valid timestamp")
+    }
+
+    /// An app state over `history` with fake sources of `providers` (no environment lookup).
+    fn app_state(providers: &[ProviderId], history: HistoryStore) -> AppState {
+        use lastdrop_win::palette::Argb;
+        use lastdrop_win::theme::AccentShades;
+        let settings = settings_of(providers);
+        let accent = Argb(0xFF8E_3AA7);
+        AppState {
+            sources: sources_of(&settings, providers),
+            settings,
+            memory: EvalMemory::default(),
+            evaluation: None,
+            history,
+            theme: ThemeInfo {
+                taskbar_dark: true,
+                apps_dark: true,
+                accent: AccentShades {
+                    accent,
+                    dark1: accent,
+                    dark2: accent,
+                    light2: accent,
+                    light3: accent,
+                },
+                transparency: false,
+                high_contrast: None,
+            },
+            locale: LocaleFormat::en_gb(jiff::tz::TimeZone::UTC),
+            strings: English,
+            flyout: FlyoutState::default(),
+            readout: ReadoutState::default(),
+            refreshing: false,
+            providers: Vec::new(),
+            saved_seen: SeenMap::new(),
+        }
+    }
+
+    #[test]
+    fn seen_meters_survive_a_restart_while_their_history_is_recent() {
+        let dir = std::env::temp_dir().join(format!(
+            "lastdrop-state-test-{}-{}",
+            std::process::id(),
+            Timestamp::now().as_nanosecond()
+        ));
+        let state_file = dir.join("state.json");
+        let writer = crate::writer::Writer::start().expect("writer");
+        let now = ts("2026-10-10T10:42:00Z");
+        let claude = SourceKey {
+            provider: ProviderId::Claude,
+            account: AccountKey::primary(),
+        };
+        let key = |meter: &str| MeterKey {
+            provider: ProviderId::Claude,
+            account: AccountKey::primary(),
+            meter: MeterId::new(meter),
+        };
+        let earlier = now - jiff::SignedDuration::from_hours(1);
+        let mut with_fable = snapshot(ProviderId::Claude, earlier, 0.3);
+        let mut fable = with_fable.meters[0].clone();
+        fable.id = MeterId::new("weekly:fable");
+        fable.names =
+            lastdrop_core::model::MeterNames::new("Fable", "Fable weekly", "Weekly · Fable");
+        fable.order = 2;
+        with_fable.meters.push(fable);
+
+        // First run: the OAuth source reports the per-model weekly; it is recorded and saved.
+        let history = HistoryStore::open(&dir.join("history"), now, writer.handle()).expect("open");
+        let mut first = app_state(&[ProviderId::Claude], history);
+        first.history.record(&with_fable);
+        if let Some(source) = first.sources.get_mut(&claude) {
+            source.latest = Some(with_fable.clone());
+        }
+        first.evaluate(now);
+        assert!(first.memory.seen.contains_key(&key("weekly:fable")));
+        let bytes = first.state_to_save().expect("seen changed");
+        assert_eq!(first.state_to_save(), None, "saved once");
+        // A meter an older run saw and that has no history any more rides along in the file.
+        let mut saved: SavedState = serde_json::from_slice(&bytes).expect("state json");
+        saved.seen.push(persist::SeenMeter {
+            key: key("weekly:retired"),
+            names: lastdrop_core::model::MeterNames::new("Old", "old weekly", "Weekly · Old"),
+            balance: false,
+        });
+        writer.handle().replace(
+            state_file.clone(),
+            persist::state_bytes(&saved).expect("encode"),
+            "state",
+        );
+        writer.handle().flush();
+
+        // Restart: a reading without the per-model weekly (Claude Desktop's history answers).
+        let history = HistoryStore::open(&dir.join("history"), now, writer.handle()).expect("open");
+        let mut second = app_state(&[ProviderId::Claude], history);
+        second.restore_seen(&persist::load_state(&state_file), now);
+        assert!(second.memory.seen.contains_key(&key("weekly:fable")));
+        assert!(
+            !second.memory.seen.contains_key(&key("weekly:retired")),
+            "no reading for a month: dropped"
+        );
+        if let Some(source) = second.sources.get_mut(&claude) {
+            source.latest = Some(snapshot(ProviderId::Claude, now, 0.31));
+        }
+        let eval = second.evaluate(now);
+        let absent: Vec<&MeterKey> = eval.services[0].absent.iter().map(|a| &a.key).collect();
+        assert_eq!(
+            absent,
+            vec![&key("weekly:fable")],
+            "the width keeps its room"
+        );
+        // The dropped entry is written out once.
+        let pruned = second.state_to_save().expect("pruned");
+        let pruned: SavedState = serde_json::from_slice(&pruned).expect("state json");
+        let names: Vec<&str> = pruned.seen.iter().map(|m| m.key.meter.0.as_str()).collect();
+        assert_eq!(names, vec!["weekly", "weekly:fable"]);
+        assert_eq!(second.state_to_save(), None);
+        writer.shutdown();
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     fn result(source: &SourceKey, outcome: Option<Result<Snapshot, FetchError>>) -> JobResult {

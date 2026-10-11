@@ -47,6 +47,7 @@ Windows-specific and has no I/O.
 | **readout** | the taskbar readout: a hidden top-level window that receives `TaskbarCreated`, the layered readout window (a topmost `WS_POPUP` over the taskbar, never parented into it; readout-spec §6.1), the WinEvent hooks on the taskbar, its own message loop and drawing | I/O, waiting on locks held by other threads, synchronous cross-process calls while holding a lock |
 | **occupancy** | a UI Automation client (MTA) that measures where the taskbar's app buttons are, with connection and transaction timeouts | anything else |
 | **refresh workers** | provider fetches (files, HTTP, `codex app-server`), one job per credential source at a time | touching UI objects |
+| **writer** | every file write after start-up, one job at a time in the order the main thread queued them: history appends and the daily compaction, settings and state saves (atomic replace); the log has a writer thread of its own | anything but writing files |
 
 Why a separate readout thread: the readout follows Explorer's taskbar (WinEvent hooks, geometry
 reads, re-raising itself when the taskbar comes to the top of the topmost band) and must react
@@ -151,7 +152,11 @@ Rules for every provider:
   window's reset time; one job per credential source in flight.
 - **Persistence:** settings in `%APPDATA%\Lastdrop\settings.json` (atomic write, no
   secrets); history in `%LOCALAPPDATA%\Lastdrop\` (thinned to one sample per meter per
-  5 minutes, 90 days); logs in `%LOCALAPPDATA%\Lastdrop\logs` (rotated, local only).
+  5 minutes, 90 days); `%LOCALAPPDATA%\Lastdrop\state.json` (what the app remembers that is
+  not a setting: the meters a source has reported, so their room in the readout survives a
+  restart; meter keys and names only, no secrets); logs in `%LOCALAPPDATA%\Lastdrop\logs`
+  (rotated, local only). Start-up reads them on the main thread before the event loop; every
+  later write is queued for the writer thread, so the UI thread never waits on the disk.
 - **No telemetry.** The only network traffic is to the services whose usage is being read.
 
 ## Quality bar

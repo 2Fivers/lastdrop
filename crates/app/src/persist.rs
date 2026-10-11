@@ -1,14 +1,18 @@
-//! Settings and folders (ARCHITECTURE "Persistence"): settings in
+//! Settings, the state file and folders (ARCHITECTURE "Persistence"): settings in
 //! `%APPDATA%\Lastdrop\settings.json` (atomic write, no secrets); data in
-//! `%LOCALAPPDATA%\Lastdrop\` (history, logs).
+//! `%LOCALAPPDATA%\Lastdrop\` (history, logs, `state.json`).
 //!
-//! Threading: main thread (settings are small; a save is one atomic file replace).
+//! Threading: loading runs on the main thread at start-up; saves are encoded on the main thread
+//! and written by the writer thread ([`crate::writer`], [`write_atomic`]).
 
+use std::collections::BTreeMap;
 use std::ffi::OsString;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
+use lastdrop_core::model::{MeterKey, MeterNames};
 use lastdrop_core::settings::{SETTINGS_VERSION, Settings};
+use serde::{Deserialize, Serialize};
 use windows::Win32::Storage::FileSystem::{
     MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH, MoveFileExW,
     REPLACEFILE_IGNORE_MERGE_ERRORS, ReplaceFileW,
@@ -29,6 +33,9 @@ pub struct Paths {
     pub history: PathBuf,
     /// `%LOCALAPPDATA%\Lastdrop\logs`: rotated, local only.
     pub logs: PathBuf,
+    /// `%LOCALAPPDATA%\Lastdrop\state.json`: what the app remembers between runs that is not a
+    /// setting ([`SavedState`]).
+    pub state: PathBuf,
 }
 
 impl Paths {
@@ -57,6 +64,7 @@ impl Paths {
             settings: roaming.join("settings.json"),
             history: data.join("history"),
             logs: data.join("logs"),
+            state: data.join("state.json"),
             data,
         }
     }
@@ -158,11 +166,110 @@ pub fn migrate(document: serde_json::Value) -> Result<Settings, serde_json::Erro
     Ok(settings)
 }
 
-/// Saves settings atomically ([`write_atomic`], pretty JSON).
-pub fn save_settings(path: &Path, settings: &Settings) -> std::io::Result<()> {
+/// The settings file's bytes (pretty JSON), for the writer thread.
+pub fn settings_bytes(settings: &Settings) -> std::io::Result<Vec<u8>> {
     let mut bytes = serde_json::to_vec_pretty(settings).map_err(std::io::Error::other)?;
     bytes.push(b'\n');
-    write_atomic(path, &bytes)
+    Ok(bytes)
+}
+
+/// Saves settings atomically ([`write_atomic`], pretty JSON) on the calling thread.
+pub fn save_settings(path: &Path, settings: &Settings) -> std::io::Result<()> {
+    write_atomic(path, &settings_bytes(settings)?)
+}
+
+/// The version of the state file's schema.
+pub const STATE_VERSION: u32 = 1;
+
+/// The state file (`%LOCALAPPDATA%\Lastdrop\state.json`): what the app remembers between runs
+/// that is not a setting. A cache: an unreadable file is ignored and rewritten. **No secrets**:
+/// meter keys (service, the account's key — `default` in M1, never an e-mail address or an
+/// account id — and the meter id) and the meters' display names.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct SavedState {
+    /// Schema version ([`STATE_VERSION`]).
+    pub version: u32,
+    /// Every meter a source has reported (`lastdrop_core::stats::EvalMemory::seen`), so a meter
+    /// that a later reading lacks still keeps its room in the readout after a restart (R§6.3).
+    pub seen: Vec<SeenMeter>,
+}
+
+impl Default for SavedState {
+    fn default() -> SavedState {
+        SavedState {
+            version: STATE_VERSION,
+            seen: Vec::new(),
+        }
+    }
+}
+
+/// One entry of [`SavedState::seen`].
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SeenMeter {
+    /// The meter.
+    #[serde(flatten)]
+    pub key: MeterKey,
+    /// Its names as last reported.
+    pub names: MeterNames,
+    /// It is a balance meter.
+    #[serde(default)]
+    pub balance: bool,
+}
+
+/// `EvalMemory::seen` as kept in memory.
+pub type SeenMap = BTreeMap<MeterKey, (MeterNames, bool)>;
+
+impl SavedState {
+    /// The state of `seen`.
+    pub fn from_seen(seen: &SeenMap) -> SavedState {
+        SavedState {
+            version: STATE_VERSION,
+            seen: seen
+                .iter()
+                .map(|(key, (names, balance))| SeenMeter {
+                    key: key.clone(),
+                    names: names.clone(),
+                    balance: *balance,
+                })
+                .collect(),
+        }
+    }
+
+    /// [`SavedState::seen`] as kept in memory.
+    pub fn seen_map(&self) -> SeenMap {
+        self.seen
+            .iter()
+            .map(|m| (m.key.clone(), (m.names.clone(), m.balance)))
+            .collect()
+    }
+}
+
+/// Loads the state file; never fails: a missing or unreadable file gives the empty state (it is
+/// a cache, rewritten on the next change).
+pub fn load_state(path: &Path) -> SavedState {
+    let bytes = match std::fs::read(path) {
+        Ok(bytes) => bytes,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return SavedState::default(),
+        Err(e) => {
+            log::warn!("state file unreadable: {e}");
+            return SavedState::default();
+        }
+    };
+    match serde_json::from_slice::<SavedState>(&bytes) {
+        Ok(state) => state,
+        Err(e) => {
+            log::warn!("state file not understood ({e}); starting empty");
+            SavedState::default()
+        }
+    }
+}
+
+/// The state file's bytes (pretty JSON), for the writer thread.
+pub fn state_bytes(state: &SavedState) -> std::io::Result<Vec<u8>> {
+    let mut bytes = serde_json::to_vec_pretty(state).map_err(std::io::Error::other)?;
+    bytes.push(b'\n');
+    Ok(bytes)
 }
 
 /// Writes `bytes` to `path` atomically: a temporary file in the same folder, flushed, then
@@ -261,6 +368,52 @@ mod tests {
             p.logs,
             PathBuf::from(r"C:\Users\tester\AppData\Local\Lastdrop\logs")
         );
+        assert_eq!(
+            p.state,
+            PathBuf::from(r"C:\Users\tester\AppData\Local\Lastdrop\state.json")
+        );
+    }
+
+    #[test]
+    fn the_state_file_round_trips_and_tolerates_damage() {
+        use lastdrop_core::model::{AccountKey, MeterId, ProviderId};
+        let dir = temp_dir("state");
+        let path = dir.join("state.json");
+        assert_eq!(load_state(&path), SavedState::default(), "missing");
+
+        let key = |provider, meter: &str| MeterKey {
+            provider,
+            account: AccountKey::primary(),
+            meter: MeterId::new(meter),
+        };
+        let mut seen = SeenMap::new();
+        seen.insert(
+            key(ProviderId::Claude, "weekly:fable"),
+            (
+                MeterNames::new("Fable", "Fable weekly", "Weekly · Fable"),
+                false,
+            ),
+        );
+        seen.insert(
+            key(ProviderId::Meshy, "credits"),
+            (MeterNames::new("Cr", "credits", "Credits"), true),
+        );
+        let state = SavedState::from_seen(&seen);
+        write_atomic(&path, &state_bytes(&state).expect("encode")).expect("write");
+        let back = load_state(&path);
+        assert_eq!(back, state);
+        assert_eq!(back.seen_map(), seen);
+        // The file holds keys and names only.
+        let text = std::fs::read_to_string(&path).expect("read");
+        assert!(text.contains("\"meter\": \"weekly:fable\""), "{text}");
+        assert!(text.contains("\"account\": \"default\""), "{text}");
+
+        std::fs::write(&path, b"{ not json").expect("damage");
+        assert_eq!(load_state(&path), SavedState::default());
+        // Unknown and missing fields are fine (a newer or older build's file).
+        std::fs::write(&path, br#"{ "future": 1, "seen": [] }"#).expect("write");
+        assert_eq!(load_state(&path), SavedState::default());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

@@ -166,6 +166,8 @@ messages! {
     CardLineNoReset = "card.line.noreset" => "No reset time given",
     CardLineNoLength = "card.line.nolength" => "window length unknown",
     CardLineJustReset = "card.line.justreset" => "Reset at {time} · waiting for the first reading",
+    // R§3.9 ENDED: the hover card's reset line and the flyout row's right cluster.
+    CardLineEnded = "card.line.ended" => "Ended by {time}",
     CardValue = "card.value" => "{pct} used",
     CardBalanceValue = "card.balance.value" => "{pct} of top-up used",
     CardBalanceLeft = "card.balance.left" => "{amount} of {ref} {unit} left",
@@ -256,6 +258,7 @@ messages! {
     A11yRowIdle = "a11y.row.idle" => "{service} {meter}: not started, {n} percent used, starts with your next message.",
     A11yRowNoReset = "a11y.row.noreset" => "{service} {meter}: {n} percent used, no reset time given.",
     A11yRowLoading = "a11y.row.loading" => "{service} {meter}: reading.",
+    A11yRowEnded = "a11y.row.ended" => "{service} {meter}: ended by {time}, no newer reading.",
     A11yServiceOffline = "a11y.service.offline" => "{service}: offline, last reading {age} ago. Then: {rows}.",
     A11yServiceNoData = "a11y.service.nodata" => "{service}: not answering, last reading {age} ago. Then: {rows}.",
     A11yServiceOldReading = "a11y.service.oldreading" => "{service}: no new reading, last reading {age} ago. Then: {rows}.",

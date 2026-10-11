@@ -223,13 +223,20 @@ When `now ≥ R` and no newer reading has arrived:
   interval for undocumented endpoints: if the last fetch is less than 5 min old, wait until it is not).
 - The hover card says "Reset at 16:30 · waiting for the first reading".
 
+**No reset time, a window length later**: a `starts_on_use` window with `R` none whose reading showed use (`u > 0`)
+and is at least `L` old (`now ≥ t_r + L`; Claude Desktop's history while Claude Desktop is closed) has certainly
+ended, by `t_r + L` at the latest, and nothing says whether a new one has started. State **ENDED** until the next
+reading: `u` unknown (no value, no tick, no forecast, no severity), ranked with LOADING (§3.10); the hover card and
+the flyout say `Ended by 17:42` (`t_r + L`).
+
 ### 3.10 Ranking: auto rows and the winner
 
 Candidates: every meter of every enabled service; balance meters only when WARNING or worse.
 
 Rank key, most constrained first:
 
-1. Display class: EXHAUSTED 5 > CRITICAL 4 > WARNING 3 > STALE 2 > OK 1 > LOADING 0.
+1. Display class: EXHAUSTED 5 > CRITICAL 4 > WARNING 3 > STALE 2 > OK 1 > LOADING 0 (ENDED, §3.9, counts as
+   LOADING: it never takes a place from a meter that says something about now).
 2. Within EXHAUSTED: later `R` first (out for longer; `R` none counts as latest). Within CRITICAL and WARNING:
    earlier `t_out` first (CRITICAL by level without `t_out`: use `R`; `R` none: last). Within OK and STALE: higher
    pressure `q = max(u, p)` first (`p = u` when no valid forecast; IDLE has `q = 0`).
@@ -275,12 +282,14 @@ LOADING ──first reading──▶ (from §3.7) OK | IDLE | WARNING | CRITICAL
 any fresh state ──service stale──▶ STALE(reason) ──fresh reading──▶ (recomputed)
 any fresh state ──now ≥ R──▶ JUST_RESET (fixed schedule: u = 0, R' = R + L, guards)
                           or IDLE (starts_on_use / L unknown: u = 0, R none) ──next reading──▶ (recomputed)
+any state, R none, starts_on_use, u > 0 ──now ≥ t_r + L──▶ ENDED ──next reading──▶ (recomputed)
 ```
 
 `CRITICAL_LEVEL` = CRITICAL entered by `pct ≥ 90` while `!runs_out`; `CRITICAL_RUNWAY` = CRITICAL with
 `runs_out` (the level rule may also hold: a meter at 91 % that runs out in 6 h is CRITICAL_RUNWAY and counts down).
-`IDLE` = `u = 0` with no reset time (§3.2). The row's look is chosen by the table in §5.7. Every state in this list
-has a mock in readout.html §1 and a card in flyout.html §1–4.
+`IDLE` = `u = 0` with no reset time (§3.2). `ENDED` = §3.9's window that has certainly ended with no newer reading
+(fresh or stale). The row's look is chosen by the table in §5.7. Every state in this list except ENDED (a LOADING row
+with an age) has a mock in readout.html §1 and a card in flyout.html §1–4.
 
 ### 4.2 Readout form
 
@@ -417,6 +426,7 @@ time/status starting at x = 30. "Say" text starts at x = 0.
 | EXHAUSTED | fill Critical, full length | ● + `Back 16:30` (no reset time, or balance: ● + `Empty`) |
 | JUST_RESET | empty fill, tick at `e(R')` | `0%` + `↺7d` (the new `R'`) |
 | STALE | dashed fill and tick in the stale colour, frozen at `t_r` | `42%` (stale colour) + REASON or AGE (below) |
+| ENDED (§3.9) | track only, no tick | `–` in the VALUE box (TextSecondary) + AGE (TextSecondary); stale service: REASON or AGE as STALE (below) |
 
 ▲ = warning glyph, ● = critical glyph (§6.7). Say-text (▲/● and words) starts at x = 0: glyph 12 + 2 + text.
 
@@ -429,7 +439,7 @@ colour, no glyph, and the status goes to the service's other row (one-row servic
 
 Left-aligned. OK `61%` · IDLE `0%` · STALE `61%` (stale colour) · WARNING ▲ `78%` semibold · any row that shows a
 countdown in the two-row form (§5.3) ▲/● + COUNTDOWN without "left" (`12 min`, `6 h`) semibold · CRITICAL_LEVEL
-● `92%` semibold · EXHAUSTED ● `Empty` semibold · LOADING `–`. The reset and run-out times move to the hover card.
+● `92%` semibold · EXHAUSTED ● `Empty` semibold · LOADING and ENDED `–`. The reset and run-out times move to the hover card.
 
 ### 5.9 Localization
 
@@ -455,8 +465,12 @@ translation can never be cut off. Swedish weekday abbreviations are lower-case b
 - Content block: rows are `rowH = round(16 s)` tall; two rows centred in the slot
   (`y1 = floor((slotH − 2 rowH) / 2)`, `y2 = y1 + rowH`; 4 px above and below at 100 %), so row 1 aligns with the
   clock's time line and row 2 with its date line. SINGLE_ROW and COMPACT: one row at `floor((slotH − rowH) / 2)`
-  (y = 12 at 100 %). Text baselines: DirectWrite line box of `rowH` with the font's default line spacing, text
-  vertically centred in it (as the clock does).
+  (y = 12 at 100 %). Text baselines: the CSS line box the mocks are drawn with, baseline at
+  `floor((rowH − (A + D)) / 2) + A` from the row's top, where `A` and `D` are the font's DirectWrite design ascent
+  and descent at the em size, each rounded half up (the line gap is not used): Segoe UI Variable Small 12 px → 13 /
+  16 / 19 at 100 / 125 / 150 %, the 11 px label → 12 / 16 / 19, Segoe Fluent Icons 11 px (`↺`) → 13 / 17 / 20.
+  Glyph cells use the same rule with the cell's height. (Centring DirectWrite's own line box puts the label and the
+  `↺` 1 px below the mock at 100 %.)
 - 6 px horizontal padding inside the slot on both sides.
 - Text rendering: DirectWrite, **grayscale** antialiasing (ClearType cannot be used on per-pixel-alpha
   surfaces), pixel-snapped glyph runs, gamma as the system's. Fonts: §6.5.
@@ -470,8 +484,9 @@ present only when rows can come from more than one service (§6.4).
 
 Computed in device px with the actual fonts at the actual DPI, whenever the locale, DPI, pinned set or enabled
 services change — **never** when data changes, so the readout keeps one width in every state. A meter a source
-reported earlier in this run still *can appear* when a later reading lacks it (a per-model weekly that only the
-OAuth source reports while Claude Desktop's history answers).
+reported earlier still *can appear* when a later reading lacks it (a per-model weekly that only the OAuth source
+reports while Claude Desktop's history answers); "earlier" includes earlier runs (the app's state file keeps the list)
+as long as the history has a reading of the meter from the last 31 days.
 
 ```
 LW        = ceil(max width of short_label over every meter that can appear in the readout)     // 11 px font
@@ -670,7 +685,7 @@ A tooltip-style card over the readout or the tray icon; the readout's legend.
 | Header | severity glyph 16 px (cell 16 × 20) + 8 + title (Segoe UI Variable Text 14/20 semibold, TextPrimary) |
 | Sentence | margin-top 4; 12/16 regular, TextPrimary; wraps; templates in Appendix B |
 | Service section | margin-top 12, 1 px divider, padding-top 10; service row 16 high: provider glyph 16 + 6 + name 12/16 semibold + 6 + plan 12/16 TextSecondary, age right-aligned 12/16 TextSecondary (`Updated 1 min ago`; stale: `Last reading 12:42`) |
-| Meter block (window) | margin-top 10. Row 16: name 12/16 semibold left, `42% used` right (semibold when the meter is in trouble). Bar 296 wide, row 11, 1 px margin above and below. Line 16: tick key + `55% of time gone` (TextSecondary) left, forecast right. Line 16: reset glyph + `Resets 14:56` left, `in 2 h 14 min` right. IDLE: tick line `window not started`, reset line `Starts with your next use`, nothing right on either. `L` unknown: tick line `window length unknown`. `R` none (not IDLE): reset line `No reset time given` |
+| Meter block (window) | margin-top 10. Row 16: name 12/16 semibold left, `42% used` right (semibold when the meter is in trouble). Bar 296 wide, row 11, 1 px margin above and below. Line 16: tick key + `55% of time gone` (TextSecondary) left, forecast right. Line 16: reset glyph + `Resets 14:56` left, `in 2 h 14 min` right. IDLE: tick line `window not started`, reset line `Starts with your next use`, nothing right on either. `L` unknown: tick line `window length unknown`. `R` none (not IDLE): reset line `No reset time given`. ENDED (§3.9): `–` instead of `42% used`, reset line `Ended by 17:42`, nothing right |
 | Meter block (balance) | margin-top 10. Row 16: name (`Credits`) 12/16 semibold left, `62% of top-up used` right (semibold in trouble). Bar 296, no tick. Line 16: `1,240 of 3,260 credits left` (TextSecondary) left, forecast right: `lasts ≈ 9 days` / `runs out ≈ Thu` (semibold, WARNING/CRITICAL) / `empty` / `no use in 7 days` / `not enough history yet`. Line 16: `136 a day, last 7 days` left, `until ≈ Mon 19 Oct` right (both omitted without a forecast) |
 | Also tracked | margin-top 12, divider, padding-top 10; header `Also tracked` 12/16 TextSecondary; then every enabled meter that is not a readout row: the 4 highest by rank (§3.10, balances at any severity), listed in service/meter order, then `+N more`. One 20 px line each: glyph 12, 6, `{service} {short_name}` (`Claude 5-hour`, `Codex weekly`, `Meshy credits`), value right (`42%`; balance: the amount `1,240`; semibold in trouble), then a left-aligned column, as wide as its widest entry and at least 56 px, with the time part of that meter's two-row readout cell (`↺14:56`, ▲ `Out 15:20`, ● `12 min left`, ● `Back 16:30`, `≈ 9 days`, `–`) |
 
@@ -715,7 +730,7 @@ No fade animation in M1.
 | CRITICAL (level or runway) | filled tile in Critical, digits TextOnAccentFillColorPrimary |
 | EXHAUSTED | filled tile in Critical, hollow drop in TextOnAccentFillColorPrimary |
 | STALE (incl. PAUSED, SIGN_IN) | digits and dashed bar in the stale colour, tick frozen |
-| LOADING / no services | the Lastdrop drop, filled, TextPrimary |
+| LOADING, ENDED / no services | the Lastdrop drop, filled, TextPrimary |
 
 - Balance winner (only when WARNING or worse): digits = `pct` of the top-up spent; tile as above.
 
@@ -792,6 +807,8 @@ locale uses it.
 - `Claude weekly, all models: critical, runs out in about 6 hours; 91 percent used; resets Monday 9:00 AM.`
 - `Claude 5-hour session: empty, back at 4:30 PM.`
 - `Claude 5-hour session: not started, 0 percent used, starts with your next message.`
+- `Claude 5-hour session: ended by 5:42 PM, no newer reading.` (ENDED, §3.9; also when its service is stale: an
+  ENDED row is not listed after "Then:")
 - `Claude: offline, last reading 47 minutes ago. Then: 5-hour session 42 percent used, weekly 61 percent used.`
 - `Claude: sign-in expired, last reading 47 minutes ago. Select to open Lastdrop and see how to sign in.`
 - `Meshy: 1,240 credits left, about 9 days at the current rate.`
@@ -950,6 +967,7 @@ and §8.2.
 | card.line.forecast | `on course for {p}% at reset` / `lasts to the reset` / `no forecast yet` / `runs out ≈ {time}` / `used up` |
 | card.line.reset / in | `Resets {time}` / `in {duration}` |
 | card.line.idle / notstarted / noreset / nolength | `Starts with your next use` / `window not started` / `No reset time given` / `window length unknown` |
+| card.line.ended | `Ended by {time}` (§3.9 ENDED: hover card reset line, flyout right cluster) |
 | card.balance.value / left / rate | `{pct}% of top-up used` / `{amount} of {ref} {unit} left` / `{burn} a day, last 7 days` |
 | card.balance.forecast | `lasts ≈ {duration}` / `runs out ≈ {time}` / `empty` / `no use in 7 days` / `not enough history yet` |
 | card.age / card.age.stale | `Updated {age}` / `Last reading {time}` |

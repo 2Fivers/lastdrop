@@ -113,36 +113,98 @@ pub fn monitor_for(anchor: Anchor) -> MonitorInfo {
     }
 }
 
+/// The flyout's left edge (F§1.3): centred on the anchor, clamped to
+/// `[work.left + 12 s, work.right − 12 s − width]`.
+fn flyout_left(anchor: Anchor, width: i32, monitor: &MonitorInfo) -> i32 {
+    let margin = scale(EDGE_MARGIN, monitor.dpi);
+    let work = monitor.work;
+    clamp_span(
+        centred(center2_x(anchor), width),
+        width,
+        work.left + margin,
+        work.right - margin,
+    )
+}
+
+/// The rows `[top, bottom)` a flyout whose columns are `[left, left + width)` may use, device px:
+/// the work area less `12 s` at both ends, and `12 s` clear of the rect anchor and of `avoid`
+/// where they lie inside the work area and cross those columns (see [`flyout_rect`]).
+fn flyout_span(
+    anchor: Anchor,
+    left: i32,
+    width: i32,
+    monitor: &MonitorInfo,
+    edge: TaskbarEdge,
+    avoid: Option<Rect>,
+) -> (i32, i32) {
+    let margin = scale(EDGE_MARGIN, monitor.dpi);
+    let work = monitor.work;
+    // A point anchor (the cursor, when the icon rect is unknown) may lie in the overflow popup
+    // above the taskbar; only a rect anchor (tray icon, readout slot) moves the flyout.
+    let anchor_rect = match anchor {
+        Anchor::Rect(r) => Some(r),
+        Anchor::Point(_) => None,
+    };
+    // Only a rect over the work area is in the way (a floating readout: the anchor itself, or
+    // `avoid` beside the tray icon), and only where the flyout's columns cross it. A tray icon or
+    // docked readout on the taskbar lies outside the work area; an icon on a vertical taskbar lies
+    // beside the flyout's columns.
+    let in_the_way = |r: &Rect| {
+        r.left < left + width && r.right > left && r.top < work.bottom && r.bottom > work.top
+    };
+    let obstacles = anchor_rect.into_iter().chain(avoid).filter(in_the_way);
+    match edge {
+        TaskbarEdge::Top => {
+            let below = obstacles.fold(work.top, |y, r| y.max(r.bottom));
+            (below + margin, work.bottom - margin)
+        }
+        TaskbarEdge::Bottom | TaskbarEdge::Left | TaskbarEdge::Right => {
+            let above = obstacles.fold(work.bottom, |y, r| y.min(r.top));
+            (work.top + margin, above - margin)
+        }
+    }
+}
+
+/// The tallest flyout (device px) that fits [`flyout_rect`]'s span for `width`: the work area
+/// less the margins, and less a readout floating where the flyout opens (`avoid`, or the anchor
+/// itself), so a full flyout never covers it (F§1.2 max height). Never negative.
+pub fn flyout_max_height(
+    anchor: Anchor,
+    width: i32,
+    monitor: &MonitorInfo,
+    edge: TaskbarEdge,
+    avoid: Option<Rect>,
+) -> i32 {
+    let left = flyout_left(anchor, width, monitor);
+    let (top, bottom) = flyout_span(anchor, left, width, monitor, edge, avoid);
+    (bottom - top).max(0)
+}
+
 /// The flyout rectangle (F§1.3), device px: centred on the anchor horizontally, clamped to
 /// `[work.left + 12 s, work.right − 12 s − width]`; bottom edge `12 s` above the work area's
 /// bottom (top taskbar: top edge `12 s` below the work area's top). `size` is the window size in
-/// device px (width 360 × s; height from content, max `min(560, work height − 24) × s`).
+/// device px (width 360 × s; height from content, at most [`flyout_max_height`]).
 ///
 /// Left and right (third-party vertical) taskbars use the bottom rule. A window taller than the
-/// work area minus the margins starts `12 s` below the work area's top.
+/// space starts at the top of it (`12 s` below the work area's top).
 ///
 /// A rect anchor inside the work area — the readout floating above the taskbar (no room on it)
-/// — moves the flyout's edge `12 s` beyond the anchor instead, so the flyout never covers it
-/// (**not from the spec**: F§1.3 assumes the anchor is on the taskbar).
-pub fn flyout_rect(anchor: Anchor, size: Size, monitor: &MonitorInfo, edge: TaskbarEdge) -> Rect {
-    let margin = scale(EDGE_MARGIN, monitor.dpi);
-    let work = monitor.work;
-    let left = clamp_span(
-        centred(center2_x(anchor), size.width),
-        size.width,
-        work.left + margin,
-        work.right - margin,
-    );
-    // A point anchor (the cursor, when the icon rect is unknown) may lie in the overflow popup
-    // above the taskbar; only a rect anchor (tray icon, readout slot) moves the flyout.
-    let (near_top, near_bottom) = match anchor {
-        Anchor::Rect(r) => (r.top, r.bottom),
-        Anchor::Point(_) => (work.bottom, work.top),
-    };
+/// — moves the flyout's edge `12 s` beyond the anchor instead, so the flyout never covers it; so
+/// does `avoid`, the floating readout's slot when the flyout opens from the tray icon and its
+/// columns cross the slot (F§1.3). Pass `None` for a docked or hidden readout.
+pub fn flyout_rect(
+    anchor: Anchor,
+    size: Size,
+    monitor: &MonitorInfo,
+    edge: TaskbarEdge,
+    avoid: Option<Rect>,
+) -> Rect {
+    let left = flyout_left(anchor, size.width, monitor);
+    let (span_top, span_bottom) = flyout_span(anchor, left, size.width, monitor, edge, avoid);
     let top = match edge {
-        TaskbarEdge::Top => work.top.max(near_bottom) + margin,
+        TaskbarEdge::Top => span_top,
         TaskbarEdge::Bottom | TaskbarEdge::Left | TaskbarEdge::Right => {
-            (work.bottom.min(near_top) - margin - size.height).max(work.top + margin)
+            (span_bottom - size.height).max(span_top)
         }
     };
     Rect {
@@ -308,7 +370,7 @@ mod tests {
             };
             let anchor = Anchor::Rect(icon);
             let p = popup_position(anchor, size, &m);
-            let r = flyout_rect(anchor, size, &m, TaskbarEdge::Bottom);
+            let r = flyout_rect(anchor, size, &m, TaskbarEdge::Bottom, None);
             assert_eq!(p.x, r.left, "anchor x {x}");
             let margin = scale(12, m.dpi);
             assert!(p.y >= m.work.top + margin);

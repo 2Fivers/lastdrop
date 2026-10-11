@@ -36,6 +36,8 @@ given. Nothing in `.slint` formats a number or a time.
 - Height = header 40 + list + footer 48, where list = cards + 8 between cards + 12 bottom padding.
   With the reference content (Claude 3 meters, Codex 1 meter, Meshy balance): cards 171 + 89 + 102 → **478**.
 - Max height = min(560, work-area height − 24). Beyond it the list scrolls (§2.3); header and footer stay.
+  When the readout floats over the work area (no room on the taskbar) where the flyout opens, the space ends 12 px
+  before the readout instead (§1.3), so a full flyout never covers it.
 - Three services with up to three window meters in one card never scroll. A trouble line adds 20 px (4 + one 16 px
   line), a message line 8 + 16 px per line (one line: 24, the sign-in message wraps to two: 40); the window grows
   upward (bottom edge fixed) instead of scrolling until the max height. Mock heights: warning 498, stale 502.
@@ -47,7 +49,8 @@ given. Nothing in `.slint` formats a number or a time.
 - Horizontal: centred on that element, then clamped to `[work.left + 12, work.right − 12 − 360]`. With the tray at
   the right this lands 12 px from the screen edge, like Quick Settings.
 - Vertical: bottom edge 12 px above the work area's bottom (taskbar at the bottom); top edge 12 px below the work
-  area's top for a top taskbar.
+  area's top for a top taskbar. A readout floating over the work area in the flyout's columns (the element that
+  opened it, or beside the tray icon) moves that edge 12 px beyond the readout.
 
 ### 1.4 Show and hide
 
@@ -190,6 +193,7 @@ Trouble line  margin-top 4, 12/16 TextSecondary, one line, ellipsis (only in the
 | EXHAUSTED | ● + 4 + `Back 16:30` (no reset time: `Empty`) | `Used up since 14:58. Back in 1 h 32 min.` (`since` omitted if unknown) |
 | STALE | `Resets 14:56` (TextSecondary) | — (the card's message line explains) |
 | LOADING | — ; value `–`; bar track only | — |
+| ENDED (R§3.9) | `Ended by 17:42` (TextSecondary, no glyph); value `–`; bar track only, no tick | — |
 
 - The trouble line is one line with an ellipsis; the templates above fit 310 px in en-US with AM/PM (widest
   measured: `Nearly used up…` 308 px, `Empty ≈ 3:02 PM, 1 h 28 min before the 4:30 PM reset.` 296 px).

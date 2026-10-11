@@ -209,7 +209,8 @@ pub fn build_tray(eval: &Evaluation, cx: &BuildContext<'_>) -> TrayModel {
     };
     let digits = pct(a).min(TRAY_MAX_PCT).to_string();
     let icon = match a.state {
-        RowState::Loading => TrayIcon::Drop,
+        // An ENDED winner (every candidate tells nothing now) has no digits to show.
+        RowState::Loading | RowState::Ended => TrayIcon::Drop,
         RowState::Exhausted => TrayIcon::ExhaustedTile,
         RowState::CriticalLevel | RowState::CriticalRunway => TrayIcon::CriticalTile { digits },
         RowState::Warning => TrayIcon::CautionTile { digits },

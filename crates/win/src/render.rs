@@ -32,9 +32,9 @@ use windows::Win32::Graphics::DirectWrite::{
     DWRITE_FACTORY_TYPE_SHARED, DWRITE_FONT_FEATURE, DWRITE_FONT_FEATURE_TAG_CONTEXTUAL_ALTERNATES,
     DWRITE_FONT_FEATURE_TAG_CONTEXTUAL_LIGATURES, DWRITE_FONT_FEATURE_TAG_KERNING,
     DWRITE_FONT_FEATURE_TAG_STANDARD_LIGATURES, DWRITE_FONT_FEATURE_TAG_TABULAR_FIGURES,
-    DWRITE_FONT_STRETCH_NORMAL, DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_WEIGHT,
+    DWRITE_FONT_METRICS, DWRITE_FONT_STRETCH_NORMAL, DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_WEIGHT,
     DWRITE_FONT_WEIGHT_NORMAL, DWRITE_FONT_WEIGHT_SEMI_BOLD, DWRITE_LINE_METRICS,
-    DWRITE_PARAGRAPH_ALIGNMENT_CENTER, DWRITE_TEXT_ALIGNMENT, DWRITE_TEXT_ALIGNMENT_CENTER,
+    DWRITE_PARAGRAPH_ALIGNMENT_NEAR, DWRITE_TEXT_ALIGNMENT, DWRITE_TEXT_ALIGNMENT_CENTER,
     DWRITE_TEXT_ALIGNMENT_LEADING, DWRITE_TEXT_ALIGNMENT_TRAILING, DWRITE_TEXT_METRICS,
     DWRITE_TEXT_RANGE, DWRITE_WORD_WRAPPING_NO_WRAP, DWriteCreateFactory, IDWriteFactory,
     IDWriteFontCollection, IDWriteTextFormat, IDWriteTextLayout, IDWriteTextLayout1,
@@ -148,11 +148,28 @@ pub enum Align {
     Center,
 }
 
+/// The baseline of text in a line box `h` device px tall, from the box's top (R§6.1): the
+/// ascent `a` and descent `d` (device px at the em size, line gap left out) are each rounded to
+/// whole px, half up, and the half-leading `(h − (a + d)) / 2` is floored. This is the CSS line
+/// box the mocks are drawn with (Blink rounds a font's ascent and descent and floors the leading
+/// above the text), so readout text lands on the mocks' pixel rows at every scale: Segoe UI
+/// Variable Small 12 px → 13 / 16 / 19 at 100 / 125 / 150 % (`rowH` 16 / 20 / 24), the 11 px
+/// label → 12 / 16 / 19, Segoe Fluent Icons 11 px (`↺`) → 13 / 17 / 20.
+///
+/// Centring DirectWrite's own (unrounded) line box instead put the 11 px label and the `↺` one
+/// pixel lower than the mock at 100 % (a half-leading of exactly .5 rounds down in CSS and up in
+/// a snapped glyph run), and severity glyphs one lower at 125 % and 175 %.
+pub fn line_box_baseline(h: f32, ascent: f32, descent: f32) -> f32 {
+    let a = (ascent + 0.5).floor();
+    let d = (descent + 0.5).floor();
+    ((h - (a + d)) / 2.0).floor() + a
+}
+
 /// How a run of text is placed.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum TextPlacement {
-    /// In a line box: DirectWrite line box of `rect.h` with the font's default line spacing, text
-    /// vertically centred in it, as the taskbar clock does (R§6.1). Pixel-snapped.
+    /// In a line box of `rect.h` px: baseline at [`line_box_baseline`] from the box's top (the
+    /// mocks' CSS line box, R§6.1), whole px, pixel-snapped glyph runs.
     LineBox {
         /// The box.
         rect: RectF,
@@ -231,7 +248,12 @@ struct Formats {
     dwrite: IDWriteFactory,
     cache: RefCell<Vec<(FontFace, u32, FontWeight, IDWriteTextFormat)>>,
     tabular: RefCell<Option<IDWriteTypography>>,
+    /// Ascent and descent per face and weight ([`Formats::em_metrics`]).
+    metrics: RefCell<Vec<(FontFace, FontWeight, EmMetrics)>>,
 }
+
+/// A face's ascent and descent as shares of the em (DirectWrite design metrics).
+type EmMetrics = (f32, f32);
 
 impl Formats {
     fn new(dwrite: IDWriteFactory) -> Formats {
@@ -239,7 +261,80 @@ impl Formats {
             dwrite,
             cache: RefCell::new(Vec::new()),
             tabular: RefCell::new(None),
+            metrics: RefCell::new(Vec::new()),
         }
+    }
+
+    /// The ascent and descent of `font`'s face as shares of the em: the DirectWrite design
+    /// metrics of the resolved family (`DWRITE_FONT_METRICS`; the line gap is not used). `None`
+    /// when the family is not in the system collection (DirectWrite then falls back on its own,
+    /// and the caller measures the layout instead).
+    fn em_metrics(&self, font: &Font) -> Option<EmMetrics> {
+        if let Some(&(.., m)) = self
+            .metrics
+            .borrow()
+            .iter()
+            .find(|(face, weight, _)| *face == font.face && *weight == font.weight)
+        {
+            return Some(m);
+        }
+        let name = resolve_family(&self.dwrite, font.face);
+        let mut collection: Option<IDWriteFontCollection> = None;
+        // SAFETY: `collection` is a valid out pointer for the duration of the call.
+        unsafe { self.dwrite.GetSystemFontCollection(&mut collection, false) }.ok()?;
+        let collection = collection?;
+        let (mut index, mut exists) = (0u32, BOOL(0));
+        // SAFETY: the name is a valid NUL-terminated wide string for the call; the out pointers
+        // are valid locals.
+        unsafe { collection.FindFamilyName(&HSTRING::from(name), &mut index, &mut exists) }.ok()?;
+        if !exists.as_bool() {
+            return None;
+        }
+        // SAFETY: `index` came from FindFamilyName on this collection.
+        let family = unsafe { collection.GetFontFamily(index) }.ok()?;
+        // SAFETY: plain value arguments on a live family.
+        let matched = unsafe {
+            family.GetFirstMatchingFont(
+                dwrite_weight(font.weight),
+                DWRITE_FONT_STRETCH_NORMAL,
+                DWRITE_FONT_STYLE_NORMAL,
+            )
+        }
+        .ok()?;
+        let mut m = DWRITE_FONT_METRICS::default();
+        // SAFETY: `m` is a valid out pointer.
+        unsafe { matched.GetMetrics(&mut m) };
+        let em = f32::from(m.designUnitsPerEm.max(1));
+        let ratios = (f32::from(m.ascent) / em, f32::from(m.descent) / em);
+        self.metrics
+            .borrow_mut()
+            .push((font.face, font.weight, ratios));
+        Some(ratios)
+    }
+
+    /// Where the top of `layout` (one line of `font`, paragraph alignment near) goes so that its
+    /// baseline sits at [`line_box_baseline`] in a box `h` px tall starting at `top`.
+    fn line_box_top(
+        &self,
+        layout: &IDWriteTextLayout,
+        font: &Font,
+        top: f32,
+        h: f32,
+    ) -> windows::core::Result<f32> {
+        let mut lines = [DWRITE_LINE_METRICS::default(); 1];
+        let mut count = 0u32;
+        // SAFETY: the slice and the count are valid for the call. A layout with more than one
+        // line reports E_NOT_SUFFICIENT_BUFFER; the first line is filled either way.
+        let result = unsafe { layout.GetLineMetrics(Some(&mut lines), &mut count) };
+        if count == 0 {
+            result?;
+        }
+        let line = lines[0];
+        let (ascent, descent) = match self.em_metrics(font) {
+            Some((a, d)) => (a * font.size_px, d * font.size_px),
+            None => (line.baseline, line.height - line.baseline),
+        };
+        Ok(top + line_box_baseline(h, ascent, descent) - line.baseline)
     }
 
     /// OpenType `tnum`: Segoe UI Variable's default figures are proportional in DirectWrite
@@ -602,7 +697,11 @@ impl Canvas {
                 if self.note(set_alignment(&layout, alignment)).is_none() {
                     return;
                 }
-                (layout, v2(rect.x, rect.y), D2D1_DRAW_TEXT_OPTIONS_NONE)
+                let top = self.formats.line_box_top(&layout, font, rect.y, rect.h);
+                let Some(top) = self.note(top) else {
+                    return;
+                };
+                (layout, v2(rect.x, top), D2D1_DRAW_TEXT_OPTIONS_NONE)
             }
             TextPlacement::Baseline { origin } => {
                 let layout = self
@@ -636,8 +735,9 @@ impl Canvas {
         unsafe { self.target.DrawTextLayout(origin, layout, brush, options) };
     }
 
-    /// One Segoe Fluent Icons glyph at `size_px`, centred in `cell` (R§6.5 glyph cells; severity
-    /// glyphs draw their two layers with two calls).
+    /// One Segoe Fluent Icons glyph at `size_px`, centred horizontally in `cell` and on the
+    /// baseline of a line box of `cell.h` ([`line_box_baseline`], as the mocks' 16 px glyph
+    /// boxes; R§6.5 glyph cells). Severity glyphs draw their two layers with two calls.
     pub fn glyph(&mut self, ch: char, size_px: f32, cell: RectF, color: Argb) {
         let font = Font {
             face: FontFace::Icons,
@@ -656,12 +756,11 @@ impl Canvas {
         {
             return;
         }
-        self.draw_layout(
-            &layout,
-            v2(cell.x, cell.y),
-            D2D1_DRAW_TEXT_OPTIONS_NONE,
-            color,
-        );
+        let top = self.formats.line_box_top(&layout, &font, cell.y, cell.h);
+        let Some(top) = self.note(top) else {
+            return;
+        };
+        self.draw_layout(&layout, v2(cell.x, top), D2D1_DRAW_TEXT_OPTIONS_NONE, color);
     }
 
     /// An SVG path (provider glyphs, the drop) scaled by `scale` and moved to `origin`.
@@ -841,6 +940,8 @@ impl Canvas {
     }
 }
 
+/// Horizontal alignment; the line stays at the layout's top (paragraph alignment near), where
+/// [`Formats::line_box_top`] expects it.
 fn set_alignment(
     layout: &IDWriteTextLayout,
     alignment: DWRITE_TEXT_ALIGNMENT,
@@ -848,7 +949,7 @@ fn set_alignment(
     // SAFETY: plain setters on a live layout.
     unsafe {
         layout.SetTextAlignment(alignment)?;
-        layout.SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER)
+        layout.SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_NEAR)
     }
 }
 
@@ -1375,6 +1476,36 @@ mod tests {
         assert!(corner[3] > 0 && corner[3] < 255, "{corner:?}");
         // Nothing above or below the bar.
         assert_eq!(px(&p, 40, 8, 5), [0, 0, 0, 0]);
+    }
+
+    #[test]
+    fn line_box_baselines_follow_the_mocks_css() {
+        // Segoe UI Variable Small: ascent 2210, descent 514 per 2048 (DirectWrite design metrics);
+        // Segoe Fluent Icons: ascent one em, descent 0.
+        let (a, d) = (2210.0 / 2048.0, 514.0 / 2048.0);
+        let text = |size: f32, h: f32| line_box_baseline(h, a * size, d * size);
+        let icon = |size: f32, h: f32| line_box_baseline(h, size, 0.0);
+        // (scale, rowH): 12 px row text, 11 px label, 11 px ↺, 12 px severity glyph.
+        for (s, h, row, label, reset, severity) in [
+            (1.0, 16.0, 13.0, 12.0, 13.0, 14.0),
+            (1.25, 20.0, 16.0, 16.0, 17.0, 17.0),
+            (1.5, 24.0, 19.0, 19.0, 20.0, 21.0),
+            (1.75, 28.0, 23.0, 22.0, 23.0, 24.0),
+            (2.0, 32.0, 26.0, 25.0, 27.0, 28.0),
+        ] {
+            assert_eq!(text(12.0 * s, h), row, "s = {s}: row text");
+            assert_eq!(text(11.0 * s, h), label, "s = {s}: label");
+            assert_eq!(icon(11.0 * s, h), reset, "s = {s}: reset glyph");
+            assert_eq!(icon(12.0 * s, h), severity, "s = {s}: severity glyph");
+        }
+        // Real metrics agree with the table's.
+        let f = factory();
+        let formats = Formats::new(f.dwrite.clone());
+        let small = Font::scaled(TextStyle::ROW, 1.0);
+        let (fa, fd) = formats
+            .em_metrics(&small)
+            .expect("Segoe UI Variable Small or Segoe UI");
+        assert!((fa - a).abs() < 0.01 && (fd - d).abs() < 0.01, "{fa} {fd}");
     }
 
     #[test]

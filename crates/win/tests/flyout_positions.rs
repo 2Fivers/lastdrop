@@ -3,7 +3,9 @@
 //! and at both edges, a secondary monitor left of the primary (negative coordinates), and point
 //! anchors (tray icon in the overflow).
 
-use lastdrop_win::flyout_pos::{Anchor, MonitorInfo, flyout_rect, hover_card_rect};
+use lastdrop_win::flyout_pos::{
+    Anchor, MonitorInfo, flyout_max_height, flyout_rect, hover_card_rect,
+};
 use lastdrop_win::geom::{Point, Rect, Size};
 use lastdrop_win::placement::TaskbarEdge;
 
@@ -59,7 +61,7 @@ fn flyout_sits_12_above_a_bottom_taskbar_and_12_from_the_right_edge() {
             1920 - s(108, dpi),
             1080 - s(8, dpi),
         );
-        let r = flyout_rect(Anchor::Rect(icon), size, &m, TaskbarEdge::Bottom);
+        let r = flyout_rect(Anchor::Rect(icon), size, &m, TaskbarEdge::Bottom, None);
         assert_eq!(
             r.right,
             1920 - s(12, dpi),
@@ -79,7 +81,7 @@ fn flyout_is_centred_on_an_anchor_with_room() {
     };
     // A readout slot in the middle of the taskbar.
     let slot = rect(1000, 1392, 1160, 1432);
-    let r = flyout_rect(Anchor::Rect(slot), size, &m, TaskbarEdge::Bottom);
+    let r = flyout_rect(Anchor::Rect(slot), size, &m, TaskbarEdge::Bottom, None);
     assert_eq!(r.left, 1080 - 180);
     assert_eq!(r.right, 1080 + 180);
     assert_eq!(r.bottom, 1392 - 12);
@@ -89,6 +91,7 @@ fn flyout_is_centred_on_an_anchor_with_room() {
         size,
         &m,
         TaskbarEdge::Bottom,
+        None,
     );
     assert_eq!(r.left, 900);
 }
@@ -107,6 +110,7 @@ fn flyout_clamps_at_the_left_edge_and_follows_a_top_taskbar() {
             size,
             &m,
             TaskbarEdge::Top,
+            None,
         );
         assert_eq!(r.left, s(12, dpi));
         assert_eq!(r.top, bar + s(12, dpi));
@@ -125,6 +129,7 @@ fn flyout_on_a_monitor_left_of_the_primary() {
         size,
         &m,
         TaskbarEdge::Bottom,
+        None,
     );
     assert_eq!(r.right, -12);
     assert_eq!(r.left, -372);
@@ -133,6 +138,7 @@ fn flyout_on_a_monitor_left_of_the_primary() {
         size,
         &m,
         TaskbarEdge::Bottom,
+        None,
     );
     assert_eq!(r.left, -1000 - 180);
 }
@@ -149,6 +155,7 @@ fn a_flyout_taller_than_the_work_area_starts_at_the_top_margin() {
         size,
         &m,
         TaskbarEdge::Bottom,
+        None,
     );
     assert_eq!(r.top, 12);
 }
@@ -269,7 +276,7 @@ fn popups_never_cover_a_floating_readout() {
             width: s(360, dpi),
             height: s(300, dpi),
         };
-        let r = flyout_rect(Anchor::Rect(slot), flyout, &m, TaskbarEdge::Bottom);
+        let r = flyout_rect(Anchor::Rect(slot), flyout, &m, TaskbarEdge::Bottom, None);
         assert_eq!(
             r.bottom,
             slot.top - s(12, dpi),
@@ -288,7 +295,7 @@ fn popups_never_cover_a_floating_readout() {
         92 + 8
     );
     assert_eq!(
-        flyout_rect(Anchor::Rect(slot), size, &m, TaskbarEdge::Top).top,
+        flyout_rect(Anchor::Rect(slot), size, &m, TaskbarEdge::Top, None).top,
         92 + 12
     );
     // A docked readout and a cursor anchor keep the F§1.3 rule.
@@ -300,7 +307,137 @@ fn popups_never_cover_a_floating_readout() {
     );
     let cursor = Anchor::Point(Point { x: 1600, y: 900 });
     assert_eq!(
-        flyout_rect(cursor, size, &m, TaskbarEdge::Bottom).bottom,
+        flyout_rect(cursor, size, &m, TaskbarEdge::Bottom, None).bottom,
         1032 - 12
     );
+}
+
+#[test]
+fn a_full_flyout_from_the_tray_icon_stays_clear_of_a_floating_readout() {
+    for dpi in SCALES {
+        let bar = s(48, dpi);
+        let (m, taskbar) = monitor(0, 1920, 1080, bar, TaskbarEdge::Bottom, dpi);
+        let margin = s(12, dpi);
+        // The readout floats 4 px above the taskbar, left of the tray; the tray icon is on the
+        // taskbar to its right, so the flyout (clamped to the right edge) crosses the slot.
+        let slot_top = taskbar.top - s(4, dpi) - s(40, dpi);
+        let slot = rect(
+            1920 - s(400, dpi),
+            slot_top,
+            1920 - s(224, dpi),
+            taskbar.top - s(4, dpi),
+        );
+        let icon = rect(
+            1920 - s(140, dpi),
+            taskbar.top + s(8, dpi),
+            1920 - s(108, dpi),
+            1080 - s(8, dpi),
+        );
+        let width = s(360, dpi);
+        let max = flyout_max_height(
+            Anchor::Rect(icon),
+            width,
+            &m,
+            TaskbarEdge::Bottom,
+            Some(slot),
+        );
+        assert_eq!(max, slot.top - margin - margin, "dpi {dpi}");
+        let size = Size { width, height: max };
+        let r = flyout_rect(
+            Anchor::Rect(icon),
+            size,
+            &m,
+            TaskbarEdge::Bottom,
+            Some(slot),
+        );
+        assert_eq!(r.bottom, slot.top - margin, "dpi {dpi}: above the readout");
+        assert_eq!(r.top, margin, "dpi {dpi}: and still inside the work area");
+        // Taller content than that is cut to the max height by the caller; even then the
+        // rectangle starts at the top margin instead of covering the readout's columns.
+        let tall = Size {
+            width,
+            height: m.work.height(),
+        };
+        let r = flyout_rect(
+            Anchor::Rect(icon),
+            tall,
+            &m,
+            TaskbarEdge::Bottom,
+            Some(slot),
+        );
+        assert_eq!(r.top, margin, "dpi {dpi}");
+
+        // Opened from the floating readout itself: the same space.
+        assert_eq!(
+            flyout_max_height(Anchor::Rect(slot), width, &m, TaskbarEdge::Bottom, None),
+            slot.top - 2 * margin,
+            "dpi {dpi}"
+        );
+        // Without a floating readout (or one the flyout does not cross): the work area.
+        let work = m.work.height() - 2 * margin;
+        assert_eq!(
+            flyout_max_height(Anchor::Rect(icon), width, &m, TaskbarEdge::Bottom, None),
+            work
+        );
+        let far = rect(s(100, dpi), slot.top, s(276, dpi), slot.bottom);
+        assert_eq!(
+            flyout_max_height(
+                Anchor::Rect(icon),
+                width,
+                &m,
+                TaskbarEdge::Bottom,
+                Some(far)
+            ),
+            work
+        );
+        // A docked readout lies on the taskbar, outside the work area: nothing changes.
+        let docked = rect(
+            slot.left,
+            taskbar.top + s(4, dpi),
+            slot.right,
+            taskbar.bottom,
+        );
+        assert_eq!(
+            flyout_max_height(
+                Anchor::Rect(icon),
+                width,
+                &m,
+                TaskbarEdge::Bottom,
+                Some(docked)
+            ),
+            work
+        );
+    }
+    // Top taskbar: the readout floats below it, the flyout starts below the readout.
+    let (m, taskbar) = monitor(0, 1920, 1080, 48, TaskbarEdge::Top, 96);
+    let slot = rect(1520, taskbar.bottom + 4, 1696, taskbar.bottom + 44);
+    let icon = rect(1780, 8, 1812, 40);
+    let max = flyout_max_height(Anchor::Rect(icon), 360, &m, TaskbarEdge::Top, Some(slot));
+    assert_eq!(max, 1080 - 12 - (slot.bottom + 12));
+    let size = Size {
+        width: 360,
+        height: 300,
+    };
+    let r = flyout_rect(Anchor::Rect(icon), size, &m, TaskbarEdge::Top, Some(slot));
+    assert_eq!(r.top, slot.bottom + 12);
+}
+
+#[test]
+fn an_icon_on_a_vertical_taskbar_does_not_shorten_the_flyout() {
+    // The icon lies beside the flyout's columns (outside the work area): the bottom rule and the
+    // full height of the work area hold, wherever the icon sits along the taskbar.
+    for (edge, icon) in [
+        (TaskbarEdge::Left, rect(19, 500, 43, 524)),
+        (TaskbarEdge::Right, rect(1877, 500, 1901, 524)),
+    ] {
+        let (m, _) = monitor(0, 1920, 1080, 62, edge, 96);
+        let max = flyout_max_height(Anchor::Rect(icon), 360, &m, edge, None);
+        assert_eq!(max, 1080 - 24, "{edge:?}");
+        let size = Size {
+            width: 360,
+            height: 478,
+        };
+        let r = flyout_rect(Anchor::Rect(icon), size, &m, edge, None);
+        assert_eq!(r.bottom, 1080 - 12, "{edge:?}");
+    }
 }

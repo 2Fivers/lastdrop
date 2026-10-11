@@ -6,7 +6,7 @@
 //! - [`state`]: [`state::AppState`], the main thread's state.
 //! - [`scheduler`]: refresh worker threads driven by `lastdrop_core::refresh`.
 //! - [`history`]: the append-only JSONL history store.
-//! - [`persist`]: folders, settings load/save (atomic).
+//! - [`persist`]: folders, settings and state file load/save (atomic).
 //! - [`logger`]: the tiny file logger with redaction.
 //! - [`wiring`]: start-up, event handlers, model → Slint conversions.
 //! - [`bench`]: the `--bench` timeline and its JSON (compatible with `tools/measure`).
@@ -14,12 +14,16 @@
 //! - [`preview`]: `--preview-flyout`: renders the flyout headless and saves a PNG.
 //! - [`png`]: the minimal PNG writer the preview uses.
 //! - [`settings_window`]: the settings window's draft and callbacks.
+//! - [`writer`]: the file writer thread (history appends and compaction, settings and state
+//!   saves, in queue order).
 //!
 //! Threads (ARCHITECTURE "Threads"): **main** owns the Slint event loop, every window, the tray
 //! icon and [`state::AppState`], and never blocks on I/O; the **readout** and **occupancy**
 //! threads live in `lastdrop-win`; **refresh workers** ([`scheduler`]) run provider fetches and
-//! never touch UI objects. Workers report with `slint::invoke_from_event_loop`; the main thread
-//! hands the readout an `Arc<ReadoutModel>`; no lock is held across a Win32 call.
+//! never touch UI objects; the **writer** ([`writer`]) does every file write in queue order and
+//! the **log** writer ([`logger`]) the log's. Workers report with
+//! `slint::invoke_from_event_loop`; the main thread hands the readout an `Arc<ReadoutModel>`; no
+//! lock is held across a Win32 call.
 //!
 //! Slint licence rule: Slint's Royalty-free License 2.0 requires the About window's `AboutSlint`
 //! and forbids exposing Slint's APIs, so themes, layouts and provider definitions are data, never
@@ -41,6 +45,7 @@ pub mod settings_window;
 pub mod state;
 pub mod ui;
 pub mod wiring;
+pub mod writer;
 
 /// Command-line flags. Unknown flags are ignored; a flag whose value is missing or unreadable is
 /// ignored too (a GUI program has nowhere to print a usage message).

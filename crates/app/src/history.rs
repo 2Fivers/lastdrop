@@ -8,19 +8,22 @@
 //!
 //! Crash safety: a sample is appended as one complete line in one write to a file opened for
 //! appending, so a crash can at worst cut the last line. Loading skips lines that do not parse,
-//! and the first append after a cut line starts on a new line, so the cut never spreads to the
-//! next sample. Files are only ever rewritten by [`HistoryStore::compact`], through a temporary
-//! file that replaces the original in one rename.
+//! and an append to a file that ends in a cut line starts on a new line, so the cut never
+//! spreads to the next sample. Files are only ever rewritten by the daily compaction
+//! ([`HistoryStore::compact`]), through a temporary file that replaces the original in one
+//! rename.
 //!
-//! In memory, each meter holds the samples that are on disk plus at most one newer reading that
-//! is not (the latest reading inside the current 5-minute step), so statistics always see the
-//! latest reading.
+//! In memory, each meter holds the samples that are queued for its file plus at most one newer
+//! reading that is not (the latest reading inside the current 5-minute step), so statistics
+//! always see the latest reading.
 //!
-//! Threading: main thread. Appends are small (one line per meter per reading).
+//! Threading: the store and its memory belong to the main thread; it never touches a file after
+//! [`HistoryStore::open`]. Appends and the compaction are queued, in order, for the writer thread
+//! ([`crate::writer`]), which also retries a failed append in front of the next one.
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::fs::{self, File, OpenOptions};
-use std::io::{self, BufRead, BufReader, BufWriter, Read, Seek, SeekFrom, Write};
+use std::fs::{self, File};
+use std::io::{self, BufRead, BufReader, BufWriter, Read, Write};
 use std::path::{Path, PathBuf};
 
 use jiff::{SignedDuration, Timestamp};
@@ -34,6 +37,8 @@ use lastdrop_core::stats::{
     HistoryView, Sample, current_instance, instance_of, is_exhausted, latest_instance,
     same_window_instance,
 };
+
+use crate::writer::WriterHandle;
 
 /// How far back samples stay in memory: 31 days (a calendar-month window; balances need 30).
 pub const IN_MEMORY_SPAN: SignedDuration = SignedDuration::from_hours(31 * 24);
@@ -62,6 +67,8 @@ pub struct HistoryStore {
     /// Keyed by file name ([`HistoryStore::file_name`]): the file is a meter's identity on disk,
     /// and a file can be loaded before the meter's [`MeterKey`] is seen again.
     series: BTreeMap<String, Series>,
+    /// Where appends and compactions go.
+    writer: WriterHandle,
 }
 
 /// What kind of meter a series holds, which decides how much of it stays in memory.
@@ -85,14 +92,12 @@ struct Series {
     kind: Kind,
     /// Ascending by `t`.
     samples: Vec<Sample>,
-    /// `t` of the newest sample in the file.
+    /// `t` of the newest sample in the file or queued for it.
     last_persisted: Option<Timestamp>,
     /// The last of `samples` is not in the file (it replaces itself until the next step).
     tail_pending: bool,
     /// Window meters: whether the latest reading was exhausted (R§3.3).
     exhausted: Option<bool>,
-    /// The file ends with a cut line: the next append starts with a line break.
-    needs_newline: bool,
 }
 
 impl Series {
@@ -105,7 +110,6 @@ impl Series {
             last_persisted: None,
             tail_pending: false,
             exhausted: None,
-            needs_newline: false,
         }
     }
 }
@@ -180,7 +184,6 @@ fn parse_line(line: &[u8]) -> Option<Sample> {
 struct Loaded {
     samples: Vec<Sample>,
     last_persisted: Option<Timestamp>,
-    needs_newline: bool,
 }
 
 /// The samples of one file with `since ≤ t ≤ until`, ascending (one per `t`, the later line
@@ -211,44 +214,20 @@ fn load_file(path: &Path, since: Timestamp, until: Timestamp) -> io::Result<Load
         }
         same
     });
-    let mut file = reader.into_inner();
-    let needs_newline = if file.metadata()?.len() == 0 {
-        false
-    } else {
-        let mut last = [0u8; 1];
-        file.seek(SeekFrom::End(-1))?;
-        file.read_exact(&mut last)?;
-        last[0] != b'\n'
-    };
     Ok(Loaded {
         samples,
         last_persisted,
-        needs_newline,
     })
 }
 
-/// Appends `samples` to `path` as complete lines in one write.
-fn append(path: &Path, needs_newline: bool, samples: &[Sample]) -> io::Result<()> {
+/// `samples` as complete JSONL lines.
+fn lines_of(samples: &[Sample]) -> Result<String, serde_json::Error> {
     let mut text = String::new();
-    if needs_newline {
-        text.push('\n');
-    }
     for sample in samples {
-        text.push_str(&serde_json::to_string(sample).map_err(io::Error::other)?);
+        text.push_str(&serde_json::to_string(sample)?);
         text.push('\n');
     }
-    let open = || OpenOptions::new().create(true).append(true).open(path);
-    let mut file = match open() {
-        Err(e) if e.kind() == io::ErrorKind::NotFound => {
-            // The folder was removed while we ran: make it again.
-            if let Some(dir) = path.parent() {
-                fs::create_dir_all(dir)?;
-            }
-            open()?
-        }
-        other => other?,
-    };
-    file.write_all(text.as_bytes())
+    Ok(text)
 }
 
 /// What [`compact_file`] did.
@@ -283,6 +262,40 @@ fn compact_file(path: &Path, cutoff: Timestamp) -> io::Result<Compacted> {
         let _ = fs::remove_file(&tmp);
     }
     result
+}
+
+/// Rewrites every history file of `dir` without samples older than `cutoff` ([`compact_file`];
+/// the writer thread's daily job, [`HistoryStore::compact`]). A file with nothing left is
+/// deleted; a file whose oldest sample is recent is not touched; other files are left alone.
+/// Errors on one file do not stop the others; the first is returned.
+pub(crate) fn compact_dir(dir: &Path, cutoff: Timestamp) -> io::Result<()> {
+    let mut first_error = None;
+    for entry in fs::read_dir(dir)? {
+        let path = match entry {
+            Ok(entry) => entry.path(),
+            Err(e) => {
+                first_error.get_or_insert(e);
+                continue;
+            }
+        };
+        let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
+            continue;
+        };
+        if split_file_name(name).is_none() || !path.is_file() {
+            continue;
+        }
+        match compact_file(&path, cutoff) {
+            Ok(Compacted::Untouched | Compacted::Rewritten) => {}
+            Ok(Compacted::Removed) => {
+                log::info!("history: removed {name} (nothing newer than 90 days)");
+            }
+            Err(e) => {
+                log::warn!("history: cannot compact {name}: {e}");
+                first_error.get_or_insert(e);
+            }
+        }
+    }
+    first_error.map_or(Ok(()), Err)
 }
 
 /// [`compact_file`]'s rewrite: the samples of `path` since `cutoff` into `tmp`, flushed to disk,
@@ -322,13 +335,15 @@ fn window_rank(kind: Kind) -> SignedDuration {
 }
 
 impl HistoryStore {
-    /// Opens `dir` (created when missing) and loads the last [`IN_MEMORY_SPAN`] of every file.
-    /// Unreadable lines are skipped (a crash can cut the last line).
-    pub fn open(dir: &Path, now: Timestamp) -> io::Result<HistoryStore> {
+    /// Opens `dir` (created when missing) and loads the last [`IN_MEMORY_SPAN`] of every file
+    /// (start-up, before the event loop). Unreadable lines are skipped (a crash can cut the last
+    /// line). Later writes go through `writer`.
+    pub fn open(dir: &Path, now: Timestamp, writer: WriterHandle) -> io::Result<HistoryStore> {
         fs::create_dir_all(dir)?;
         let mut store = HistoryStore {
             dir: dir.to_owned(),
             series: BTreeMap::new(),
+            writer,
         };
         let since = sub(now, IN_MEMORY_SPAN);
         let until = add(now, FUTURE_TOLERANCE);
@@ -367,7 +382,6 @@ impl HistoryStore {
                     };
                     series.samples = loaded.samples;
                     series.last_persisted = loaded.last_persisted;
-                    series.needs_newline = loaded.needs_newline;
                     store.series.insert(name.to_owned(), series);
                 }
                 Err(e) => log::warn!("history: cannot read {name}: {e}"),
@@ -395,43 +409,31 @@ impl HistoryStore {
     /// A sample's `t` is the snapshot's `measured_at` (`t_r`); a reading that is not newer than
     /// the meter's last sample (the same cached reading read again) is not recorded.
     ///
-    /// A failed append keeps the reading in memory (it is written with the next one) and is
-    /// returned after the other meters are recorded.
-    pub fn record(&mut self, snapshot: &Snapshot) -> io::Result<()> {
+    /// Lines to store are queued for the writer thread and count as stored; the writer keeps a
+    /// failed append and writes it in front of the next one to the same file.
+    pub fn record(&mut self, snapshot: &Snapshot) {
         let t = snapshot.reading_at();
         let key = |meter: &MeterId| MeterKey {
             provider: snapshot.provider,
             account: snapshot.account.key.clone(),
             meter: meter.clone(),
         };
-        let mut first_error = None;
         for meter in &snapshot.meters {
             let sample = Sample::window(t, meter.used, meter.resets_at);
             let exhausted = Some(is_exhausted(meter.used, meter.limited));
             let kind = Kind::Window(meter.window);
-            if let Err(e) = self.add(&key(&meter.id), kind, sample, exhausted) {
-                first_error.get_or_insert(e);
-            }
+            self.add(&key(&meter.id), kind, sample, exhausted);
         }
         for balance in &snapshot.balances {
             let sample = Sample::balance(t, balance.amount);
-            if let Err(e) = self.add(&key(&balance.id), Kind::Balance, sample, None) {
-                first_error.get_or_insert(e);
-            }
+            self.add(&key(&balance.id), Kind::Balance, sample, None);
         }
-        first_error.map_or(Ok(()), Err)
     }
 
     /// One reading of one meter (see [`HistoryStore::record`]).
-    fn add(
-        &mut self,
-        key: &MeterKey,
-        kind: Kind,
-        sample: Sample,
-        exhausted: Option<bool>,
-    ) -> io::Result<()> {
+    fn add(&mut self, key: &MeterKey, kind: Kind, sample: Sample, exhausted: Option<bool>) {
         if !sample.value.is_finite() {
-            return Ok(());
+            return;
         }
         let name = HistoryStore::file_name(key);
         let series = self.series.entry(name.clone()).or_insert_with(|| {
@@ -449,7 +451,7 @@ impl HistoryStore {
             .map(|s| s.t)
             .max(series.last_persisted);
         if newest.is_some_and(|n| sample.t <= n) {
-            return Ok(());
+            return;
         }
         let last = series.samples.last().copied();
         let due = series
@@ -466,22 +468,21 @@ impl HistoryStore {
             Some(_) if kind == Kind::Balance => last.is_some_and(|l| l.value != sample.value),
             Some(_) => new_instance || series.exhausted != exhausted,
         };
-        let mut result = Ok(());
+        let mut persisted = false;
         if due || changed {
             // The last reading of a window instance is kept too: the sparkline counts the
             // increases within each instance (F§6).
             let pending = last.filter(|_| series.tail_pending && new_instance);
             let lines: Vec<Sample> = pending.into_iter().chain([sample]).collect();
-            result = append(&self.dir.join(&name), series.needs_newline, &lines);
-            match &result {
-                Ok(()) => {
-                    series.needs_newline = false;
+            match lines_of(&lines) {
+                Ok(text) => {
+                    self.writer.append(self.dir.join(&name), text);
                     series.last_persisted = Some(sample.t);
+                    persisted = true;
                 }
-                Err(e) => log::warn!("history: cannot append to {name}: {e}"),
+                Err(e) => log::warn!("history: cannot encode a sample of {name}: {e}"),
             }
         }
-        let persisted = (due || changed) && result.is_ok();
         let keep_pending = series.tail_pending && !(persisted && new_instance);
         match series.samples.last_mut() {
             Some(tail) if keep_pending => *tail = sample,
@@ -489,7 +490,6 @@ impl HistoryStore {
         }
         series.tail_pending = !persisted;
         series.exhausted = exhausted;
-        result
     }
 
     /// Drops in-memory samples the statistics no longer need (called on the minute tick, cheap):
@@ -565,55 +565,21 @@ impl HistoryStore {
         chosen
     }
 
-    /// Rewrites files without samples older than 90 days (`HISTORY_RETENTION`), atomically; once a
-    /// day, off the critical path.
-    ///
-    /// A file with nothing left is deleted. A file whose oldest sample is recent is not touched.
-    /// Errors on one file do not stop the others; the first is returned.
-    pub fn compact(&mut self, now: Timestamp) -> io::Result<()> {
+    /// Queues the daily compaction for the writer thread: files are rewritten without samples
+    /// older than 90 days (`HISTORY_RETENTION`), atomically, in queue order with the appends
+    /// ([`compact_dir`]). In memory nothing is older than [`IN_MEMORY_SPAN`], which is shorter
+    /// than the retention; a meter with no sample in memory and none on disk since the cutoff
+    /// (its file is about to go) is forgotten.
+    pub fn compact(&mut self, now: Timestamp) {
         let cutoff = sub(now, HISTORY_RETENTION);
-        let mut first_error = None;
-        for entry in fs::read_dir(&self.dir)? {
-            let path = match entry {
-                Ok(entry) => entry.path(),
-                Err(e) => {
-                    first_error.get_or_insert(e);
-                    continue;
-                }
-            };
-            let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
-                continue;
-            };
-            if split_file_name(name).is_none() || !path.is_file() {
-                continue;
-            }
-            let name = name.to_owned();
-            match compact_file(&path, cutoff) {
-                Ok(Compacted::Untouched) => {}
-                Ok(Compacted::Rewritten) => {
-                    if let Some(series) = self.series.get_mut(&name) {
-                        series.needs_newline = false;
-                    }
-                }
-                Ok(Compacted::Removed) => {
-                    let empty = self.series.get_mut(&name).is_some_and(|series| {
-                        series.needs_newline = false;
-                        series.last_persisted = None;
-                        series.samples.is_empty()
-                    });
-                    if empty {
-                        self.series.remove(&name);
-                    }
-                    log::info!("history: removed {name} (nothing newer than 90 days)");
-                }
-                Err(e) => {
-                    log::warn!("history: cannot compact {name}: {e}");
-                    first_error.get_or_insert(e);
-                }
-            }
-        }
-        // In memory nothing is older than IN_MEMORY_SPAN, which is shorter than the retention.
-        first_error.map_or(Ok(()), Err)
+        self.writer.compact(self.dir.clone(), cutoff);
+        self.series
+            .retain(|_, s| !s.samples.is_empty() || s.last_persisted.is_some_and(|t| t >= cutoff));
+    }
+
+    /// Waits until every write queued so far is on disk (tests; shutdown joins the writer).
+    pub fn flush(&self) {
+        self.writer.flush();
     }
 }
 
@@ -643,9 +609,11 @@ mod tests {
     use lastdrop_core::stats::{HistoryView, Sample};
 
     use super::{HistoryStore, IN_MEMORY_SPAN};
+    use crate::writer::Writer;
 
-    /// A folder of the test's own under %TEMP%, removed when dropped.
-    struct TempDir(PathBuf);
+    /// A folder of the test's own under %TEMP% with a writer thread of its own; the writer is
+    /// drained and stopped, then the folder removed, when dropped.
+    struct TempDir(PathBuf, Writer);
 
     impl TempDir {
         fn new(tag: &str) -> TempDir {
@@ -656,16 +624,29 @@ mod tests {
                 std::process::id()
             ));
             let _ = fs::remove_dir_all(&dir);
-            TempDir(dir)
+            TempDir(dir, Writer::start().expect("writer"))
         }
 
         fn file(&self, name: &str) -> PathBuf {
             self.0.join(name)
         }
+
+        /// Opens the store once every queued write is on disk.
+        fn open(&self, now: Timestamp) -> HistoryStore {
+            self.1.handle().flush();
+            HistoryStore::open(&self.0, now, self.1.handle()).expect("open")
+        }
+
+        /// The lines of a file once every queued write is on disk.
+        fn lines(&self, path: &Path) -> Vec<String> {
+            self.1.handle().flush();
+            lines(path)
+        }
     }
 
     impl Drop for TempDir {
         fn drop(&mut self) {
+            self.1.shutdown();
             let _ = fs::remove_dir_all(&self.0);
         }
     }
@@ -782,22 +763,20 @@ mod tests {
     #[test]
     fn thinning_keeps_a_five_minute_grid_on_disk_and_the_latest_reading_in_memory() {
         let dir = TempDir::new("thin");
-        let mut store = HistoryStore::open(&dir.0, t0()).expect("open");
+        let mut store = dir.open(t0());
         let reset = at(240);
         for m in 0..12 {
             let used = 0.10 + 0.01 * m as f64;
-            store
-                .record(&snapshot(at(m), vec![five_hour(used, reset)], Vec::new()))
-                .expect("record");
+            store.record(&snapshot(at(m), vec![five_hour(used, reset)], Vec::new()));
         }
         let k = key(ProviderId::Claude, MeterId::FIVE_HOUR);
         let in_memory = store.samples(&k, Timestamp::MIN);
         assert_eq!(times(in_memory), vec![at(0), at(5), at(10), at(11)]);
         assert!((in_memory[3].value - 0.21).abs() < 1e-12, "latest reading");
         let file = dir.file("claude.default.five_hour.jsonl");
-        assert_eq!(lines(&file).len(), 3);
+        assert_eq!(dir.lines(&file).len(), 3);
 
-        let reopened = HistoryStore::open(&dir.0, at(12)).expect("reopen");
+        let reopened = dir.open(at(12));
         assert_eq!(
             times(reopened.samples(&k, Timestamp::MIN)),
             vec![at(0), at(5), at(10)]
@@ -813,7 +792,7 @@ mod tests {
     #[test]
     fn a_new_window_instance_and_exhaustion_are_stored_at_once() {
         let dir = TempDir::new("instance");
-        let mut store = HistoryStore::open(&dir.0, t0()).expect("open");
+        let mut store = dir.open(t0());
         let k = key(ProviderId::Claude, MeterId::FIVE_HOUR);
         // With a weekly meter beside it the 5-hour meter is not the sparkline's (F§6), so memory
         // keeps only its current window instance.
@@ -824,9 +803,7 @@ mod tests {
             WindowLen::Fixed(SignedDuration::from_hours(168)),
         );
         let record = |store: &mut HistoryStore, m: i64, five: Meter| {
-            store
-                .record(&snapshot(at(m), vec![five, weekly.clone()], Vec::new()))
-                .expect("record");
+            store.record(&snapshot(at(m), vec![five, weekly.clone()], Vec::new()));
         };
         let five = |used: f64, reset: i64| five_hour(used, at(reset));
         record(&mut store, 0, five(0.90, 10));
@@ -840,7 +817,7 @@ mod tests {
         record(&mut store, 7, limited.clone());
         record(&mut store, 8, limited);
         let file = dir.file("claude.default.five_hour.jsonl");
-        assert_eq!(lines(&file).len(), 5, "0, 1, 2, 3 and 8");
+        assert_eq!(dir.lines(&file).len(), 5, "0, 1, 2, 3 and 8");
         assert_eq!(
             times(store.samples(&k, Timestamp::MIN)),
             vec![at(0), at(1), at(2), at(3), at(8)]
@@ -851,7 +828,7 @@ mod tests {
             vec![at(2), at(3), at(8)],
             "the current instance"
         );
-        let reopened = HistoryStore::open(&dir.0, at(9)).expect("reopen");
+        let reopened = dir.open(at(9));
         let on_disk = times(reopened.samples(&k, Timestamp::MIN));
         assert_eq!(on_disk, vec![at(2), at(3), at(8)]);
     }
@@ -859,7 +836,7 @@ mod tests {
     #[test]
     fn a_reading_without_a_reset_time_stays_in_the_instance() {
         let dir = TempDir::new("noreset");
-        let mut store = HistoryStore::open(&dir.0, t0()).expect("open");
+        let mut store = dir.open(t0());
         let k = key(ProviderId::Claude, MeterId::FIVE_HOUR);
         let weekly = meter(
             MeterId::WEEKLY,
@@ -876,9 +853,7 @@ mod tests {
             )
         };
         let record = |store: &mut HistoryStore, m: i64, five: Meter| {
-            store
-                .record(&snapshot(at(m), vec![five, weekly.clone()], Vec::new()))
-                .expect("record");
+            store.record(&snapshot(at(m), vec![five, weekly.clone()], Vec::new()));
         };
         record(&mut store, 0, five_hour(0.50, at(100)));
         record(&mut store, 5, five_hour(0.55, at(100)));
@@ -886,7 +861,10 @@ mod tests {
         // stores it (minute 6 replaces itself), and trimming keeps the instance.
         record(&mut store, 6, without_reset(0.56));
         record(&mut store, 7, without_reset(0.57));
-        assert_eq!(lines(&dir.file("claude.default.five_hour.jsonl")).len(), 2);
+        assert_eq!(
+            dir.lines(&dir.file("claude.default.five_hour.jsonl")).len(),
+            2
+        );
         store.trim_memory(at(8));
         assert_eq!(
             times(store.samples(&k, Timestamp::MIN)),
@@ -894,42 +872,42 @@ mod tests {
         );
         // After the reset time a reading without `R` belongs to no known instance.
         record(&mut store, 101, without_reset(0.0));
-        assert_eq!(lines(&dir.file("claude.default.five_hour.jsonl")).len(), 4);
+        assert_eq!(
+            dir.lines(&dir.file("claude.default.five_hour.jsonl")).len(),
+            4
+        );
     }
 
     #[test]
     fn the_same_reading_again_is_not_recorded() {
         let dir = TempDir::new("same");
-        let mut store = HistoryStore::open(&dir.0, t0()).expect("open");
+        let mut store = dir.open(t0());
         let k = key(ProviderId::Claude, MeterId::FIVE_HOUR);
         let snap = snapshot(at(0), vec![five_hour(0.4, at(100))], Vec::new());
-        store.record(&snap).expect("record");
-        store.record(&snap).expect("again");
-        store
-            .record(&snapshot(at(-3), vec![five_hour(0.3, at(100))], Vec::new()))
-            .expect("older");
+        store.record(&snap);
+        store.record(&snap);
+        store.record(&snapshot(at(-3), vec![five_hour(0.3, at(100))], Vec::new()));
         assert_eq!(times(store.samples(&k, Timestamp::MIN)), vec![at(0)]);
-        assert_eq!(lines(&dir.file("claude.default.five_hour.jsonl")).len(), 1);
+        assert_eq!(
+            dir.lines(&dir.file("claude.default.five_hour.jsonl")).len(),
+            1
+        );
         // Not a number: never stored.
-        store
-            .record(&snapshot(
-                at(9),
-                vec![five_hour(f64::NAN, at(100))],
-                Vec::new(),
-            ))
-            .expect("nan");
+        store.record(&snapshot(
+            at(9),
+            vec![five_hour(f64::NAN, at(100))],
+            Vec::new(),
+        ));
         assert_eq!(store.samples(&k, Timestamp::MIN).len(), 1);
     }
 
     #[test]
     fn balances_store_every_change_and_otherwise_every_five_minutes() {
         let dir = TempDir::new("balance");
-        let mut store = HistoryStore::open(&dir.0, t0()).expect("open");
+        let mut store = dir.open(t0());
         let k = key(ProviderId::Meshy, MeterId::CREDITS);
         for (m, amount) in [(0, 100.0), (1, 100.0), (2, 90.0), (3, 90.0), (8, 90.0)] {
-            store
-                .record(&snapshot(at(m), Vec::new(), vec![credits(amount)]))
-                .expect("record");
+            store.record(&snapshot(at(m), Vec::new(), vec![credits(amount)]));
         }
         assert_eq!(
             times(store.samples(&k, Timestamp::MIN)),
@@ -937,8 +915,8 @@ mod tests {
             "1 was replaced by 2 (a change), 3 by 8 (the 5-minute step)"
         );
         let file = dir.file("meshy.default.credits.jsonl");
-        assert_eq!(lines(&file).len(), 3, "0, 2 and 8");
-        let reopened = HistoryStore::open(&dir.0, at(9)).expect("reopen");
+        assert_eq!(dir.lines(&file).len(), 3, "0, 2 and 8");
+        let reopened = dir.open(at(9));
         let samples = reopened.samples(&k, Timestamp::MIN);
         assert_eq!(times(samples), vec![at(0), at(2), at(8)]);
         assert_eq!(samples[2].value, 90.0);
@@ -960,12 +938,10 @@ mod tests {
         );
         fs::write(&file, text).expect("write");
         let k = key(ProviderId::Claude, MeterId::FIVE_HOUR);
-        let mut store = HistoryStore::open(&dir.0, at(9)).expect("open");
+        let mut store = dir.open(at(9));
         assert_eq!(times(store.samples(&k, Timestamp::MIN)), vec![at(0), at(5)]);
-        store
-            .record(&snapshot(at(10), vec![five_hour(0.6, at(100))], Vec::new()))
-            .expect("record");
-        let reopened = HistoryStore::open(&dir.0, at(11)).expect("reopen");
+        store.record(&snapshot(at(10), vec![five_hour(0.6, at(100))], Vec::new()));
+        let reopened = dir.open(at(11));
         assert_eq!(
             times(reopened.samples(&k, Timestamp::MIN)),
             vec![at(0), at(5), at(10)]
@@ -987,7 +963,7 @@ mod tests {
                 Sample::balance(now - days(1), 200.0),
             ],
         );
-        let store = HistoryStore::open(&dir.0, now).expect("open");
+        let store = dir.open(now);
         let k = key(ProviderId::Meshy, MeterId::CREDITS);
         assert_eq!(
             times(store.samples(&k, Timestamp::MIN)),
@@ -1031,7 +1007,7 @@ mod tests {
             &hourly(40, &|n| Sample::balance(h(n), 1000.0 - n as f64)),
         );
 
-        let mut store = HistoryStore::open(&dir.0, now).expect("open");
+        let mut store = dir.open(now);
         // The per-model meter is not in the catalogue: its kind is learned from a reading.
         let fable = meter(
             "weekly:fable",
@@ -1040,9 +1016,7 @@ mod tests {
             WindowLen::Fixed(SignedDuration::from_hours(168)),
         );
         let later = now + SignedDuration::from_mins(1);
-        store
-            .record(&snapshot(later, vec![fable], Vec::new()))
-            .expect("record");
+        store.record(&snapshot(later, vec![fable], Vec::new()));
         store.trim_memory(later);
 
         let all = |m: &str, p| times(store.samples(&key(p, m), Timestamp::MIN));
@@ -1085,7 +1059,7 @@ mod tests {
             })
             .collect();
         write_samples(&dir.file("codex.default.five_hour.jsonl"), &samples);
-        let store = HistoryStore::open(&dir.0, now).expect("open");
+        let store = dir.open(now);
         let kept =
             times(store.samples(&key(ProviderId::Codex, MeterId::FIVE_HOUR), Timestamp::MIN));
         assert_eq!(kept.first(), Some(&h(16 * 24)), "16 days for F§6");
@@ -1112,10 +1086,11 @@ mod tests {
         let unrelated = dir.file("notes.txt");
         fs::write(&unrelated, "keep me").expect("write");
 
-        let mut store = HistoryStore::open(&dir.0, now).expect("open");
-        store.compact(now).expect("compact");
+        let mut store = dir.open(now);
+        store.compact(now);
+        store.flush();
 
-        assert_eq!(lines(&old_and_new).len(), 1);
+        assert_eq!(dir.lines(&old_and_new).len(), 1);
         assert!(!only_old.exists());
         assert_eq!(fs::read(&fresh).expect("read"), fresh_before);
         assert!(unrelated.exists());
@@ -1127,10 +1102,8 @@ mod tests {
         assert!(leftovers.is_empty());
 
         // Appending after compaction still works.
-        store
-            .record(&snapshot(now, Vec::new(), vec![credits(6.0)]))
-            .expect("record");
-        assert_eq!(lines(&old_and_new).len(), 2);
+        store.record(&snapshot(now, Vec::new(), vec![credits(6.0)]));
+        assert_eq!(dir.lines(&old_and_new).len(), 2);
     }
 
     #[test]
@@ -1139,13 +1112,14 @@ mod tests {
         let tmp = dir.file("claude.default.weekly.jsonl.tmp");
         fs::create_dir_all(&dir.0).expect("dir");
         fs::write(&tmp, "partial").expect("write");
-        let mut store = HistoryStore::open(&dir.0, t0()).expect("open");
+        let mut store = dir.open(t0());
         assert!(!tmp.exists());
 
         fs::remove_dir_all(&dir.0).expect("remove");
-        store
-            .record(&snapshot(at(0), vec![five_hour(0.1, at(100))], Vec::new()))
-            .expect("record recreates the folder");
-        assert_eq!(lines(&dir.file("claude.default.five_hour.jsonl")).len(), 1);
+        store.record(&snapshot(at(0), vec![five_hour(0.1, at(100))], Vec::new()));
+        assert_eq!(
+            dir.lines(&dir.file("claude.default.five_hour.jsonl")).len(),
+            1
+        );
     }
 }

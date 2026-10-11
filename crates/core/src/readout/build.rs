@@ -147,8 +147,8 @@ fn can_appear<'a>(eval: &'a Evaluation, settings: &Settings) -> Vec<CanAppear<'a
                 balance: is_balance(a),
             });
         }
-        // Meters reported earlier in this run that the latest reading lacks: widths never
-        // change with data (R§6.3).
+        // Meters reported earlier (in this run, or in an earlier one the state file remembers)
+        // that the latest reading lacks: widths never change with data (R§6.3).
         for m in &service.absent {
             out.push(CanAppear {
                 service,
@@ -284,7 +284,7 @@ fn row_sentences(rows: &[(&ServiceEval, &Assessment)], cx: &TextContext<'_>) -> 
 /// meter of every enabled service, i.e. the catalogue meters ([`crate::model::catalog`]) plus
 /// the meters the evaluation holds that are not in the catalogue (Claude's per-model weeklies,
 /// so `Fable` widens the label column once it has been reported) plus the meters a source
-/// reported earlier in this run and its latest reading lacks
+/// reported earlier (this run or a remembered one) and its latest reading lacks
 /// ([`crate::stats::ServiceEval::absent`]). Balance strings are included only when a balance
 /// meter can appear. The width inputs therefore change with settings, the locale or a newly
 /// reported meter, never with values or a reading that lacks a meter.
@@ -339,7 +339,8 @@ pub fn build_readout(eval: &Evaluation, cx: &BuildContext<'_>) -> ReadoutModel {
                 right: right_cell(a, service, pos, t),
                 compact: compact_cell(a, t),
                 uia_name: row_sentence(a, service, t),
-                uia_value: (a.state != RowState::Loading).then(|| pct(a)),
+                uia_value: (!matches!(a.state, RowState::Loading | RowState::Ended))
+                    .then(|| pct(a)),
             }
         })
         .collect();
