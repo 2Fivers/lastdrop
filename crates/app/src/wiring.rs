@@ -343,8 +343,6 @@ fn shutdown() {
     if let Some(hotkey) = app.hotkey.borrow_mut().take() {
         hotkey.unregister();
     }
-    // Every queued write (history, settings, state) reaches the disk before the threads end.
-    app.writer.shutdown();
     match Rc::try_unwrap(app) {
         Ok(app) => {
             let App {
@@ -353,17 +351,26 @@ fn shutdown() {
                 scheduler,
                 windows,
                 listener,
+                writer,
                 ..
             } = app;
+            // The tray icon and the readout go first: a slow disk below must not leave them
+            // on screen for a process that is ending.
             drop(tray);
             // A second launch from now on finds no listener and exits; it must not signal an
             // instance whose event loop has ended.
             drop(listener);
             readout.shutdown();
+            // Every queued write (history, settings, state) reaches the disk, within
+            // `writer::SHUTDOWN_WAIT`, before the threads end.
+            writer.shutdown();
             scheduler.shutdown();
             drop(windows);
         }
-        Err(_) => log::warn!("shutdown: the app is still referenced; threads end with the process"),
+        Err(app) => {
+            app.writer.shutdown();
+            log::warn!("shutdown: the app is still referenced; threads end with the process");
+        }
     }
     log::info!("stopped");
 }
@@ -902,10 +909,11 @@ pub fn on_readout_event(app: &App, event: ReadoutEvent) {
                 Placement::Docked { rect, .. } | Placement::Floating { rect, .. } => Some(rect),
                 Placement::Hidden(_) => None,
             });
-            app.rt.readout_floating.set(match placement {
+            let floating = match placement {
                 Placement::Floating { rect, .. } => Some(rect),
                 Placement::Docked { .. } | Placement::Hidden(_) => None,
-            });
+            };
+            let floating_changed = app.rt.readout_floating.replace(floating) != floating;
             {
                 let mut st = app.state.borrow_mut();
                 let rows = shown_rows(&st, app.rt.last_readout.borrow().as_deref(), form);
@@ -916,6 +924,11 @@ pub fn on_readout_event(app: &App, event: ReadoutEvent) {
                     taskbar,
                     edge,
                 };
+            }
+            // A readout that starts (or stops) floating while the flyout is open moves the edge
+            // the flyout keeps clear of it (F§1.2, F§1.3).
+            if floating_changed {
+                replace_open_flyout(app);
             }
             update_tray(app, false);
         }
@@ -1321,6 +1334,58 @@ pub fn flyout_content_height(window: &ui::Flyout) -> f32 {
     window.get_content_height()
 }
 
+/// The flyout's height (logical px, [`flyout_height`]) and rectangle (device px) for `content` at
+/// `anchor` (F§1.2, F§1.3): clear of the readout when it floats (`floating`).
+fn flyout_layout(
+    content: f32,
+    anchor: Anchor,
+    monitor: &MonitorInfo,
+    edge: TaskbarEdge,
+    floating: Option<Rect>,
+) -> (f32, Rect) {
+    let scale = f64::from(monitor.dpi) / 96.0;
+    let width = device(f64::from(FLYOUT_W), scale);
+    let space = flyout_pos::flyout_max_height(anchor, width, monitor, edge, floating);
+    let height = flyout_height(content, space, monitor.dpi);
+    let size = Size {
+        width,
+        height: device(f64::from(height), scale),
+    };
+    (
+        height,
+        flyout_pos::flyout_rect(anchor, size, monitor, edge, floating),
+    )
+}
+
+/// While open, places the flyout again for the readout's placement now (F§1.2, F§1.3): a readout
+/// that starts floating under it moves the flyout's edge 12 px beyond the readout (and back when
+/// it docks again), the height following the space.
+fn replace_open_flyout(app: &App) {
+    let (Some(h), Some(old), Some(monitor), Some(anchor)) = (
+        hwnd(app.rt.flyout_hwnd.get()),
+        app.rt.flyout_rect.get(),
+        app.rt.flyout_monitor.get(),
+        app.rt.flyout_anchor.get(),
+    ) else {
+        return;
+    };
+    let window = &app.windows.flyout;
+    let edge = app.state.borrow().readout.edge;
+    let (height, rect) = flyout_layout(
+        window.get_content_height(),
+        anchor,
+        &monitor,
+        edge,
+        app.rt.readout_floating.get(),
+    );
+    if rect == old {
+        return;
+    }
+    window.set_flyout_height(height);
+    backdrop::set_rect(h, rect);
+    app.rt.flyout_rect.set(Some(rect));
+}
+
 /// Sizes and places the flyout (F§1.2, F§1.3) in device px.
 fn place_flyout(app: &App, h: HWND, anchor: Anchor, monitor: &MonitorInfo, edge: TaskbarEdge) {
     let window = &app.windows.flyout;
@@ -1328,14 +1393,14 @@ fn place_flyout(app: &App, h: HWND, anchor: Anchor, monitor: &MonitorInfo, edge:
     // No resize of the previous rectangle while the cards are laid out below.
     app.rt.flyout_rect.set(None);
     app.rt.flyout_anchor.set(Some(anchor));
-    let space = flyout_space(app, anchor, monitor, edge);
-    let height = flyout_height(flyout_content_height(window), space, monitor.dpi);
+    let (height, rect) = flyout_layout(
+        flyout_content_height(window),
+        anchor,
+        monitor,
+        edge,
+        app.rt.readout_floating.get(),
+    );
     window.set_flyout_height(height);
-    let size = Size {
-        width: device(f64::from(FLYOUT_W), scale),
-        height: device(f64::from(height), scale),
-    };
-    let rect = flyout_pos::flyout_rect(anchor, size, monitor, edge, app.rt.readout_floating.get());
     backdrop::set_rect(h, rect);
     // Moving onto a monitor with another DPI makes winit resize the window synchronously
     // (WM_DPICHANGED): place it again with the size for that DPI.
@@ -2487,5 +2552,14 @@ mod tests {
         assert_eq!(flyout_height(700.0, 701, 120), 560.0);
         assert_eq!(flyout_height(700.0, 601, 120), 480.0);
         assert!(device(f64::from(flyout_height(700.0, 601, 120)), 1.25) <= 601);
+
+        // The layout an open flyout is placed again with when the readout starts floating
+        // under it: its bottom edge moves 12 px above the readout, and it gets shorter.
+        let (height, docked) = flyout_layout(700.0, icon, &short, TaskbarEdge::Bottom, None);
+        assert_eq!((height, docked.bottom), (476.0, 488));
+        let (height, clear) =
+            flyout_layout(700.0, icon, &short, TaskbarEdge::Bottom, Some(floating));
+        assert_eq!((height, clear.bottom), (432.0, floating.top - 12));
+        assert!(clear.top >= short.work.top + 12);
     }
 }

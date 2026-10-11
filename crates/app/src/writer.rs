@@ -13,15 +13,17 @@
 //! front of the next append to the same file, in order; at most [`MAX_PENDING`] bytes per file
 //! are kept, the oldest are dropped first.
 //!
-//! Shutdown ([`Writer::shutdown`]) writes everything queued before it, then joins the thread.
+//! Shutdown ([`Writer::shutdown`]) writes everything queued before it and tries the failed appends
+//! once more, then joins the thread, waiting at most [`SHUTDOWN_WAIT`].
 
 use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::fs::{self, OpenOptions};
 use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
-use std::sync::mpsc::{self, Receiver, Sender};
+use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 use std::thread::JoinHandle;
+use std::time::Duration;
 
 use jiff::Timestamp;
 
@@ -106,22 +108,36 @@ impl WriterHandle {
     }
 }
 
+/// How long [`Writer::shutdown`] waits for the queued writes (**not from the spec**): far more
+/// than a settings save, a state save and a day's compaction take on a working disk, short enough
+/// that a stuck disk (a dead network drive, a scanner holding a file) does not keep the process
+/// alive without end (the app removes its tray icon and readout before it waits). Writes still
+/// queued after it end with the process.
+pub const SHUTDOWN_WAIT: Duration = Duration::from_secs(10);
+
 /// The writer thread and its queue (main thread; [`Writer::shutdown`] joins it).
 pub struct Writer {
     handle: WriterHandle,
     thread: RefCell<Option<JoinHandle<()>>>,
+    /// Closed by the thread when it ends (the sender drops), so shutdown can wait with a limit.
+    ended: Receiver<()>,
 }
 
 impl Writer {
     /// Starts the thread.
     pub fn start() -> io::Result<Writer> {
         let (tx, rx) = mpsc::channel::<Job>();
+        let (ending, ended) = mpsc::channel::<()>();
         let thread = std::thread::Builder::new()
             .name("lastdrop-writer".to_owned())
-            .spawn(move || run(&rx))?;
+            .spawn(move || {
+                run(&rx);
+                drop(ending);
+            })?;
         Ok(Writer {
             handle: WriterHandle { tx },
             thread: RefCell::new(Some(thread)),
+            ended,
         })
     }
 
@@ -130,13 +146,31 @@ impl Writer {
         self.handle.clone()
     }
 
-    /// Writes every job queued so far, then stops and joins the thread. Later jobs are dropped.
+    /// Writes every job queued so far, then stops and joins the thread, waiting at most
+    /// [`SHUTDOWN_WAIT`]. Later jobs are dropped.
     pub fn shutdown(&self) {
+        self.shutdown_within(SHUTDOWN_WAIT);
+    }
+
+    /// [`Writer::shutdown`] waiting at most `wait`: a thread still writing after it is left to
+    /// end with the process, and the log says so.
+    pub fn shutdown_within(&self, wait: Duration) {
+        let Some(thread) = self.thread.borrow_mut().take() else {
+            return;
+        };
         let _ = self.handle.tx.send(Job::Stop);
-        if let Some(thread) = self.thread.borrow_mut().take()
-            && thread.join().is_err()
-        {
-            log::error!("the writer thread panicked");
+        match self.ended.recv_timeout(wait) {
+            Err(RecvTimeoutError::Timeout) => {
+                log::warn!(
+                    "the writer is still busy after {} s; writes not done yet are lost",
+                    wait.as_secs()
+                );
+            }
+            Ok(()) | Err(RecvTimeoutError::Disconnected) => {
+                if thread.join().is_err() {
+                    log::error!("the writer thread panicked");
+                }
+            }
         }
     }
 }
@@ -171,6 +205,18 @@ fn run(rx: &Receiver<Job>) {
                 let _ = until.recv();
             }
             Job::Stop => break,
+        }
+    }
+    // Appends that failed are tried once more before the thread ends; what still fails is lost,
+    // and the log says how much.
+    for (path, text) in pending {
+        if let Err(e) = append_lines(&path, &text) {
+            let name = path.file_name().map(|n| n.to_string_lossy().into_owned());
+            log::warn!(
+                "history: {} line(s) for {} not written at exit: {e}",
+                text.lines().count(),
+                name.unwrap_or_default()
+            );
         }
     }
 }
@@ -336,8 +382,9 @@ mod tests {
             );
             w.append(history.clone(), line(0, f64::from(n)));
         }
-        // No flush: shutdown itself drains the queue before the thread ends.
-        writer.shutdown();
+        // No flush: shutdown itself drains the queue before the thread ends (a hundred synced
+        // writes, so with more time than the app's few writes at exit get).
+        writer.shutdown_within(std::time::Duration::from_secs(120));
         assert_eq!(
             fs::read_to_string(&settings).expect("settings"),
             "{\"n\": 49}\n"
@@ -385,6 +432,37 @@ mod tests {
         w.flush();
         assert_eq!(values(&file), vec![1.0, 2.0]);
         writer.shutdown();
+    }
+
+    #[test]
+    fn a_failed_append_is_tried_once_more_at_shutdown() {
+        let dir = TempDir::new("exit");
+        let file = dir.0.join("codex.default.five_hour.jsonl");
+        fs::create_dir_all(&file).expect("blocking folder");
+        let writer = Writer::start().expect("writer");
+        writer.handle().append(file.clone(), line(0, 7.0));
+        writer.handle().flush();
+        assert!(file.is_dir(), "the append failed");
+        fs::remove_dir(&file).expect("unblock");
+        // No later append to that file: shutdown writes the kept line itself.
+        writer.shutdown();
+        assert_eq!(values(&file), vec![7.0]);
+    }
+
+    #[test]
+    fn shutdown_does_not_wait_for_a_stuck_disk_without_end() {
+        let writer = Writer::start().expect("writer");
+        let (release, until) = mpsc::channel();
+        writer.handle().send(Job::Block(until));
+        let started = std::time::Instant::now();
+        writer.shutdown_within(std::time::Duration::from_millis(100));
+        let waited = started.elapsed();
+        assert!(
+            waited < std::time::Duration::from_secs(2),
+            "waited {waited:?} for a stuck writer"
+        );
+        // The stuck write ends later; the thread then ends on its own.
+        drop(release);
     }
 
     #[test]
