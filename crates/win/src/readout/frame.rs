@@ -746,6 +746,61 @@ pub(super) mod tests {
     }
 
     #[test]
+    fn text_sits_on_the_mock_baselines() {
+        // The last ink row of each text, from the row's top, as measured in readout-100.png and
+        // readout-150.png (mock 1a, dark): `42%` and `14:56` (12 px) end on row 12 / 18, the
+        // `5h` label (11 px) on 11 / 18, the `↺` (Fluent Icons 11 px) on 12 / 19. (The mock
+        // centres the slot in the 47 px below the taskbar's 1 px border, so its rows start half a
+        // pixel lower than R§6.1's and render a pixel lower: measured from there, the bars and
+        // texts land on the native rows.) 125 % has no mock; its rows follow the same CSS line box
+        // (render::line_box_baseline).
+        let m = model(0.375, 0.42, 134);
+        for (scale, value, label, glyph) in
+            [(1.0, 12, 11, 12), (1.25, 15, 15, 16), (1.5, 18, 18, 19)]
+        {
+            let frame = render(
+                &m,
+                scale,
+                ReadoutForm::TwoRows,
+                &theme(true),
+                Plate::None,
+                false,
+            );
+            let l = frame.layout;
+            // The last row of the first row's box with ink (alpha over a third) in `x0..x1`.
+            let last_ink = |x0: i32, x1: i32| {
+                (l.y_row1..l.y_row1 + l.row_h)
+                    .filter(|&y| (x0..x1).any(|x| frame.alpha(x, y) > 85))
+                    .max()
+                    .map(|y| y - l.y_row1)
+            };
+            let glyph_x = l.x_right + l.time_x;
+            let glyph_w = px(11.0, scale);
+            let time_x = glyph_x + glyph_w + px(1.0, scale);
+            assert_eq!(
+                last_ink(l.x_right, l.x_right + l.value_box_w),
+                Some(value),
+                "s = {scale}: value"
+            );
+            assert_eq!(
+                last_ink(time_x, l.x_right + l.right_w),
+                Some(value),
+                "s = {scale}: time"
+            );
+            assert_eq!(
+                last_ink(l.x_label, l.x_label + l.label_w),
+                Some(label),
+                "s = {scale}: label"
+            );
+            assert_eq!(
+                last_ink(glyph_x, glyph_x + glyph_w),
+                Some(glyph),
+                "s = {scale}: reset glyph"
+            );
+        }
+    }
+
+    #[test]
     fn rows_follow_the_form() {
         let m = model(0.375, 0.42, 134);
         let f = factory();

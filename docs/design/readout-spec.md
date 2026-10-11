@@ -465,8 +465,12 @@ translation can never be cut off. Swedish weekday abbreviations are lower-case b
 - Content block: rows are `rowH = round(16 s)` tall; two rows centred in the slot
   (`y1 = floor((slotH − 2 rowH) / 2)`, `y2 = y1 + rowH`; 4 px above and below at 100 %), so row 1 aligns with the
   clock's time line and row 2 with its date line. SINGLE_ROW and COMPACT: one row at `floor((slotH − rowH) / 2)`
-  (y = 12 at 100 %). Text baselines: DirectWrite line box of `rowH` with the font's default line spacing, text
-  vertically centred in it (as the clock does).
+  (y = 12 at 100 %). Text baselines: the CSS line box the mocks are drawn with, baseline at
+  `floor((rowH − (A + D)) / 2) + A` from the row's top, where `A` and `D` are the font's DirectWrite design ascent
+  and descent at the em size, each rounded half up (the line gap is not used): Segoe UI Variable Small 12 px → 13 /
+  16 / 19 at 100 / 125 / 150 %, the 11 px label → 12 / 16 / 19, Segoe Fluent Icons 11 px (`↺`) → 13 / 17 / 20.
+  Glyph cells use the same rule with the cell's height. (Centring DirectWrite's own line box puts the label and the
+  `↺` 1 px below the mock at 100 %.)
 - 6 px horizontal padding inside the slot on both sides.
 - Text rendering: DirectWrite, **grayscale** antialiasing (ClearType cannot be used on per-pixel-alpha
   surfaces), pixel-snapped glyph runs, gamma as the system's. Fonts: §6.5.
