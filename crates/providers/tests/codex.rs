@@ -196,7 +196,11 @@ fn app_server_conversation_is_initialize_initialized_account_rate_limits_then_ki
     assert_eq!(spawned.len(), 1);
     let spec = &spawned[0];
     assert_eq!(spec.program, bundled_exe("a1b2c3d4e5f60718"));
-    assert_eq!(spec.args, ["app-server"]);
+    assert_eq!(
+        spec.args,
+        ["app-server", "-c", "features.plugins=false"],
+        "plugins off: no marketplace sync at start-up"
+    );
     assert_eq!(
         spec.env,
         [("CODEX_HOME".into(), Some(codex_home().into_os_string()))]
@@ -545,7 +549,9 @@ fn without_a_bundled_one_codex_exe_then_codex_cmd_come_from_path() {
             "/d".into(),
             "/c".into(),
             script_path.clone().into_os_string(),
-            "app-server".into()
+            "app-server".into(),
+            "-c".into(),
+            "features.plugins=false".into()
         ]
     );
     assert_eq!(
@@ -585,7 +591,7 @@ fn the_command_interpreter_falls_back_to_system_root() {
         &codex_home(),
     );
     assert_eq!(spec.program, PathBuf::from(r"C:\x\codex.exe"));
-    assert_eq!(spec.args, ["app-server"]);
+    assert_eq!(spec.args, ["app-server", "-c", "features.plugins=false"]);
 }
 
 // ---- App-server: line parsing -------------------------------------------------------------------
