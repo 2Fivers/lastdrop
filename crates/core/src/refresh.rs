@@ -132,7 +132,8 @@ pub enum Due {
     /// changes"). Sources whose provider has no fingerprint (Meshy) get [`Due::Never`] instead and
     /// are lifted by the settings window storing a new key.
     ProbeCredential(Timestamp),
-    /// Not automatically: manual mode, paused, or auth-stopped without a fingerprint.
+    /// Not automatically: manual mode after the run's first read, paused, or auth-stopped
+    /// without a fingerprint.
     Never,
 }
 
@@ -169,8 +170,9 @@ pub fn effective_interval(
 /// next reset refresh (R§3.9, `reset_refresh_at`), then pushed back to `backoff_until` and to
 /// `last_attempt + min_interval`. Auth-stopped: [`Due::At`] now when `input.credential` (the
 /// latest fingerprint a worker reported) differs from the stopped one, else
-/// [`Due::ProbeCredential`] (or [`Due::Never`] without a fingerprint). [`Due::Never`] in manual
-/// mode (reset refreshes are skipped there too) and while paused.
+/// [`Due::ProbeCredential`] (or [`Due::Never`] without a fingerprint). In manual mode
+/// [`Due::At`] now for a source not yet tried in this run, then [`Due::Never`] (reset refreshes
+/// are skipped there too); [`Due::Never`] while paused.
 pub fn next_due(input: &PolicyInput<'_>) -> Due {
     let state = input.state;
     if state.in_flight {
@@ -185,7 +187,13 @@ pub fn next_due(input: &PolicyInput<'_>) -> Due {
         input.activity,
         input.min_interval,
     ) else {
-        return Due::Never;
+        // Manual mode still reads a source once per run, so a start in manual mode shows
+        // readings instead of LOADING ("Reading…") until the user presses "Refresh now".
+        return if state.last_attempt.is_none() {
+            Due::At(input.now)
+        } else {
+            Due::Never
+        };
     };
     let min_interval = signed(input.min_interval);
     let not_before_min = |t: Timestamp| match state.last_attempt {
@@ -420,9 +428,22 @@ mod tests {
         let mut i = input(ts(0), &s, &[]);
         i.paused = true;
         assert_eq!(next_due(&i), Due::Never);
+        // Manual: one read per run (a start shows readings, not "Reading…"), then only on
+        // "Refresh now".
         let mut i = input(ts(0), &s, &[]);
         i.interval = RefreshInterval::Manual;
+        assert_eq!(next_due(&i), Due::At(ts(0)));
+        let tried = SourceState {
+            last_attempt: Some(ts(0)),
+            ..SourceState::default()
+        };
+        let mut i = input(ts(10), &tried, &[]);
+        i.interval = RefreshInterval::Manual;
         assert_eq!(next_due(&i), Due::Never);
+        let mut i = input(ts(0), &s, &[]);
+        i.interval = RefreshInterval::Manual;
+        i.paused = true;
+        assert_eq!(next_due(&i), Due::Never, "a pause wins over the first read");
         let busy = SourceState {
             in_flight: true,
             ..SourceState::default()

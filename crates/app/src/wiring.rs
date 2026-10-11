@@ -447,15 +447,16 @@ fn hwnd(raw: isize) -> Option<HWND> {
     (raw != 0).then_some(HWND(raw as *mut core::ffi::c_void))
 }
 
-/// The Slint windows, created hidden at start-up and kept alive (F§1.1: "open in a few ms").
+/// The Slint windows. The flyout and the hover card are created hidden at start-up and kept alive
+/// (F§1.1: "open in a few ms"); settings and about exist only while open.
 pub struct Windows {
     /// The flyout.
     pub flyout: ui::Flyout,
     /// The hover card.
     pub hover_card: ui::HoverCard,
-    /// The settings window, created on first use.
+    /// The settings window while it is open.
     pub settings: RefCell<Option<ui::SettingsWindow>>,
-    /// The about window, created on first use.
+    /// The about window while it is open.
     pub about: RefCell<Option<ui::AboutWindow>>,
 }
 
@@ -1139,7 +1140,8 @@ pub fn register_hotkey(app: &App, hotkey: &lastdrop_core::settings::Hotkey) -> O
     }
 }
 
-/// The about window (R§10 "About Lastdrop", Slint licence), created on first use.
+/// The about window (R§10 "About Lastdrop", Slint licence), created on each open and released by
+/// [`close_about`].
 fn open_about(app: &App) {
     hide_flyout(app, false);
     let mut slot = app.windows.about.borrow_mut();
@@ -1147,11 +1149,10 @@ fn open_about(app: &App) {
         match create_window(false, ui::AboutWindow::new) {
             Ok(window) => {
                 window.set_version(env!("CARGO_PKG_VERSION").into());
-                let weak = window.as_weak();
-                window.on_dismiss(move || {
-                    if let Some(w) = weak.upgrade() {
-                        let _ = w.hide();
-                    }
+                window.on_dismiss(|| with_app(close_about));
+                window.window().on_close_requested(|| {
+                    with_app(close_about);
+                    slint::CloseRequestResponse::HideWindow
                 });
                 *slot = Some(window);
             }
@@ -1165,6 +1166,17 @@ fn open_about(app: &App) {
         && let Err(e) = window.show()
     {
         log::error!("about window: {e}");
+    }
+}
+
+/// Closes the about window and releases it, like the settings window: a hidden window keeps its
+/// pixel buffer and item tree. Dropped on the next turn of the event loop, not inside its own
+/// callback.
+fn close_about(app: &App) {
+    let window = app.windows.about.borrow_mut().take();
+    if let Some(window) = window {
+        let _ = window.hide();
+        defer(move |_| drop(window));
     }
 }
 

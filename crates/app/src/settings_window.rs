@@ -123,7 +123,7 @@ fn meshy_credential(settings: &Settings) -> CredentialName {
     }
 }
 
-/// Opens the settings window (created on first use); `focus_pins` scrolls to the readout's pins
+/// Opens the settings window (created on each open, released by [`close`]); `focus_pins` scrolls to the readout's pins
 /// (tray menu "Taskbar readout ▸ Pinned meters…").
 pub fn open(app: &App, focus_pins: bool) {
     let created = {
@@ -391,14 +391,24 @@ fn connect(window: &ui::SettingsWindow) {
     window.on_set_meshy_key(|key| with_app(|app| store_key(app, &key)));
     window.on_clear_meshy_key(|| with_app(clear_key));
     window.on_apply(|| with_app(apply));
-    window.on_dismiss(|| {
-        with_app(|app| {
-            *app.rt.settings_draft.borrow_mut() = None;
-            if let Some(w) = app.windows.settings.borrow().as_ref() {
-                let _ = w.hide();
-            }
-        });
+    window.on_dismiss(|| with_app(close));
+    window.window().on_close_requested(|| {
+        with_app(close);
+        slint::CloseRequestResponse::HideWindow
     });
+}
+
+/// Closes the settings window (Close button or the title bar's ✕) and releases it. A hidden Slint
+/// window keeps its pixel buffer (480 × 640 × 4 bytes at 100 %) and its item tree, and settings are
+/// opened rarely, so [`open`] builds it again next time. The handle is dropped on the next turn of
+/// the event loop, not inside the window's own callback.
+fn close(app: &App) {
+    *app.rt.settings_draft.borrow_mut() = None;
+    let window = app.windows.settings.borrow_mut().take();
+    if let Some(window) = window {
+        let _ = window.hide();
+        wiring::defer(move |_| drop(window));
+    }
 }
 
 /// Pinned meters, or auto when none is left. Kept while the content mode is auto too, so
