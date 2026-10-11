@@ -2,7 +2,7 @@
 //! (R§8). Drawn by the Slint `HoverCard` window (crates/app/ui/hovercard.slint), whose structs
 //! mirror these types.
 
-use jiff::Timestamp;
+use jiff::{SignedDuration, Timestamp};
 use serde::{Deserialize, Serialize};
 
 use super::GlyphKind;
@@ -13,7 +13,7 @@ use crate::consts::{ALSO_TRACKED_MAX, CARD_FORECAST_MAX_PCT};
 use crate::glyph::{Icon, ProviderGlyph, SeverityGlyph};
 use crate::grammar::TextContext;
 use crate::grammar::a11y::{balance_sentence, runout_point, unit_word};
-use crate::grammar::cells::{back_text, pct, reason_text, resets_at, t_out};
+use crate::grammar::cells::{back_text, course_pct, pct, reason_text, resets_at, t_out};
 use crate::grammar::numbers::{amount, balance_duration_words, percent, share_pct};
 use crate::grammar::strings::{Msg, fill, text};
 use crate::grammar::time::{
@@ -23,7 +23,7 @@ use crate::grammar::time::{
 use crate::model::{MeterKey, SourceKey};
 use crate::stats::{
     AssessedMeter, Assessment, BalanceAssessment, Evaluation, Freshness, Pace, ResetView, RowState,
-    ServiceEval, Severity, StaleReason, WindowAssessment, candidate, compare,
+    ServiceEval, Severity, StaleReason, WindowAssessment, candidate, compare, runway_minutes,
 };
 
 /// Templates with a value Lastdrop may not know: the template without the sentence that holds
@@ -74,7 +74,7 @@ pub(crate) fn last_reading(service: &ServiceEval) -> Option<Timestamp> {
 }
 
 /// `{n}` minutes as a long duration (`30 min`, `16 h 48 min`).
-fn long(d: jiff::SignedDuration, cx: &TextContext<'_>) -> String {
+fn long(d: SignedDuration, cx: &TextContext<'_>) -> String {
     long_duration(d, cx.strings)
 }
 
@@ -186,11 +186,23 @@ fn card_window(
         }
     };
     let (forecast, forecast_semibold) = match a.state {
-        RowState::Stale(_) | RowState::Idle | RowState::Loading => (None, false),
+        RowState::Stale(_) | RowState::Idle | RowState::Loading | RowState::Ended => (None, false),
         RowState::Exhausted => (Some(s.template(Msg::CardForecastUsedUp).to_owned()), false),
         RowState::Warning | RowState::CriticalRunway => {
-            let words =
-                t_out(a).map(|t| text(s, Msg::CardForecastRunsOut, &[("time", &card_time(t, cx))]));
+            // A held WARNING without a run-out before the reset states its projection.
+            let words = match (t_out(a), course_pct(a)) {
+                (Some(t), _) => Some(text(
+                    s,
+                    Msg::CardForecastRunsOut,
+                    &[("time", &card_time(t, cx))],
+                )),
+                (None, Some(p)) => Some(text(
+                    s,
+                    Msg::CardForecastCourse,
+                    &[("p", &percent(p, cx.locale))],
+                )),
+                (None, None) => None,
+            };
             (words, true)
         }
         RowState::Ok
@@ -214,6 +226,9 @@ fn card_window(
         }
     };
     let reset_line = match (w.reset, w.resets_at) {
+        (ResetView::Ended { by }, _) => {
+            text(s, Msg::CardLineEnded, &[("time", &card_time(by, cx))])
+        }
         (ResetView::JustReset { previous } | ResetView::IdleAfterReset { previous }, _) => text(
             s,
             Msg::CardLineJustReset,
@@ -233,7 +248,11 @@ fn card_window(
     };
     CardWindowMeter {
         name: a.names.name.clone(),
-        value: text(s, Msg::CardValue, &[("pct", &percent(w.pct, cx.locale))]),
+        value: if a.state == RowState::Ended {
+            s.template(Msg::NoReset).to_owned()
+        } else {
+            text(s, Msg::CardValue, &[("pct", &percent(w.pct, cx.locale))])
+        },
         value_semibold: in_trouble(a),
         bar,
         elapsed_line,
@@ -329,6 +348,17 @@ fn also_time(a: &Assessment, service: &ServiceEval, cx: &TextContext<'_>) -> Als
             None => dash(),
         },
         RowState::OkNoReset | RowState::Idle | RowState::Loading => dash(),
+        // The time part of the two-row cell: the stale status, or the reading's age.
+        RowState::Ended => match service.freshness {
+            Freshness::Stale(reason) => stale_also_time(reason, service, cx),
+            Freshness::Fresh => AlsoTime {
+                glyph: None,
+                text: last_reading(service)
+                    .map_or_else(|| s.template(Msg::NoReset).to_owned(), |t| age_token(t, cx)),
+                semibold: false,
+                role: ColorRole::TextSecondary,
+            },
+        },
         RowState::OkBalance => match balance(a).and_then(|b| balance_duration_words(&b.stats, s)) {
             Some(words) => AlsoTime {
                 glyph: None,
@@ -338,35 +368,43 @@ fn also_time(a: &Assessment, service: &ServiceEval, cx: &TextContext<'_>) -> Als
             },
             None => dash(),
         },
+        // A held WARNING without a run-out before the reset: ▲ + `pct`, as the readout shows it.
         RowState::Warning => match t_out(a) {
             Some(t) => say(SeverityGlyph::Warning, runout_text(t, false, cx)),
-            None => dash(),
+            None => say(SeverityGlyph::Warning, percent(pct(a), cx.locale)),
         },
         RowState::CriticalRunway => match t_out(a) {
             Some(t) => say(SeverityGlyph::Critical, runout_text(t, true, cx)),
             None => dash(),
         },
         RowState::Exhausted => say(SeverityGlyph::Critical, back_text(a, cx)),
-        RowState::Stale(reason) => match reason {
-            StaleReason::SignIn => AlsoTime {
-                glyph: None,
-                text: reason_text(reason, cx),
-                semibold: false,
-                role: ColorRole::AccentText,
-            },
-            StaleReason::Paused => AlsoTime {
-                glyph: None,
-                text: reason_text(reason, cx),
-                semibold: false,
-                role: ColorRole::Stale,
-            },
-            StaleReason::Offline | StaleReason::NoData => AlsoTime {
-                glyph: None,
-                text: last_reading(service)
-                    .map_or_else(|| s.template(Msg::NoReset).to_owned(), |t| age_token(t, cx)),
-                semibold: false,
-                role: ColorRole::Stale,
-            },
+        RowState::Stale(reason) => stale_also_time(reason, service, cx),
+    }
+}
+
+/// The time column of a STALE "Also tracked" line: `Sign in` / `Paused`, else the age.
+fn stale_also_time(reason: StaleReason, service: &ServiceEval, cx: &TextContext<'_>) -> AlsoTime {
+    match reason {
+        StaleReason::SignIn => AlsoTime {
+            glyph: None,
+            text: reason_text(reason, cx),
+            semibold: false,
+            role: ColorRole::AccentText,
+        },
+        StaleReason::Paused => AlsoTime {
+            glyph: None,
+            text: reason_text(reason, cx),
+            semibold: false,
+            role: ColorRole::Stale,
+        },
+        StaleReason::Offline | StaleReason::NoData | StaleReason::OldReading => AlsoTime {
+            glyph: None,
+            text: last_reading(service).map_or_else(
+                || cx.strings.template(Msg::NoReset).to_owned(),
+                |t| age_token(t, cx),
+            ),
+            semibold: false,
+            role: ColorRole::Stale,
         },
     }
 }
@@ -407,6 +445,7 @@ fn also_tracked(
             ),
             value: match balance(a) {
                 Some(b) => amount(b.amount, cx.locale),
+                None if a.state == RowState::Ended => s.template(Msg::NoReset).to_owned(),
                 None => percent(pct(a), cx.locale),
             },
             value_semibold: in_trouble(a),
@@ -417,6 +456,7 @@ fn also_tracked(
         header: s.template(Msg::CardAlso).to_owned(),
         lines,
         more: (more > 0).then(|| text(s, Msg::CardAlsoMore, &[("n", &more.to_string())])),
+        more_count: more,
     })
 }
 
@@ -458,7 +498,10 @@ fn stale_header(
     let title = match reason {
         StaleReason::SignIn if api_key => text(s, Msg::CardTitleApiKey, &[("service", &svc)]),
         StaleReason::SignIn => text(s, Msg::CardTitleSignIn, &[("service", &svc)]),
-        StaleReason::Paused | StaleReason::Offline | StaleReason::NoData => {
+        StaleReason::Paused
+        | StaleReason::Offline
+        | StaleReason::NoData
+        | StaleReason::OldReading => {
             let age = last_reading(service)
                 .map(|r| long(shown_age(t.now, r), t))
                 .unwrap_or_default();
@@ -479,6 +522,10 @@ fn stale_header(
             ],
         ),
         StaleReason::Offline => with_next(Msg::CardSentenceOffline, &[("time", &time)]),
+        StaleReason::OldReading => with_next(
+            Msg::CardSentenceOldReading,
+            &[("service", &svc), ("time", &time)],
+        ),
         StaleReason::NoData => {
             let template = match &service.status.failure_detail {
                 Some(_) => s.template(Msg::CardSentenceNoData).to_owned(),
@@ -537,8 +584,18 @@ fn ok_sentence(shown: &[(&ServiceEval, &Assessment)], cx: &TextContext<'_>) -> S
             .collect::<Vec<_>>()
             .join(" ");
     }
+    // Only what is known is said: a pace needs `e` in every window (R§3.2, R§3.4), "at your
+    // recent pace … left when it resets" needs a valid forecast in at least one window (R§3.5)
+    // and speaks only of windows with a reset time.
+    let paces: Option<Vec<Pace>> = windows.iter().map(|w| w.pace).collect();
+    let forecasted = windows.iter().any(|w| w.forecast.is_some_and(|f| f.valid));
+    let with_reset: Vec<&WindowAssessment> = windows
+        .iter()
+        .copied()
+        .filter(|w| w.resets_at.is_some())
+        .collect();
     // Share left at the reset of the tightest window: 100 − p (p = u without a valid forecast).
-    let left = windows
+    let left = with_reset
         .iter()
         .map(|w| {
             let p = w
@@ -548,21 +605,39 @@ fn ok_sentence(shown: &[(&ServiceEval, &Assessment)], cx: &TextContext<'_>) -> S
             100u8.saturating_sub(share_pct(p).min(100))
         })
         .min()
-        .unwrap_or(100);
-    let left = percent(left, cx.locale);
-    let paces: Vec<Pace> = windows.iter().filter_map(|w| w.pace).collect();
-    let all_under = paces.iter().all(|p| *p == Pace::Under);
-    if let [w] = windows.as_slice() {
-        let msg = match w.pace {
-            Some(Pace::About) => Msg::CardSentenceOkOneAbout,
-            Some(Pace::Ahead) => Msg::CardSentenceOkOneAhead,
-            Some(Pace::Under) | None => Msg::CardSentenceOkOne,
-        };
-        text(s, msg, &[("left", &left), ("window", &window_word(w, cx))])
-    } else if all_under {
-        text(s, Msg::CardSentenceOkMany, &[("left", &left)])
-    } else {
-        text(s, Msg::CardSentenceOkManyMixed, &[("left", &left)])
+        .filter(|_| forecasted)
+        .map(|l| percent(l, cx.locale));
+    match (windows.as_slice(), paces.as_deref(), left) {
+        ([w], Some([pace]), Some(left)) => {
+            let msg = match pace {
+                Pace::About => Msg::CardSentenceOkOneAbout,
+                Pace::Ahead => Msg::CardSentenceOkOneAhead,
+                Pace::Under => Msg::CardSentenceOkOne,
+            };
+            text(s, msg, &[("left", &left), ("window", &window_word(w, cx))])
+        }
+        ([_], Some([pace]), None) => s
+            .template(match pace {
+                Pace::About => Msg::CardSentenceOkOnePaceAbout,
+                Pace::Ahead => Msg::CardSentenceOkOnePaceAhead,
+                Pace::Under => Msg::CardSentenceOkOnePaceUnder,
+            })
+            .to_owned(),
+        (_, Some(paces), left) if paces.len() > 1 && paces.iter().all(|p| *p == Pace::Under) => {
+            match left {
+                Some(left) => text(s, Msg::CardSentenceOkMany, &[("left", &left)]),
+                None => s.template(Msg::CardSentenceOkManyPace).to_owned(),
+            }
+        }
+        (_, _, Some(left)) => match with_reset.as_slice() {
+            [w] => text(
+                s,
+                Msg::CardSentenceOkOneLeft,
+                &[("left", &left), ("window", &window_word(w, cx))],
+            ),
+            _ => text(s, Msg::CardSentenceOkManyMixed, &[("left", &left)]),
+        },
+        (_, _, None) => String::new(),
     }
 }
 
@@ -630,13 +705,17 @@ fn trouble_header(
             (SeverityGlyph::Critical, title, sentence)
         }
         RowState::CriticalRunway => {
+            // The runway as shown, `N` (R§3.5, R§5.3: never 0, `1 min` once `t_out` passed).
             let title = match t_out(a) {
                 Some(t) => text(
                     s,
                     Msg::CardTitleCriticalRunway,
                     &[
                         ("meter", &meter),
-                        ("duration", &long(shown_duration(cx.now, t), cx)),
+                        (
+                            "duration",
+                            &long(SignedDuration::from_mins(runway_minutes(cx.now, t)), cx),
+                        ),
                     ],
                 ),
                 None => text(
@@ -673,10 +752,29 @@ fn trouble_header(
             (SeverityGlyph::Critical, title, sentence)
         }
         _ => {
-            // WARNING.
+            // WARNING. Held by hysteresis without a run-out before the reset (R§3.7, R§5.3): the
+            // projection instead of a run-out time.
+            let course = match t_out(a) {
+                Some(_) => None,
+                None => course_pct(a).map(|p| percent(p, cx.locale)),
+            };
             let time = t_out(a).map(|t| runout_point(a, t, cx)).unwrap_or_default();
-            let title = if several {
-                text(
+            let title = match (&course, several) {
+                (Some(p), true) => text(
+                    s,
+                    Msg::CardTitleWarningCourseService,
+                    &[
+                        ("service", &service.display_name()),
+                        ("meter", &a.names.short_name),
+                        ("p", p),
+                    ],
+                ),
+                (Some(p), false) => text(
+                    s,
+                    Msg::CardTitleWarningCourse,
+                    &[("meter", &meter), ("p", p)],
+                ),
+                (None, true) => text(
                     s,
                     Msg::CardTitleWarningService,
                     &[
@@ -684,29 +782,40 @@ fn trouble_header(
                         ("meter", &a.names.short_name),
                         ("time", &time),
                     ],
-                )
-            } else {
-                text(
+                ),
+                (None, false) => text(
                     s,
                     Msg::CardTitleWarning,
                     &[("meter", &meter), ("time", &time)],
-                )
+                ),
             };
-            let mut sentence = match (t_out(a), reset, w) {
-                (Some(t), Some(r), Some(w)) => {
-                    let e = w.elapsed.map(|e| percent(share_pct(e), cx.locale));
-                    text(
-                        s,
-                        Msg::CardSentenceWarning,
-                        &[
-                            ("pct", &pct_text),
-                            ("e", &e.unwrap_or_default()),
-                            ("span", &span),
-                            ("duration", &before_reset(t, r, cx)),
-                            ("time", &card_time(r, cx)),
-                        ],
-                    )
-                }
+            let e = w
+                .and_then(|w| w.elapsed)
+                .map(|e| percent(share_pct(e), cx.locale))
+                .unwrap_or_default();
+            let mut sentence = match (t_out(a), &course, reset, w) {
+                (Some(t), _, Some(r), Some(_)) => text(
+                    s,
+                    Msg::CardSentenceWarning,
+                    &[
+                        ("pct", &pct_text),
+                        ("e", &e),
+                        ("span", &span),
+                        ("duration", &before_reset(t, r, cx)),
+                        ("time", &card_time(r, cx)),
+                    ],
+                ),
+                (None, Some(p), Some(r), Some(_)) => text(
+                    s,
+                    Msg::CardSentenceWarningCourse,
+                    &[
+                        ("pct", &pct_text),
+                        ("e", &e),
+                        ("span", &span),
+                        ("p", p),
+                        ("time", &card_time(r, cx)),
+                    ],
+                ),
                 _ => balance_sentence(a, service, cx),
             };
             if let Some((_, other)) = shown
@@ -873,6 +982,9 @@ pub struct AlsoTracked {
     pub lines: Vec<AlsoLine>,
     /// `+N more`, when more meters exist.
     pub more: Option<String>,
+    /// The `N` of `more` (0 without it), so a window that drops lines to fit (R§8.1) can count
+    /// the dropped ones in.
+    pub more_count: usize,
 }
 
 /// The hover card (R§8). Width 320, padding 12, height = content. When the content is taller
@@ -965,6 +1077,17 @@ pub fn build_hover_card(
                 String::new(),
             ),
             RowState::Stale(reason) => stale_header(service, reason, cx),
+            // Every shown row is ENDED (or LOADING): the service's staleness, else nothing yet.
+            RowState::Ended => match service.freshness {
+                Freshness::Stale(reason) => stale_header(service, reason, cx),
+                Freshness::Fresh => (
+                    CardHeader {
+                        glyph: None,
+                        title: s.template(Msg::FlyoutVerdictLoading).to_owned(),
+                    },
+                    String::new(),
+                ),
+            },
             RowState::Exhausted
             | RowState::CriticalRunway
             | RowState::CriticalLevel
@@ -974,11 +1097,23 @@ pub fn build_hover_card(
             | RowState::Idle
             | RowState::OkBalance
             | RowState::JustReset => {
-                let counted = shown
+                // LOADING and ENDED rows tell nothing about now: neither title nor sentence
+                // speaks of them.
+                let known: Vec<(&ServiceEval, &Assessment)> = shown
                     .iter()
-                    .filter(|(_, a)| a.state != RowState::Loading)
-                    .count();
+                    .filter(|(_, a)| !matches!(a.state, RowState::Loading | RowState::Ended))
+                    .copied()
+                    .collect();
+                let counted = known.len();
+                // "You'll make it to the reset" needs a reset: windows without any reset time
+                // (Claude Desktop's history alone) get a title that claims none.
+                let windows: Vec<&WindowAssessment> =
+                    known.iter().filter_map(|(_, a)| window(a)).collect();
+                let no_reset = !windows.is_empty()
+                    && windows.iter().all(|w| w.resets_at.is_none())
+                    && known.iter().all(|(_, a)| balance(a).is_none());
                 let msg = match counted {
+                    _ if no_reset => Msg::CardTitleOkNoReset,
                     0 | 1 => Msg::CardTitleOkOne,
                     2 => Msg::CardTitleOkTwo,
                     _ => Msg::CardTitleOkMany,
@@ -988,7 +1123,7 @@ pub fn build_hover_card(
                         glyph: Some(SeverityGlyph::Success),
                         title: s.template(msg).to_owned(),
                     },
-                    ok_sentence(&shown, t),
+                    ok_sentence(&known, t),
                 )
             }
         },

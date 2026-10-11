@@ -1048,7 +1048,10 @@ mod states {
         assert_eq!(rows[0].value, "100%", "100% is allowed in the flyout");
         assert_eq!(rows[0].tone, Tone::Critical);
         assert_eq!(flyout.verdict.text, "Claude 5-hour is used up until 16:30");
-        assert_eq!(rows[0].line.as_deref(), Some("Back in 3 h 48 min."));
+        assert_eq!(
+            rows[0].line.as_deref(),
+            Some("Used up. Back in 3 h 48 min.")
+        );
     }
 
     #[test]
@@ -1815,5 +1818,534 @@ mod flyout {
             Some("Enter key…")
         );
         assert_eq!(flyout.focus_card, Some(1));
+    }
+}
+
+// ---- Regressions from the M1 review (spec lens) ------------------------------------------------
+
+mod review {
+    use super::*;
+    use lastdrop_core::grammar::a11y::row_sentence;
+    use lastdrop_core::stats::WindowAssessment;
+
+    /// One service's readings evaluated in turn with one memory, each recorded in the history
+    /// first (as the app does).
+    struct Run {
+        settings: Settings,
+        history: History,
+        memory: EvalMemory,
+    }
+
+    impl Run {
+        fn new(settings: Settings) -> Run {
+            Run {
+                settings,
+                history: History::new(),
+                memory: EvalMemory::default(),
+            }
+        }
+
+        fn read(&mut self, snap: Snapshot, now: Timestamp) -> Evaluation {
+            for m in &snap.meters {
+                self.history
+                    .entry(key(snap.provider, &m.id.0))
+                    .or_default()
+                    .push(Sample::window(snap.measured_at, m.used, m.resets_at));
+            }
+            evaluate(
+                &[Svc::new(snap)],
+                &self.settings,
+                &self.history,
+                now,
+                &mut self.memory,
+            )
+        }
+    }
+
+    fn five_key() -> MeterKey {
+        key(ProviderId::Claude, MeterId::FIVE_HOUR)
+    }
+
+    fn window_of(eval: &Evaluation, k: &MeterKey) -> WindowAssessment {
+        match &eval.assessment(k).expect("assessed").1.meter {
+            AssessedMeter::Window(w) => w.clone(),
+            other => panic!("window expected, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn losing_the_reset_time_is_not_a_window_reset() {
+        let r = at(10, 10, 16, 30);
+        let mut run = Run::new(settings_with(&[ProviderId::Claude]));
+        let t1 = at(10, 10, 12, 40);
+        let e1 = run.read(
+            snapshot(ProviderId::Claude, vec![five_hour(0.91, Some(r))], t1),
+            t1,
+        );
+        assert_eq!(
+            e1.assessment(&five_key()).expect("a").1.state,
+            RowState::CriticalLevel
+        );
+
+        // The OAuth source rests after an error; Claude Desktop's history (no reset times)
+        // answers with a newer reading of the same window.
+        let t2 = at(10, 10, 12, 45);
+        let e2 = run.read(
+            snapshot(ProviderId::Claude, vec![five_hour(0.89, None)], t2),
+            t2,
+        );
+        let (_, a) = e2.assessment(&five_key()).expect("a");
+        assert!(
+            !e2.changes.contains(&LiveChange::WindowReset(five_key())),
+            "no false reset: {:?}",
+            e2.changes
+        );
+        assert_eq!(
+            a.state,
+            RowState::CriticalLevel,
+            "89 % holds level CRITICAL"
+        );
+        assert_eq!(window_of(&e2, &five_key()).resets_at, Some(r));
+
+        // R comes back: the instance and its history are intact.
+        let t3 = at(10, 10, 12, 55);
+        let e3 = run.read(
+            snapshot(ProviderId::Claude, vec![five_hour(0.89, Some(r))], t3),
+            t3,
+        );
+        assert_eq!(
+            e3.assessment(&five_key()).expect("a").1.state,
+            RowState::CriticalLevel
+        );
+        let f = window_of(&e3, &five_key()).forecast.expect("forecast");
+        assert_eq!(
+            f.span,
+            mins(15),
+            "the forecast reaches back to the first reading"
+        );
+        assert!(f.valid);
+        assert!(!e3.changes.contains(&LiveChange::WindowReset(five_key())));
+
+        // Without the history (memory only), the shown instance still carries the reset time.
+        let mut memory = EvalMemory::default();
+        let settings = settings_with(&[ProviderId::Claude]);
+        let first = snapshot(ProviderId::Claude, vec![five_hour(0.91, Some(r))], t1);
+        evaluate(
+            &[Svc::new(first)],
+            &settings,
+            &History::new(),
+            t1,
+            &mut memory,
+        );
+        let second = snapshot(ProviderId::Claude, vec![five_hour(0.89, None)], t2);
+        let eval = evaluate(
+            &[Svc::new(second)],
+            &settings,
+            &History::new(),
+            t2,
+            &mut memory,
+        );
+        assert!(eval.changes.is_empty(), "{:?}", eval.changes);
+        assert_eq!(window_of(&eval, &five_key()).resets_at, Some(r));
+
+        // A reading without R taken after the reset belongs to a new (unknown) instance.
+        let late = at(10, 10, 16, 40);
+        let e4 = run.read(
+            snapshot(ProviderId::Claude, vec![five_hour(0.05, None)], late),
+            late,
+        );
+        assert_eq!(window_of(&e4, &five_key()).resets_at, None);
+    }
+
+    #[test]
+    fn a_warning_held_past_its_run_out_shows_the_projection_not_a_time() {
+        let settings = settings_with(&[ProviderId::Claude]);
+        let r = at(10, 10, 16, 30);
+        let mut run = Run::new(settings.clone());
+        for (h, m, u) in [(13, 15, 0.71), (13, 45, 0.78)] {
+            let t = at(10, 10, h, m);
+            run.read(
+                snapshot(ProviderId::Claude, vec![five_hour(u, Some(r))], t),
+                t,
+            );
+        }
+        // p 0.9725 (> 0.97 keeps the WARNING), t_out 16:54 is after the 16:30 reset.
+        let t = at(10, 10, 14, 15);
+        let eval = run.read(
+            snapshot(ProviderId::Claude, vec![five_hour(0.815, Some(r))], t),
+            t,
+        );
+        let (service, a) = eval.assessment(&five_key()).expect("a");
+        assert_eq!(a.state, RowState::Warning);
+        let f = window_of(&eval, &five_key()).forecast.expect("forecast");
+        assert!(!f.runs_out && f.valid);
+
+        let locale = gb();
+        let cx = build_cx(t, &locale, &settings);
+        let readout = build_readout(&eval, &cx);
+        assert_eq!(cell_texts(&readout, 0), ["[glyph]", "82%"]);
+        assert_eq!(compact_texts(&readout, 0), ["[glyph]", "82%"]);
+        let card = build_hover_card(&eval, HoverAnchor::Readout, &eval.readout_rows, &cx);
+        assert_eq!(
+            card.header.title,
+            "5-hour limit is on course for 97% at the reset"
+        );
+        assert!(
+            card.sentence
+                .ends_with("it reaches about 97% by the 16:30 reset."),
+            "{}",
+            card.sentence
+        );
+        let CardMeter::Window(w) = &card.services[0].meters[0] else {
+            panic!("window expected");
+        };
+        assert_eq!(w.forecast.as_deref(), Some("on course for 97% at reset"));
+        let flyout = build_flyout(&eval, &run.history, false, &cx);
+        assert_eq!(
+            flyout.verdict.text,
+            "Claude 5-hour is on course for 97% at the reset"
+        );
+        let CardBody::Meters(rows) = &flyout.cards[0].body else {
+            panic!("meters expected");
+        };
+        assert_eq!(rows[0].right.text, "Resets 16:30");
+        assert_eq!(
+            rows[0].line.as_deref(),
+            Some("On course for 97% at the 16:30 reset.")
+        );
+        let sentence = row_sentence(a, service, &text_cx(t, &locale));
+        assert!(
+            sentence.contains("warning, on course for 97 percent at the reset"),
+            "{sentence}"
+        );
+        let tray = build_tray(&eval, &cx);
+        let everything = format!(
+            "{readout:?} {card:?} {flyout:?} {sentence} {}",
+            tray.tooltip
+        );
+        assert!(!everything.contains("16:54"), "no run-out after the reset");
+        assert!(!everything.contains("0 min before"));
+    }
+
+    #[test]
+    fn a_reading_without_a_per_model_meter_keeps_the_widths() {
+        let settings = settings_with(&[ProviderId::Claude]);
+        let mut run = Run::new(settings.clone());
+        let locale = gb();
+        let fable = window_meter(
+            "weekly:fable",
+            MeterNames::weekly_model("Fable"),
+            2,
+            0.2,
+            Some(at(10, 12, 9, 0)),
+            WindowLen::Fixed(hours(7 * 24)),
+            false,
+        );
+        let t1 = now();
+        let with = run.read(
+            snapshot(
+                ProviderId::Claude,
+                vec![
+                    five_hour(0.3, Some(at(10, 10, 14, 0))),
+                    weekly(0.5, Some(at(10, 12, 9, 0))),
+                    fable,
+                ],
+                t1,
+            ),
+            t1,
+        );
+        let t2 = t1 + mins(5);
+        let without = run.read(
+            snapshot(
+                ProviderId::Claude,
+                vec![five_hour(0.31, Some(at(10, 10, 14, 0))), weekly(0.5, None)],
+                t2,
+            ),
+            t2,
+        );
+        let w1 = build_readout(&with, &build_cx(t1, &locale, &settings)).widths;
+        let w2 = build_readout(&without, &build_cx(t2, &locale, &settings)).widths;
+        assert!(w1.labels.contains(&"Fable".to_owned()));
+        assert_eq!(w1, w2, "R§6.3: widths never change with data");
+    }
+
+    #[test]
+    fn an_ok_card_without_reset_times_claims_no_pace_or_forecast() {
+        let settings = settings_with(&[ProviderId::Claude]);
+        let locale = gb();
+        let cx = build_cx(now(), &locale, &settings);
+        // Claude Desktop's history alone: no reset times, so no `e`, no pace, no forecast.
+        let snap = snapshot(
+            ProviderId::Claude,
+            vec![five_hour(0.10, None), weekly(0.55, None)],
+            now() - mins(2),
+        );
+        let eval = eval_once(&[Svc::new(snap)], &settings, &History::new(), now());
+        let card = build_hover_card(&eval, HoverAnchor::Readout, &eval.readout_rows, &cx);
+        assert_eq!(card.header.title, "Within your limits");
+        assert_eq!(card.sentence, "");
+        let flyout = build_flyout(&eval, &History::new(), false, &cx);
+        assert_eq!(flyout.verdict.text, "Within your limits");
+
+        // One reading with a reset time: a pace, but no forecast yet.
+        let snap = snapshot(
+            ProviderId::Claude,
+            vec![weekly(0.40, Some(at(10, 12, 9, 0)))],
+            now(),
+        );
+        let eval = eval_once(&[Svc::new(snap)], &settings, &History::new(), now());
+        let card = build_hover_card(&eval, HoverAnchor::Readout, &eval.readout_rows, &cx);
+        assert_eq!(card.header.title, "You'll make it to the reset");
+        assert_eq!(
+            card.sentence,
+            "It is being used more slowly than time passes."
+        );
+    }
+
+    #[test]
+    fn small_text_fixes() {
+        let settings = settings_with(&[ProviderId::Claude]);
+        // F§4.4: the flyout's `Back` uses the card time rule (12-hour locale: `4:30 PM`).
+        let r = at(10, 10, 16, 30);
+        let mut used_up = five_hour(1.0, Some(r));
+        used_up.limited = true;
+        let eval = eval_once(
+            &[Svc::new(snapshot(ProviderId::Claude, vec![used_up], now()))],
+            &settings,
+            &History::new(),
+            now(),
+        );
+        let locale = us();
+        let flyout = build_flyout(
+            &eval,
+            &History::new(),
+            false,
+            &build_cx(now(), &locale, &settings),
+        );
+        let CardBody::Meters(rows) = &flyout.cards[0].body else {
+            panic!("meters expected");
+        };
+        assert_eq!(rows[0].right.text, "Back 4:30 PM");
+
+        // R§11: verdict first for a used-up meter without a reset time.
+        let mut weekly_empty = weekly(1.0, None);
+        weekly_empty.limited = true;
+        let eval = eval_once(
+            &[Svc::new(snapshot(
+                ProviderId::Claude,
+                vec![weekly_empty],
+                now(),
+            ))],
+            &settings,
+            &History::new(),
+            now(),
+        );
+        let (service, a) = eval
+            .assessment(&key(ProviderId::Claude, MeterId::WEEKLY))
+            .expect("a");
+        assert_eq!(
+            row_sentence(a, service, &text_cx(now(), &locale)),
+            "Claude weekly, all models: empty, 100 percent used, no reset time given."
+        );
+
+        // R§5.3: the card's runway never shows 0 once `t_out` has passed.
+        let history =
+            five_hour_history(&[(at(10, 10, 14, 20), 0.79), (at(10, 10, 14, 50), 0.94)], r);
+        let snap = snapshot(
+            ProviderId::Claude,
+            vec![five_hour(0.94, Some(r))],
+            at(10, 10, 14, 50),
+        );
+        let later = at(10, 10, 15, 5);
+        let eval = eval_once(&[Svc::new(snap)], &settings, &history, later);
+        let gb = gb();
+        let cx = build_cx(later, &gb, &settings);
+        let card = build_hover_card(&eval, HoverAnchor::Readout, &eval.readout_rows, &cx);
+        assert_eq!(card.header.title, "5-hour limit runs out in 1 min");
+    }
+
+    #[test]
+    fn an_old_reading_without_a_failure_is_not_called_unanswered() {
+        // Claude Desktop's history answers every fetch, but Claude Desktop has written nothing
+        // for 23 h: no failure is on record.
+        let settings = settings_with(&[ProviderId::Claude]);
+        let read = now() - hours(23) - mins(28);
+        let snap = snapshot(
+            ProviderId::Claude,
+            vec![five_hour(0.10, None), weekly(0.55, None)],
+            read,
+        );
+        let status = ServiceStatus {
+            next_try: Some(now() + mins(5)),
+            ..fresh(read)
+        };
+        let eval = eval_once(
+            &[Svc::new(snap).status(status)],
+            &settings,
+            &History::new(),
+            now(),
+        );
+        let (service, _) = eval
+            .assessment(&key(ProviderId::Claude, MeterId::WEEKLY))
+            .expect("a");
+        assert_eq!(
+            service.freshness,
+            stats::Freshness::Stale(StaleReason::OldReading)
+        );
+        let locale = gb();
+        let cx = build_cx(now(), &locale, &settings);
+        let readout = build_readout(&eval, &cx);
+        // The 5-hour reading is older than 5 hours: its window has ended (R§3.9 ENDED).
+        assert_eq!(
+            cell_texts(&readout, 0),
+            ["–", "23h ago"],
+            "AGE, not No data"
+        );
+        assert_eq!(cell_texts(&readout, 1), ["55%", "23h ago"]);
+        let flyout = build_flyout(&eval, &History::new(), false, &cx);
+        let message = flyout.cards[0].message.as_ref().expect("message");
+        assert_eq!(message.lead, "No new reading");
+        let card = build_hover_card(&eval, HoverAnchor::Readout, &eval.readout_rows, &cx);
+        assert!(
+            card.sentence
+                .starts_with("Claude answers, but its newest numbers are from"),
+            "{}",
+            card.sentence
+        );
+        assert!(
+            build_tray(&eval, &cx)
+                .tooltip
+                .contains("has no new reading")
+        );
+    }
+
+    #[test]
+    fn a_five_hour_reading_older_than_five_hours_shows_the_window_ended() {
+        // Claude Desktop's history (no reset times) last wrote at 07:41: the 5-hour window it
+        // was read in is over by 12:41 at the latest, whatever came after (R§3.9 ENDED).
+        let settings = settings_with(&[ProviderId::Claude]);
+        let read = at(10, 10, 7, 41);
+        let snap = snapshot(
+            ProviderId::Claude,
+            vec![five_hour(0.42, None), weekly(0.61, None)],
+            read,
+        );
+        let svc = |snap: &Snapshot| Svc::new(snap.clone()).status(fresh(read));
+        let five_key = key(ProviderId::Claude, MeterId::FIVE_HOUR);
+        let locale = gb();
+
+        // One minute before: still the stale reading, frozen.
+        let before = at(10, 10, 12, 40);
+        let eval = eval_once(&[svc(&snap)], &settings, &History::new(), before);
+        let (_, five) = eval.assessment(&five_key).expect("5h");
+        assert_eq!(five.state, RowState::Stale(StaleReason::OldReading));
+        let model = build_readout(&eval, &build_cx(before, &locale, &settings));
+        assert_eq!(cell_texts(&model, 0), ["42%", "4h ago"]);
+
+        // From 12:41 on: ended, value unknown.
+        let mut memory = EvalMemory::default();
+        let eval = evaluate(
+            &[svc(&snap)],
+            &settings,
+            &History::new(),
+            now(),
+            &mut memory,
+        );
+        let (service, five) = eval.assessment(&five_key).expect("5h");
+        assert_eq!(
+            service.freshness,
+            stats::Freshness::Stale(StaleReason::OldReading)
+        );
+        assert_eq!(five.state, RowState::Ended);
+        assert_eq!(five.class, DisplayClass::Loading);
+        assert_eq!((five.severity, five.pressure), (None, 0.0));
+        match &five.meter {
+            AssessedMeter::Window(w) => {
+                assert_eq!(
+                    w.reset,
+                    ResetView::Ended {
+                        by: at(10, 10, 12, 41)
+                    }
+                );
+                assert_eq!((w.resets_at, w.elapsed, w.forecast), (None, None, None));
+            }
+            other => panic!("expected a window, got {other:?}"),
+        }
+        // The weekly, which says something about now, is the winner.
+        assert_eq!(eval.winner, Some(key(ProviderId::Claude, MeterId::WEEKLY)));
+
+        let cx = build_cx(now(), &locale, &settings);
+        let model = build_readout(&eval, &cx);
+        assert_eq!(model.rows[0].key, five_key);
+        assert_eq!(cell_texts(&model, 0), ["–", "5h ago"]);
+        assert_eq!(
+            model.rows[0].right.value.as_ref().map(|v| v.role),
+            Some(ColorRole::TextSecondary)
+        );
+        assert_eq!(cell_texts(&model, 1), ["61%", "5h ago"]);
+        assert_eq!(compact_texts(&model, 0), ["–"]);
+        let bar = &model.rows[0].bar;
+        assert_eq!(
+            (bar.mode, bar.elapsed, bar.dashed),
+            (BarMode::Loading, None, false)
+        );
+        let geom = bar_geometry(bar, 40.0, 16.0, 1.0);
+        assert_eq!((geom.fill_end, geom.tick), (0, None), "track only, no tick");
+        assert_eq!(model.rows[0].uia_value, None);
+        assert_eq!(
+            model.uia.root_name,
+            concat!(
+                "Lastdrop. Claude 5-hour session: ended by 12:41, no newer reading. ",
+                "Claude: no new reading, last reading 5 hours ago. ",
+                "Then: weekly, all models 61 percent used."
+            )
+        );
+
+        let card = build_hover_card(&eval, HoverAnchor::Readout, &eval.readout_rows, &cx);
+        match &card.services[0].meters[0] {
+            CardMeter::Window(w) => {
+                assert_eq!(w.value, "–");
+                assert_eq!(w.reset_line, "Ended by 12:41");
+                assert_eq!((w.forecast.as_deref(), w.reset_in.as_deref()), (None, None));
+            }
+            CardMeter::Balance(_) => panic!("window expected"),
+        }
+        let flyout = build_flyout(&eval, &History::new(), false, &cx);
+        let CardBody::Meters(rows) = &flyout.cards[0].body else {
+            panic!("meters expected");
+        };
+        assert_eq!((rows[0].value.as_str(), rows[0].pct), ("–", None));
+        assert_eq!(rows[0].right.text, "Ended by 12:41");
+        assert_eq!(rows[0].tone, Tone::Stale);
+        assert_eq!(rows[0].line, None);
+        assert!(matches!(
+            build_tray(&eval, &cx).icon,
+            TrayIcon::Digits { .. }
+        ));
+
+        // A service that reports fresh with that old reading (a scheduler that counts the fetch)
+        // still shows the window ended, with the reading's age.
+        let fresh_status = Svc::new(snap.clone()).status(fresh(now()));
+        let eval = eval_once(&[fresh_status], &settings, &History::new(), now());
+        let model = build_readout(&eval, &cx);
+        assert_eq!(cell_texts(&model, 0), ["–", "5h ago"]);
+        assert_eq!(
+            model.rows[0].right.time.first().map(|r| match r {
+                lastdrop_core::readout::Run::Text(t) => t.role,
+                lastdrop_core::readout::Run::Glyph(g) => g.role,
+            }),
+            Some(ColorRole::TextSecondary)
+        );
+
+        // A reading that was not using the window (`0%`) has nothing that ended: still IDLE-like
+        // (stale `0%`).
+        let idle = snapshot(
+            ProviderId::Claude,
+            vec![five_hour(0.0, None), weekly(0.61, None)],
+            read,
+        );
+        let eval = eval_once(&[svc(&idle)], &settings, &History::new(), now());
+        let (_, five) = eval.assessment(&five_key).expect("5h");
+        assert_eq!(five.state, RowState::Stale(StaleReason::OldReading));
     }
 }

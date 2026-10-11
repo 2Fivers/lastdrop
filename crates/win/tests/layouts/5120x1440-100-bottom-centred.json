@@ -1,0 +1,75 @@
+{
+  "name": "5120x1440-100-bottom-centred",
+  "description": "Recorded on the development machine (Windows 11 25H2, one 5120×1440 monitor at 100 %, centred buttons; the chevron is a XAML element at TrayNotifyWnd's left edge, so chevron is null): room 4798 − 4 − (3114 + 8) = 1672 → two rows, right edge 4 px left of the notification area",
+  "synthetic": false,
+  "geometry": {
+    "monitor": {
+      "left": 0,
+      "top": 0,
+      "right": 5120,
+      "bottom": 1440
+    },
+    "work_area": {
+      "left": 0,
+      "top": 0,
+      "right": 5120,
+      "bottom": 1392
+    },
+    "taskbar": {
+      "left": 0,
+      "top": 1392,
+      "right": 5120,
+      "bottom": 1440
+    },
+    "notification_area": {
+      "left": 4798,
+      "top": 1392,
+      "right": 5120,
+      "bottom": 1440
+    },
+    "chevron": null,
+    "dpi": 96,
+    "edge": "Bottom",
+    "alignment": "Center",
+    "auto_hide": false,
+    "fullscreen_app": false,
+    "app_buttons": {
+      "rightmost_right": 3114
+    }
+  },
+  "layout": {
+    "scale": 1.0,
+    "slot_h": 40,
+    "row_h": 16,
+    "y_row1": 4,
+    "y_row2": 20,
+    "y_single": 12,
+    "x_glyph": null,
+    "x_label": 6,
+    "label_w": 17,
+    "x_bar": 29,
+    "bar_w": 40,
+    "x_right": 75,
+    "right_w": 79,
+    "compact_w": 53,
+    "value_box_w": 24,
+    "time_x": 30,
+    "width_rows": 160,
+    "width_compact": 134
+  },
+  "prefs": {
+    "content": "TwoRows",
+    "previous": "TwoRows"
+  },
+  "expected": {
+    "Docked": {
+      "rect": {
+        "left": 4634,
+        "top": 1396,
+        "right": 4794,
+        "bottom": 1436
+      },
+      "form": "TwoRows"
+    }
+  }
+}

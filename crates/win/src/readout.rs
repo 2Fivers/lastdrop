@@ -11,19 +11,30 @@
 //!
 //! It draws the latest [`ReadoutModel`] with `lastdrop-core`'s layout and bar functions at the
 //! taskbar monitor's DPI, places it with [`crate::placement::place`], and reports user actions
-//! and placement through the event sink. It never does I/O, never waits on locks held by other
-//! threads, and makes no synchronous cross-process call while holding a lock. After an Explorer
-//! restart (`TaskbarCreated`) it rebuilds the readout in-process.
-#![expect(
-    unused_variables,
-    reason = "M1 contract stubs: remove once no todo!() is left here"
-)]
+//! and placement through the event sink. It never does I/O (the one registry value it reads,
+//! the taskbar alignment `TaskbarAl`, is read at start-up and on `WM_SETTINGCHANGE`
+//! "TraySettings"), never waits on locks held by other threads, and makes no synchronous
+//! cross-process call while holding a lock. After an Explorer restart (`TaskbarCreated`) it
+//! rebuilds the readout in-process: it finds the new taskbar, re-hooks Explorer's new process,
+//! re-measures the app buttons and places and draws again.
+//!
+//! Submodules: `host` (the thread, its windows, hooks and state), `frame` (drawing a model into a
+//! [`crate::render::Canvas`]), `gather` (taskbar geometry with `GetWindowRect`), `layered` (the
+//! DIB pushed with `UpdateLayeredWindow`) and `uia` (the UI Automation provider, R§11).
+
+mod frame;
+mod gather;
+mod host;
+mod layered;
+mod uia;
 
 use std::sync::Arc;
 use std::thread::JoinHandle;
 use std::time::Duration;
 
 use lastdrop_core::readout::{ReadoutForm, ReadoutModel};
+use windows::Win32::Foundation::{HWND, LPARAM, WPARAM};
+use windows::Win32::UI::WindowsAndMessaging::PostMessageW;
 
 use crate::flyout_pos::MonitorInfo;
 use crate::geom::{Point, Rect};
@@ -107,38 +118,108 @@ pub type EventSink = Box<dyn Fn(ReadoutEvent) + Send + 'static>;
 
 /// The main thread's handle to the readout thread.
 pub struct ReadoutHandle {
-    #[expect(dead_code, reason = "used once the handle is implemented (M1)")]
     thread: Option<JoinHandle<()>>,
+    mailbox: Arc<host::Mailbox>,
+    /// The thread's message window (`HWND` as `isize`), the target of every `PostMessage`.
+    hwnd: isize,
 }
 
 impl ReadoutHandle {
     /// Starts the readout thread. It creates its windows, hooks and the occupancy thread, then
     /// waits for a model; nothing is shown before the first [`ReadoutHandle::update`].
     pub fn spawn(config: ReadoutConfig, sink: EventSink) -> std::io::Result<ReadoutHandle> {
-        todo!("M1: spawn the readout thread")
+        let mailbox = Arc::new(host::Mailbox::default());
+        let (ready_tx, ready_rx) = std::sync::mpsc::sync_channel(1);
+        let thread_mailbox = Arc::clone(&mailbox);
+        let thread = std::thread::Builder::new()
+            .name("lastdrop-readout".to_owned())
+            .spawn(move || host::run(config, sink, thread_mailbox, ready_tx))?;
+        match ready_rx.recv() {
+            Ok(Ok(hwnd)) => Ok(ReadoutHandle {
+                thread: Some(thread),
+                mailbox,
+                hwnd,
+            }),
+            Ok(Err(message)) => {
+                let _ = thread.join();
+                Err(std::io::Error::other(message))
+            }
+            Err(_) => {
+                let _ = thread.join();
+                Err(std::io::Error::other(
+                    "the readout thread ended during start-up",
+                ))
+            }
+        }
+    }
+
+    /// Wakes the thread to read its mailbox.
+    fn post(&self, msg: u32) {
+        // SAFETY: posting to a window of another thread; a stale handle only makes the call fail.
+        let posted = unsafe {
+            PostMessageW(
+                Some(HWND(self.hwnd as *mut core::ffi::c_void)),
+                msg,
+                WPARAM(0),
+                LPARAM(0),
+            )
+        };
+        if let Err(e) = posted {
+            log::warn!("cannot reach the readout thread: {e}");
+        }
     }
 
     /// Hands the readout a new model: swaps it into a one-slot mailbox (a lock held only for the
     /// swap, never across a Win32 call) and `PostMessage`s the thread to redraw. Identical models
     /// do not redraw (R§12).
     pub fn update(&self, model: Arc<ReadoutModel>) {
-        todo!("M1: post the model")
+        self.mailbox.put(|slot| slot.model = Some(model));
+        self.post(host::WM_MAILBOX);
     }
 
     /// Shows or hides the readout (settings, context menu "Taskbar readout ▸ Off").
     pub fn set_enabled(&self, enabled: bool) {
-        todo!("M1: post enabled")
+        self.mailbox.put(|slot| slot.enabled = Some(enabled));
+        self.post(host::WM_MAILBOX);
     }
 
     /// Hands the readout a new theme (after a [`SystemEvent::Theme`] round trip through the main
     /// thread): same mailbox rule as [`ReadoutHandle::update`]; redraws (R§12
     /// "theme/accent/HC change").
     pub fn set_theme(&self, theme: ThemeInfo) {
-        todo!("M1: post the theme")
+        self.mailbox.put(|slot| slot.theme = Some(theme));
+        self.post(host::WM_MAILBOX);
     }
 
     /// Asks the thread to destroy its windows, unhook and exit, and joins it.
-    pub fn shutdown(self) {
-        todo!("M1: post quit and join")
+    pub fn shutdown(mut self) {
+        self.stop();
     }
+
+    fn stop(&mut self) {
+        if let Some(thread) = self.thread.take() {
+            self.post(host::WM_STOP);
+            if thread.join().is_err() {
+                log::warn!("the readout thread panicked");
+            }
+        }
+    }
+}
+
+impl Drop for ReadoutHandle {
+    /// Same as [`ReadoutHandle::shutdown`] when the handle is dropped without it.
+    fn drop(&mut self) {
+        self.stop();
+    }
+}
+
+/// The taskbar geometry as the readout thread gathers it right now (`GetWindowRect`,
+/// `GetMonitorInfoW`, `GetDpiForMonitor`; never `SHAppBarMessage`), with `app_buttons` from the
+/// caller (the occupancy thread's last answer). `None` when there is no `Shell_TrayWnd`. For
+/// recording layouts (`tests/layouts/README.md`): it holds only rectangles, DPI and flags.
+pub fn taskbar_geometry(
+    app_buttons: Option<crate::placement::AppButtonExtents>,
+) -> Option<crate::placement::TaskbarGeometry> {
+    let taskbar = gather::find_taskbar()?;
+    gather::gather(taskbar, gather::read_alignment(), app_buttons)
 }

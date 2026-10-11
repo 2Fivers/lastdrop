@@ -36,6 +36,8 @@ given. Nothing in `.slint` formats a number or a time.
 - Height = header 40 + list + footer 48, where list = cards + 8 between cards + 12 bottom padding.
   With the reference content (Claude 3 meters, Codex 1 meter, Meshy balance): cards 171 + 89 + 102 → **478**.
 - Max height = min(560, work-area height − 24). Beyond it the list scrolls (§2.3); header and footer stay.
+  When the readout floats over the work area (no room on the taskbar) where the flyout opens, the space ends 12 px
+  before the readout instead (§1.3), so a full flyout never covers it.
 - Three services with up to three window meters in one card never scroll. A trouble line adds 20 px (4 + one 16 px
   line), a message line 8 + 16 px per line (one line: 24, the sign-in message wraps to two: 40); the window grows
   upward (bottom edge fixed) instead of scrolling until the max height. Mock heights: warning 498, stale 502.
@@ -47,7 +49,8 @@ given. Nothing in `.slint` formats a number or a time.
 - Horizontal: centred on that element, then clamped to `[work.left + 12, work.right − 12 − 360]`. With the tray at
   the right this lands 12 px from the screen edge, like Quick Settings.
 - Vertical: bottom edge 12 px above the work area's bottom (taskbar at the bottom); top edge 12 px below the work
-  area's top for a top taskbar.
+  area's top for a top taskbar. A readout floating over the work area in the flyout's columns (the element that
+  opened it, or beside the tray icon) moves that edge 12 px beyond the readout.
 
 ### 1.4 Show and hide
 
@@ -118,8 +121,8 @@ tooltip.
 
 | Worst | Text |
 |---|---|
-| all OK | `All limits last until their reset` |
-| WARNING | `Claude 5-hour runs out at 15:20` |
+| all OK | `All limits last until their reset`; no window has a reset time: `Within your limits` |
+| WARNING | `Claude 5-hour runs out at 15:20`; without a run-out before the reset (R§5.3): `Claude 5-hour is on course for 97% at the reset` |
 | CRITICAL (runway) | `Claude 5-hour runs out in 12 min` (COUNTDOWN of R§5.3: `Claude weekly runs out in 6 h`) |
 | CRITICAL (level) | `Claude 5-hour is 92% used` |
 | EXHAUSTED | `Claude 5-hour is used up until 16:30` |
@@ -157,6 +160,7 @@ semibold TextPrimary; wraps to at most 2 lines.
 |---|---|---|---|
 | OFFLINE | stale (U+F140) | **Offline** · showing 12:42 · next try 13:30 | — |
 | NO_DATA | stale | **Not answering** · showing 12:42 · next try 13:30 (the card header already names the service; one line) | — |
+| OLD_READING (R§3.8) | stale | **No new reading** · showing 12:42 · next try 13:30 | — |
 | SIGN_IN | informational (accent disc + i) | **Sign-in expired.** Lastdrop never signs in for you. | hyperlink button `Open sign-in…` (AccentTextFillColorPrimary): opens the vendor's own login in a terminal with this account's config folder set (`claude` / `codex login`), roadmap "Add an account" |
 | PAUSED | stale | **Paused** · showing 12:42 | hyperlink `Resume` |
 | first fetch failed | critical | **Couldn't read Claude** · {short detail} | hyperlink `Retry` |
@@ -183,12 +187,13 @@ Trouble line  margin-top 4, 12/16 TextSecondary, one line, ellipsis (only in the
 | IDLE (window not started) | `Starts with your next use` (TextSecondary, no glyph); value `0%`; bar track only, no tick | — |
 | OK, no reset time / `L` unknown | `No reset time given` (TextSecondary); no tick | — |
 | JUST_RESET | ↺ `Resets Mon 19 Oct` (the new `R'`) | `Reset at 09:00 · waiting for the first reading` |
-| WARNING | ▲ + 4 + `Out 15:20` or `45 min left` (semibold, TextPrimary), as the readout (R§5.3) | `Runs out 1 h 10 min before the reset at 16:30.` |
+| WARNING | ▲ + 4 + `Out 15:20` or `45 min left` (semibold, TextPrimary), as the readout (R§5.3); without a run-out before the reset: ▲ `Resets 16:30` | `Runs out 1 h 10 min before the reset at 16:30.`; without a run-out before the reset: `On course for 97% at the 16:30 reset.` |
 | CRITICAL runway (incl. level + runs out) | ● + 4 + countdown, always (R§5.3): `12 min left`, `6 h left` | `Empty ≈ 15:02, 1 h 28 min before the 16:30 reset.` |
 | CRITICAL level, lasts | ↺ `Resets 16:30` | `Nearly used up. Lasts until the reset at your recent pace.` |
 | EXHAUSTED | ● + 4 + `Back 16:30` (no reset time: `Empty`) | `Used up since 14:58. Back in 1 h 32 min.` (`since` omitted if unknown) |
 | STALE | `Resets 14:56` (TextSecondary) | — (the card's message line explains) |
 | LOADING | — ; value `–`; bar track only | — |
+| ENDED (R§3.9) | `Ended by 17:42` (TextSecondary, no glyph); value `–`; bar track only, no tick | — |
 
 - The trouble line is one line with an ellipsis; the templates above fit 310 px in en-US with AM/PM (widest
   measured: `Nearly used up…` 308 px, `Empty ≈ 3:02 PM, 1 h 28 min before the 4:30 PM reset.` 296 px).
@@ -264,7 +269,7 @@ success, accent, on-accent, HC mapping).
 | Hyperlinks | AccentTextFillColorPrimary | SystemAccentColorDark2 | SystemAccentColorLight3 |
 | Track | ControlStrongStrokeColorDefault | `#72000000` | `#8BFFFFFF` |
 | Button hover / pressed | SubtleFillColorSecondary / Tertiary | `#09000000` / `#06000000` | `#0FFFFFFF` / `#0AFFFFFF` |
-| Footer divider | DividerStrokeColorDefault | `#14000000` | `#15FFFFFF` |
+| Footer divider | DividerStrokeColorDefault | `#0F000000` (WinUI theme resources; earlier drafts said `#14000000`) | `#15FFFFFF` |
 | **BadgeFill** (plan badge) | Lastdrop token (between ControlAltFillColorTertiary and SubtleFillColorSecondary) | `#0F000000` | `#0FFFFFFF` |
 | **FooterFill** | Lastdrop token (matches the Quick Settings footer strip) | `#0A000000` | `#30000000` |
 | Focus outer / inner | FocusStrokeColorOuter / Inner | `#E4000000` / `#B3FFFFFF` | `#FFFFFFFF` / `#B3000000` |

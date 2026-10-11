@@ -1,0 +1,4 @@
+{
+  "type": "error",
+  "error": { "type": "authentication_error", "message": "Invented: OAuth token has expired." }
+}

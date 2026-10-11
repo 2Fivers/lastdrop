@@ -483,7 +483,8 @@ mod no_reset_time {
         let geom = bar_geometry(&bar_input(a, ColorRole::TextPrimary), 40.0, 16.0, 1.0);
         assert_eq!(geom.tick, Some(0));
 
-        let w = stats::effective_window(&weekly(0.61, Some(at(10, 12, 9, 0))), now);
+        let w =
+            stats::effective_window(&weekly(0.61, Some(at(10, 12, 9, 0))), snap.measured_at, now);
         assert_eq!(w.used, 0.0);
         assert_eq!(w.resets_at, Some(at(10, 19, 9, 0)));
     }
@@ -1034,8 +1035,17 @@ mod freshness {
             last_success: Some(now() - mins(16)),
             ..fresh
         };
+        // No failure on record: the source answered with an old reading.
         assert_eq!(
             stats::freshness(now(), &stale),
+            Freshness::Stale(StaleReason::OldReading)
+        );
+        let failing = ServiceStatus {
+            last_failure: Some((now() - mins(1), FailureKind::NoData)),
+            ..stale
+        };
+        assert_eq!(
+            stats::freshness(now(), &failing),
             Freshness::Stale(StaleReason::NoData)
         );
     }

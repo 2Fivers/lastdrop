@@ -1,6 +1,6 @@
-//! Provider skeleton tests: one per source, `#[ignore = "M1 implementation"]` until the provider
-//! is implemented. Inputs are invented (tests/fixtures/*/README.md); add fixture files there and
-//! more cases per source as the parsers grow.
+//! Provider skeleton tests: one per source, kept as a cross-check of the public API next to the
+//! per-provider suites (`claude.rs`, `codex.rs`, `meshy.rs`). Inputs are invented
+//! (tests/fixtures/*/README.md).
 
 use jiff::{SignedDuration, Timestamp};
 use lastdrop_core::model::{AccountKey, MeterId, ProviderId, SourceKind, WindowLen};
@@ -24,7 +24,6 @@ fn meshy_account() -> AccountSource {
 }
 
 #[test]
-#[ignore = "M1 implementation"]
 fn meshy_reads_the_balance_with_the_stored_key() {
     let mut f = Fakes::new(now());
     let AccountSource::Meshy { credential, .. } = meshy_account() else {
@@ -46,7 +45,6 @@ fn meshy_reads_the_balance_with_the_stored_key() {
 }
 
 #[test]
-#[ignore = "M1 implementation"]
 fn meshy_without_a_key_is_a_sign_in_error_and_makes_no_request() {
     let f = Fakes::new(now());
     let err = meshy::MeshyProvider::new()
@@ -57,7 +55,6 @@ fn meshy_without_a_key_is_a_sign_in_error_and_makes_no_request() {
 }
 
 #[test]
-#[ignore = "M1 implementation"]
 fn claude_oauth_usage_body_gives_the_r2_meters() {
     // Invented body in the endpoint's shape: utilization in percent, resets_at RFC 3339 or null.
     let body = br#"{
@@ -77,7 +74,6 @@ fn claude_oauth_usage_body_gives_the_r2_meters() {
 }
 
 #[test]
-#[ignore = "M1 implementation"]
 fn codex_app_server_answers_rate_limits() {
     // Invented line. The field names are placeholders: confirm them against the app-server
     // protocol (`codex app-server generate-json-schema` or its docs) and fix this fixture first.

@@ -12,8 +12,11 @@ publish.workspace = true
 # (CREATE_NO_WINDOW through `std::os::windows::process::CommandExt`).
 [dependencies]
 lastdrop-core.workspace = true
+brotli-decompressor.workspace = true
+flate2.workspace = true
 jiff.workspace = true
 log.workspace = true
+ruzstd.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true

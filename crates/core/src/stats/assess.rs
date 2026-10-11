@@ -56,6 +56,11 @@ pub enum RowState {
     Exhausted,
     /// A fixed-schedule window whose `R` passed with no newer reading: `0%` + `↺7d` (R§3.9).
     JustReset,
+    /// A `starts_on_use` window without a reset time whose reading is at least `L` old: that
+    /// window has certainly ended and nothing says what came after ([`ResetView::Ended`], R§3.9).
+    /// No value, no severity: `–` + the reading's AGE (a stale service: REASON or AGE as for
+    /// STALE), track only; ranks with LOADING.
+    Ended,
     /// The service is stale: the last reading frozen at `t_r`, dashed, stale colour (R§3.8).
     Stale(StaleReason),
 }
@@ -165,6 +170,22 @@ pub struct ServiceEval {
     pub reading_at: Option<Timestamp>,
     /// Every meter of the service that is not hidden, in meter order.
     pub meters: Vec<Assessment>,
+    /// Meters this source reported earlier (in this run, or in an earlier one the app restored
+    /// into [`EvalMemory::seen`]) that its latest reading lacks (not hidden): a per-model weekly
+    /// that only the OAuth source reports while Claude Desktop's history answers. They *can*
+    /// appear, so the readout's widths keep room for them (R§6.3: widths never change with data).
+    pub absent: Vec<AbsentMeter>,
+}
+
+/// A meter a source reported before but not in its latest reading ([`ServiceEval::absent`]).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct AbsentMeter {
+    /// The meter.
+    pub key: MeterKey,
+    /// Its names as last reported.
+    pub names: MeterNames,
+    /// It is a balance meter.
+    pub balance: bool,
 }
 
 impl ServiceEval {
@@ -233,6 +254,10 @@ pub struct EvalMemory {
     /// previous evaluation (the reading's `resets_at`, `R'` after a fixed-schedule reset, `None`
     /// without a reset time). A change of instance is a window reset (R§3.9).
     pub instance: BTreeMap<MeterKey, Option<Timestamp>>,
+    /// Every meter a source has reported, with its names and whether it is a balance
+    /// ([`ServiceEval::absent`]): in this run, plus what the app restored from its state file
+    /// (earlier runs, R§6.3).
+    pub seen: BTreeMap<MeterKey, (MeterNames, bool)>,
 }
 
 /// The result of one evaluation, input of every surface builder.
@@ -283,6 +308,9 @@ impl Evaluation {
 ///   `memory.instance` (R§3.1 `same_window_instance` is false, or [`ResetView`] is not `Live`
 ///   for the first time), its [`SeverityMemory`] is cleared (R§3.7 "On a window reset … cleared")
 ///   and [`LiveChange::WindowReset`] is raised.
+/// - A reading without a reset time that was taken before the reset of the instance shown so far
+///   (history or `memory.instance`) belongs to that instance and keeps its `R`
+///   ([`super::instance_of`]); it is not a window reset.
 pub fn evaluate(input: &EvalInput<'_>, memory: &mut EvalMemory) -> Evaluation {
     let mut changes = Vec::new();
     let services: Vec<ServiceEval> = input
@@ -462,6 +490,7 @@ fn evaluate_service(
                 })
                 .collect()
         };
+        let absent = absent_meters(memory, &source, &meters, hidden);
         return ServiceEval {
             source,
             account,
@@ -472,6 +501,7 @@ fn evaluate_service(
             status: svc.status.clone(),
             reading_at: None,
             meters,
+            absent,
         };
     };
 
@@ -523,6 +553,17 @@ fn evaluate_service(
         ));
     }
     meters.sort_by_key(|a| a.meter_order);
+    for meter in &snapshot.meters {
+        memory
+            .seen
+            .insert(key(&meter.id), (meter.names.clone(), false));
+    }
+    for balance in &snapshot.balances {
+        memory
+            .seen
+            .insert(key(&balance.id), (balance.names.clone(), true));
+    }
+    let absent = absent_meters(memory, &source, &meters, hidden);
 
     ServiceEval {
         source,
@@ -534,7 +575,29 @@ fn evaluate_service(
         status,
         reading_at: Some(reading_at),
         meters,
+        absent,
     }
+}
+
+/// [`ServiceEval::absent`]: the meters of `source` in `memory.seen` that `reported` lacks and the
+/// user did not hide.
+fn absent_meters(
+    memory: &EvalMemory,
+    source: &SourceKey,
+    reported: &[Assessment],
+    hidden: &[MeterId],
+) -> Vec<AbsentMeter> {
+    memory
+        .seen
+        .iter()
+        .filter(|(k, _)| k.provider == source.provider && k.account == source.account)
+        .filter(|(k, _)| !hidden.contains(&k.meter) && !reported.iter().any(|a| &a.key == *k))
+        .map(|(k, (names, balance))| AbsentMeter {
+            key: k.clone(),
+            names: names.clone(),
+            balance: *balance,
+        })
+        .collect()
 }
 
 /// The readings of the window instance the meter's reading belongs to, ending with that reading
@@ -560,6 +623,29 @@ fn instance_samples(
         all.push(Sample::window(reading_at, meter.used, meter.resets_at));
     }
     current_instance(&all).to_vec()
+}
+
+/// The reset time of a reading that has none but was taken inside a known window instance
+/// ([`super::instance_of`]): the `R` of the newest earlier reading that has one (from the
+/// history, or the instance the previous evaluation showed), when the reading precedes it.
+///
+/// A source without reset times (Claude Desktop's history standing in while the OAuth source
+/// rests after an error) must not look like a window reset: that would clear the hysteresis,
+/// announce a reset and cut the forecast's history (R§3.7, R§3.9, R§11). **Not from the spec.**
+fn carried_reset(
+    history: &dyn HistoryView,
+    key: &MeterKey,
+    reading_at: Timestamp,
+    shown_before: Option<Timestamp>,
+) -> Option<Timestamp> {
+    let samples = history.samples(key, sub(reading_at, INSTANCE_LOOKBACK));
+    let upto = &samples[..samples.partition_point(|s| s.t <= reading_at)];
+    let known = upto.iter().rev().find_map(|s| s.resets_at);
+    known
+        .into_iter()
+        .chain(shown_before)
+        .filter(|&r| reading_at < r)
+        .max()
 }
 
 /// Records the severity of a fresh meter and raises [`LiveChange::SeverityRose`] on a rise.
@@ -597,8 +683,29 @@ fn assess_window(
     memory: &mut EvalMemory,
     changes: &mut Vec<LiveChange>,
 ) -> Assessment {
-    let eff = effective_window(meter, cx.now);
+    // A reading without a reset time inside a known instance keeps that instance's `R`.
+    let with_reset;
+    let meter = match meter.resets_at {
+        None => match carried_reset(
+            cx.history,
+            &key,
+            cx.reading_at,
+            memory.instance.get(&key).copied().flatten(),
+        ) {
+            Some(r) => {
+                with_reset = Meter {
+                    resets_at: Some(r),
+                    ..meter.clone()
+                };
+                &with_reset
+            }
+            None => meter,
+        },
+        Some(_) => meter,
+    };
+    let eff = effective_window(meter, cx.reading_at, cx.now);
     let live = eff.view == ResetView::Live;
+    let ended = matches!(eff.view, ResetView::Ended { .. });
     let used = sane_share(eff.used);
     let exhausted = is_exhausted(used, meter.limited && live);
     let pct = display_pct(used, exhausted);
@@ -648,7 +755,13 @@ fn assess_window(
         }
     }
 
-    let outcome = if cx.stale.is_none() {
+    if ended {
+        // Nothing is known about the window now: no severity, and no hysteresis carried into
+        // the next reading's window.
+        memory.severity.remove(&key);
+        memory.last_severity.remove(&key);
+    }
+    let outcome = if cx.stale.is_none() && !ended {
         let input = WindowSeverityInput {
             pct,
             exhausted,
@@ -666,6 +779,7 @@ fn assess_window(
     };
 
     let state = match (cx.stale, eff.view, outcome) {
+        (_, ResetView::Ended { .. }, _) => RowState::Ended,
         (Some(reason), _, _) => RowState::Stale(reason),
         (None, ResetView::JustReset { .. }, _) => RowState::JustReset,
         (None, ResetView::IdleAfterReset { .. }, _) => RowState::Idle,
@@ -681,11 +795,13 @@ fn assess_window(
         (None, ResetView::Live, None) => RowState::OkNoReset,
     };
     let class = match (cx.stale, outcome) {
+        // An ended window says nothing about now: it never takes a place from a meter that does.
+        _ if ended => DisplayClass::Loading,
         (Some(_), _) => DisplayClass::Stale,
         (None, Some(o)) => class_of(o.severity),
         (None, None) => DisplayClass::Ok,
     };
-    let pressure = if state == RowState::Idle {
+    let pressure = if matches!(state, RowState::Idle | RowState::Ended) {
         0.0
     } else {
         let p = forecast.filter(|f| f.valid).map_or(used, |f| f.projected);

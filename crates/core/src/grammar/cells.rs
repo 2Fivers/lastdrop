@@ -1,14 +1,17 @@
 //! Readout cell texts by row state (R§5.7) and the compact cell (R§5.8).
 
 use super::TextContext;
-use super::numbers::{balance_duration, percent};
+use super::numbers::{balance_duration, percent, share_pct};
 use super::strings::{Msg, text};
 use super::time::{CountdownForm, age_token, countdown, runout_text, shows_countdown, time_token};
 use crate::color::ColorRole;
+use crate::consts::CARD_FORECAST_MAX_PCT;
 use crate::consts::layout::{RESET_GLYPH, RESET_GLYPH_GAP, SEVERITY_GLYPH, SEVERITY_GLYPH_GAP};
 use crate::glyph::{Icon, SeverityGlyph};
 use crate::readout::{CompactCell, GlyphKind, GlyphRun, RightCell, Run, TextRun, TextStyle};
-use crate::stats::{AssessedMeter, Assessment, ServiceEval, StaleReason, runway_minutes};
+use crate::stats::{
+    AssessedMeter, Assessment, Freshness, ServiceEval, StaleReason, runway_minutes,
+};
 use jiff::Timestamp;
 
 /// A text run.
@@ -38,12 +41,29 @@ pub(crate) fn severity_glyph(glyph: SeverityGlyph) -> Run {
     })
 }
 
-/// `t_out` of a meter (window forecast or balance), if it has one.
+/// `t_out` of a meter that runs out: a window whose forecast `runs_out` (R§3.5: `t_out < R`), or
+/// a balance with a forecast. `None` otherwise — also for a WARNING that hysteresis holds while
+/// `p ≤ 1` (R§3.7 exit `p ≤ 0.97`): its `t_out` lies at or after the reset, and R§5.3 defines the
+/// `Out` and countdown texts only for `runs_out`, so no surface may show it ([`course_pct`]
+/// words that state instead).
 pub(crate) fn t_out(a: &Assessment) -> Option<Timestamp> {
     match &a.meter {
-        AssessedMeter::Window(w) => w.forecast.and_then(|f| f.t_out),
+        AssessedMeter::Window(w) => w.forecast.filter(|f| f.runs_out).and_then(|f| f.t_out),
         AssessedMeter::Balance(b) => b.stats.t_out,
         AssessedMeter::Loading => None,
+    }
+}
+
+/// The projection `p` of a window with a valid forecast as a shown percent, capped at 99 % like
+/// the card's `on course for 78% at reset` (R§8.2): what a WARNING without a run-out before the
+/// reset says instead of a run-out time (`on course for 98% at the reset`).
+pub(crate) fn course_pct(a: &Assessment) -> Option<u8> {
+    match &a.meter {
+        AssessedMeter::Window(w) => w
+            .forecast
+            .filter(|f| f.valid)
+            .map(|f| share_pct(f.projected).min(CARD_FORECAST_MAX_PCT)),
+        AssessedMeter::Balance(_) | AssessedMeter::Loading => None,
     }
 }
 
@@ -83,8 +103,8 @@ pub(crate) fn back_text(a: &Assessment, cx: &TextContext<'_>) -> String {
     }
 }
 
-/// The run-out text of a WARNING or CRITICAL_RUNWAY row (R§5.3); `pct` when there is no run-out
-/// time to count down to (cannot happen for assessed meters; kept total).
+/// The run-out text of a WARNING or CRITICAL_RUNWAY row (R§5.3); `pct` when the meter does not
+/// run out before its reset (a WARNING held by hysteresis, [`t_out`]), as the compact cell shows.
 fn say_runout(a: &Assessment, critical: bool, cx: &TextContext<'_>) -> String {
     match t_out(a) {
         Some(t) => runout_text(t, critical, cx),
@@ -99,12 +119,14 @@ pub(crate) fn reason_text(reason: StaleReason, cx: &TextContext<'_>) -> String {
         StaleReason::Paused => Msg::ReasonPaused,
         StaleReason::Offline => Msg::ReasonOffline,
         StaleReason::NoData => Msg::ReasonNoData,
+        StaleReason::OldReading => Msg::ReasonOldReading,
     };
     cx.strings.template(msg).to_owned()
 }
 
 /// The status of a stale row (R§5.7): REASON (`Sign in` in AccentText, others in the stale
-/// colour) or AGE. Two rows take REASON then AGE; one row shows `Sign in` or `Paused`, else AGE.
+/// colour) or AGE. Two rows take REASON then AGE; one row shows `Sign in` or `Paused`, else AGE;
+/// an old reading (`StaleReason::OldReading`, no fault) shows AGE on every row.
 pub(crate) fn stale_status(
     reason: StaleReason,
     service: &ServiceEval,
@@ -127,7 +149,8 @@ pub(crate) fn stale_status(
         );
         run(age, TextStyle::ROW, ColorRole::Stale)
     };
-    if pos.rows_in_service >= 2 {
+    // An old reading has no fault to name: AGE on every row.
+    if pos.rows_in_service >= 2 && reason != StaleReason::OldReading {
         if pos.index_in_service == 0 {
             reason_run(reason)
         } else {
@@ -136,7 +159,32 @@ pub(crate) fn stale_status(
     } else {
         match reason {
             StaleReason::SignIn | StaleReason::Paused => reason_run(reason),
-            StaleReason::Offline | StaleReason::NoData => age(),
+            StaleReason::Offline | StaleReason::NoData | StaleReason::OldReading => age(),
+        }
+    }
+}
+
+/// The time column of an ENDED row (R§5.7): the status a STALE row in its place would show
+/// (REASON or AGE) when the service is stale, else the reading's AGE (TextSecondary).
+fn ended_status(
+    a: &Assessment,
+    service: &ServiceEval,
+    pos: RowPosition,
+    cx: &TextContext<'_>,
+) -> TextRun {
+    match service.freshness {
+        Freshness::Stale(reason) => stale_status(reason, service, pos, cx),
+        Freshness::Fresh => {
+            let read = match &a.meter {
+                AssessedMeter::Window(w) => Some(w.reading_at),
+                AssessedMeter::Balance(b) => Some(b.reading_at),
+                AssessedMeter::Loading => None,
+            };
+            let age = read.or(service.reading_at).map_or_else(
+                || cx.strings.template(Msg::NoReset).to_owned(),
+                |t| age_token(t, cx),
+            );
+            run(age, TextStyle::ROW, ColorRole::TextSecondary)
         }
     }
 }
@@ -171,6 +219,7 @@ pub struct RowPosition {
 /// | EXHAUSTED        | ● + `Back 16:30` (no reset time, or balance: ● + `Empty`)                  |
 /// | JUST_RESET       | `0%` + `↺7d` (the new `R'`)                                                |
 /// | STALE            | `42%` (stale colour) + REASON or AGE                                       |
+/// | ENDED            | `–` in the VALUE box + AGE (stale service: REASON or AGE as STALE)         |
 ///
 /// STALE details: a one-row service shows `Sign in` (SIGN_IN) or `Paused` (PAUSED), otherwise
 /// AGE; a row whose frozen reading was EXHAUSTED shows `Back 16:30` from x = 0, regular weight,
@@ -210,6 +259,11 @@ pub fn right_cell(
         ]
     };
     match a.state {
+        S::Ended => RightCell {
+            value: Some(dash()),
+            time: vec![Run::Text(ended_status(a, service, pos, cx))],
+            say: Vec::new(),
+        },
         S::Loading => {
             if pos.index_in_service == 0 {
                 RightCell {
@@ -300,7 +354,7 @@ pub fn right_cell(
 /// The compact cell (R§5.8), left-aligned: OK `61%` · IDLE `0%` · STALE `61%` (stale colour) ·
 /// WARNING ▲ `78%` semibold · any row that shows a countdown in the two-row form ▲/● + COUNTDOWN
 /// without "left" (`12 min`, `6 h`) semibold · CRITICAL_LEVEL ● `92%` semibold · EXHAUSTED
-/// ● `Empty` semibold · LOADING `–`.
+/// ● `Empty` semibold · LOADING and ENDED `–`.
 pub fn compact_cell(a: &Assessment, cx: &TextContext<'_>) -> CompactCell {
     use crate::stats::RowState as S;
     let plain = |role: ColorRole| CompactCell {
@@ -324,7 +378,7 @@ pub fn compact_cell(a: &Assessment, cx: &TextContext<'_>) -> CompactCell {
             .map(|n| countdown(n, CountdownForm::Compact, cx.strings))
     };
     match a.state {
-        S::Loading => CompactCell {
+        S::Loading | S::Ended => CompactCell {
             runs: vec![Run::Text(run(
                 cx.strings.template(Msg::NoReset).to_owned(),
                 TextStyle::ROW,

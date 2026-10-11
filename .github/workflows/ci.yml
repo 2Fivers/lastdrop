@@ -1,0 +1,56 @@
+name: ci
+
+# The quality bar of docs/ARCHITECTURE.md: fmt, clippy with every warning an error, the whole
+# test suite and the release binary, on Windows (the only platform Lastdrop runs on).
+# Dependency updates come from the organisation's shared Renovate preset (renovate.json), not
+# from a bot configured here.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    name: fmt, clippy, test, release build
+    runs-on: windows-latest
+    timeout-minutes: 60
+    env:
+      CARGO_TERM_COLOR: always
+      CARGO_INCREMENTAL: "0"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      # rust-toolchain.toml pins the version and lists rustfmt and clippy; with no toolchain
+      # named, rustup installs exactly that.
+      - name: Toolchain from rust-toolchain.toml
+        shell: bash
+        run: |
+          rustup toolchain install --profile minimal
+          rustup show active-toolchain
+          cargo --version
+
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+
+      - name: Format
+        run: cargo fmt --all -- --check
+
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
+
+      # Live smoke tests (a real codex app-server) are #[ignore]d and do not run here.
+      - name: Test
+        run: cargo test --workspace --locked
+
+      - name: Release build
+        run: cargo build --release -p lastdrop --locked

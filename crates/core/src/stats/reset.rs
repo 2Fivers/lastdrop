@@ -1,4 +1,5 @@
-//! Window reset handling when `now ≥ R` and no newer reading has arrived (R§3.9).
+//! Window reset handling when `now ≥ R` and no newer reading has arrived, and the end of a
+//! `starts_on_use` window without a reset time whose reading is a window length old (R§3.9).
 
 use jiff::{SignedDuration, Timestamp};
 use serde::{Deserialize, Serialize};
@@ -65,12 +66,21 @@ pub enum ResetView {
         /// The reset time that passed.
         previous: Timestamp,
     },
+    /// `starts_on_use` window without a reset time whose reading showed use (`u > 0`) and is at
+    /// least `L` old (`now ≥ t_r + L`): the window it was read in has certainly ended, by
+    /// `t_r + L` at the latest, and nothing says whether a new one has started since. `u` is
+    /// unknown (`used` 0, never shown): state ENDED until the next reading.
+    Ended {
+        /// The latest moment the window can have ended: `t_r + L`.
+        by: Timestamp,
+    },
 }
 
 /// The window as it should be shown at `now` (R§3.9).
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 pub struct EffectiveWindow {
-    /// `u` to show: the reading's, or 0 after a reset.
+    /// `u` to show: the reading's, or 0 after a reset; 0 and never shown when
+    /// [`ResetView::Ended`] (unknown).
     pub used: f64,
     /// `R` to show: the reading's, `R'` after a fixed-schedule reset, none after a
     /// `starts_on_use`/unknown-`L` reset.
@@ -81,9 +91,10 @@ pub struct EffectiveWindow {
     pub view: ResetView,
 }
 
-/// Applies R§3.9 to a meter reading at `now`. A stale meter whose `R ≤ now` is drawn as reset
-/// but keeps the stale styling (R§3.8); the caller decides the styling.
-pub fn effective_window(meter: &Meter, now: Timestamp) -> EffectiveWindow {
+/// Applies R§3.9 to a meter reading taken at `reading_at` (`t_r`) at `now`. A stale meter whose
+/// `R ≤ now` is drawn as reset but keeps the stale styling (R§3.8); the caller decides the
+/// styling.
+pub fn effective_window(meter: &Meter, reading_at: Timestamp, now: Timestamp) -> EffectiveWindow {
     let live = EffectiveWindow {
         used: meter.used,
         resets_at: meter.resets_at,
@@ -94,7 +105,14 @@ pub fn effective_window(meter: &Meter, now: Timestamp) -> EffectiveWindow {
         view: ResetView::Live,
     };
     let Some(reset) = meter.resets_at else {
-        return live;
+        return match ended_by(meter, reading_at) {
+            Some(by) if now >= by => EffectiveWindow {
+                used: 0.0,
+                view: ResetView::Ended { by },
+                ..live
+            },
+            _ => live,
+        };
     };
     if now < reset {
         return live;
@@ -114,6 +132,19 @@ pub fn effective_window(meter: &Meter, now: Timestamp) -> EffectiveWindow {
         window: length_without_reset(meter.window),
         view: ResetView::IdleAfterReset { previous: reset },
     }
+}
+
+/// `t_r + L` for a `starts_on_use` window of fixed length `L` whose reading at `reading_at`
+/// showed use: the latest moment the window it was read in can end ([`ResetView::Ended`]).
+fn ended_by(meter: &Meter, reading_at: Timestamp) -> Option<Timestamp> {
+    let WindowLen::Fixed(len) = meter.window else {
+        return None;
+    };
+    let used = meter.used > 0.0;
+    if !meter.starts_on_use || !len.is_positive() || !used {
+        return None;
+    }
+    reading_at.checked_add(len).ok()
 }
 
 /// When to refresh a service after a reset at `resets_at` (R§3.9): `R + jitter`, where the
@@ -143,6 +174,11 @@ mod tests {
         Timestamp::from_second(1_800_000_000 + mins * 60).expect("valid")
     }
 
+    /// `t_r` of the readings in tests whose reset time decides (it plays no part then).
+    fn read() -> Timestamp {
+        ts(-60)
+    }
+
     fn meter(window: WindowLen, starts_on_use: bool, resets_at: Option<Timestamp>) -> Meter {
         Meter {
             id: MeterId::new("m"),
@@ -163,7 +199,7 @@ mod tests {
             false,
             Some(ts(60)),
         );
-        let w = effective_window(&m, ts(59));
+        let w = effective_window(&m, read(), ts(59));
         assert_eq!(w.view, ResetView::Live);
         assert_eq!((w.used, w.resets_at), (0.5, Some(ts(60))));
         assert_eq!(w.window, Some(SignedDuration::from_hours(5)));
@@ -176,11 +212,11 @@ mod tests {
             false,
             Some(ts(0)),
         );
-        let w = effective_window(&m, ts(0));
+        let w = effective_window(&m, read(), ts(0));
         assert_eq!(w.view, ResetView::JustReset { previous: ts(0) });
         assert_eq!(w.resets_at, Some(ts(300)));
         // Three windows later (a laptop that slept): the latest passed reset and the next one.
-        let w = effective_window(&m, ts(3 * 300 + 10));
+        let w = effective_window(&m, read(), ts(3 * 300 + 10));
         assert_eq!(w.view, ResetView::JustReset { previous: ts(900) });
         assert_eq!(w.resets_at, Some(ts(1200)));
         assert_eq!(w.used, 0.0);
@@ -189,22 +225,67 @@ mod tests {
     #[test]
     fn starts_on_use_and_unknown_length_go_idle() {
         let five = WindowLen::Fixed(SignedDuration::from_hours(5));
-        let w = effective_window(&meter(five, true, Some(ts(10))), ts(11));
+        let w = effective_window(&meter(five, true, Some(ts(10))), ts(5), ts(11));
         assert_eq!(w.view, ResetView::IdleAfterReset { previous: ts(10) });
         assert_eq!((w.used, w.resets_at), (0.0, None));
-        let w = effective_window(&meter(WindowLen::Unknown, false, Some(ts(10))), ts(11));
+        let w = effective_window(
+            &meter(WindowLen::Unknown, false, Some(ts(10))),
+            ts(5),
+            ts(11),
+        );
         assert_eq!(w.view, ResetView::IdleAfterReset { previous: ts(10) });
         assert_eq!(w.window, None);
         // No reset time at all: live, nothing to reset.
-        let w = effective_window(&meter(five, true, None), ts(11));
+        let w = effective_window(&meter(five, true, None), ts(5), ts(11));
         assert_eq!(w.view, ResetView::Live);
+    }
+
+    #[test]
+    fn a_starts_on_use_reading_without_reset_ends_a_window_length_later() {
+        // Claude Desktop's history (no reset times) read at minute 0 with use: the window it was
+        // read in started at or before minute 0, so it is over by minute 300 at the latest.
+        let five = WindowLen::Fixed(SignedDuration::from_hours(5));
+        let m = meter(five, true, None);
+        assert_eq!(effective_window(&m, ts(0), ts(299)).view, ResetView::Live);
+        let w = effective_window(&m, ts(0), ts(300));
+        assert_eq!(w.view, ResetView::Ended { by: ts(300) });
+        assert_eq!((w.used, w.resets_at), (0.0, None));
+        assert_eq!(w.window, Some(SignedDuration::from_hours(5)));
+        assert_eq!(
+            effective_window(&m, ts(0), ts(3000)).view,
+            ResetView::Ended { by: ts(300) }
+        );
+        // Not started at the reading (`u = 0`): nothing has certainly ended; it stays IDLE.
+        let idle = Meter {
+            used: 0.0,
+            ..m.clone()
+        };
+        assert_eq!(
+            effective_window(&idle, ts(0), ts(3000)).view,
+            ResetView::Live
+        );
+        // A fixed-schedule window or an unknown length is not a starts-on-use window.
+        let weekly = meter(
+            WindowLen::Fixed(SignedDuration::from_hours(168)),
+            false,
+            None,
+        );
+        assert_eq!(
+            effective_window(&weekly, ts(0), ts(20_000)).view,
+            ResetView::Live
+        );
+        let unknown = meter(WindowLen::Unknown, true, None);
+        assert_eq!(
+            effective_window(&unknown, ts(0), ts(20_000)).view,
+            ResetView::Live
+        );
     }
 
     #[test]
     fn calendar_month_resets_to_the_next_month_start() {
         let nov1 = "2026-11-01T00:00:00Z".parse::<Timestamp>().expect("ts");
         let m = meter(WindowLen::CalendarMonth, false, Some(nov1));
-        let w = effective_window(&m, add(nov1, SignedDuration::from_hours(1)));
+        let w = effective_window(&m, read(), add(nov1, SignedDuration::from_hours(1)));
         let dec1 = "2026-12-01T00:00:00Z".parse::<Timestamp>().expect("ts");
         assert_eq!(w.resets_at, Some(dec1));
         assert_eq!(w.window, Some(SignedDuration::from_hours(30 * 24)));

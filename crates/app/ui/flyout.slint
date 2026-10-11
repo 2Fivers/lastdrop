@@ -1,10 +1,12 @@
-// The flyout (flyout-spec). M1 placeholder layout with the FINAL property/struct interface of
-// F§11: Rust (lastdrop-core::flyout::FlyoutModel, converted in src/wiring.rs) fills these structs;
-// the layout below is a starting point to be finished against F§2–F§9 and the mock
-// (docs/design/final/flyout.html).
+// The flyout (flyout-spec). Rust (lastdrop-core::flyout::FlyoutModel, converted in src/wiring.rs)
+// fills the structs of F§11; this file only lays them out (F§0: nothing here formats a number or a
+// time). Sizes are the logical px of F§2.1 at 100 %.
 
 import { ScrollView } from "std-widgets.slint";
-import { Theme, BarGeom, Tone, Glyph, GlyphData, SparkData, PaceBar, GlyphIcon, ProviderGlyph, Sparkline } from "common.slint";
+import {
+    Theme, BarGeom, Tone, Glyph, GlyphData, SparkData, PaceBar, GlyphIcon, ProviderGlyph, Sparkline,
+    FocusRect, SubtleButton, HyperlinkButton,
+} from "common.slint";
 
 // One window meter row (F§4.4). right-kind (F§11): 0 reset (↺ + text, TextSecondary), 1 say
 // (severity glyph by right-glyph + semibold text), 2 none (no glyph; text in TextSecondary, empty
@@ -23,13 +25,20 @@ export struct MeterData {
     pct: int,
 }
 
+// One entry of a card's "Show in taskbar readout ▸" checklist (F§9 card menu).
+export struct PinData {
+    name: string,
+    pinned: bool,
+}
+
 // One service card (F§4). glyph: the provider glyph (GlyphData, 12 × 12 grid).
 // msg-kind (lastdrop_core::flyout::MessageKind + 1): 0 none, 1 offline, 2 not answering,
 // 3 sign-in (info glyph + link Open sign-in…), 4 paused (link Resume), 5 first fetch failed
 // (critical glyph + link Retry), 6 API key missing (info glyph + link Enter key…). msg-text starts
 // with its separator. Balance cards: is-balance, amount, unit, forecast (+ forecast-tone glyph),
 // burn (BalanceBodyModel.spent: the "spent · burn" line), until, balance-a11y (F§10 balance body
-// text).
+// text). menu-refresh: `Refresh Claude` (card menu); has-usage-page enables `Open usage page`;
+// pins: the card's meters for `Show in taskbar readout ▸`.
 export struct CardData {
     glyph: GlyphData,
     name: string,
@@ -50,72 +59,264 @@ export struct CardData {
     balance-a11y: string,
     spark: SparkData,
     a11y: string,
+    menu-refresh: string,
+    has-usage-page: bool,
+    pins: [PinData],
 }
 
-component MeterRow inherits Rectangle {
+// F§4.4: name row 20 (name, right cluster, 12, value min 36), 4, bar 310 × 9, trouble line 4 + 16.
+component MeterRow inherits VerticalLayout {
     in property <MeterData> data;
+    spacing: 4px;
     accessible-role: progress-indicator;
     accessible-label: root.data.a11y;
     accessible-value: root.data.pct;
     accessible-value-minimum: 0;
     accessible-value-maximum: 100;
 
-    VerticalLayout {
-        spacing: 4px;
+    HorizontalLayout {
+        height: 20px;
+        Text {
+            text: root.data.name;
+            font-family: Theme.font-text;
+            font-size: 14px;
+            color: Theme.text-primary;
+            overflow: elide;
+            horizontal-stretch: 1;
+            vertical-alignment: center;
+            accessible-role: none;
+        }
         HorizontalLayout {
-            height: 20px;
-            Text {
-                text: root.data.name;
-                font-family: Theme.font-text;
-                font-size: 14px;
-                color: Theme.text-primary;
-                overflow: elide;
-                horizontal-stretch: 1;
-                vertical-alignment: center;
-            }
-            HorizontalLayout {
-                spacing: 4px;
-                if root.data.right-kind == 0: GlyphIcon {
+            spacing: 4px;
+            horizontal-stretch: 0;
+            if root.data.right-kind == 0: VerticalLayout {
+                alignment: center;
+                GlyphIcon {
                     glyph: Glyph.reset;
                     size: 12px;
                 }
-                if root.data.right-kind == 1: GlyphIcon {
+            }
+            if root.data.right-kind == 1: VerticalLayout {
+                alignment: center;
+                GlyphIcon {
                     glyph: root.data.right-glyph == Tone.caution ? Glyph.warning : Glyph.critical;
                     size: 12px;
                 }
-                Text {
-                    text: root.data.right-text;
-                    font-family: Theme.font-small;
-                    font-size: 12px;
-                    font-weight: root.data.right-kind == 1 ? 600 : 400;
-                    color: root.data.right-kind == 1 ? Theme.text-primary : Theme.text-secondary;
-                    vertical-alignment: center;
-                }
-            }
-            Rectangle {
-                width: 12px;
             }
             Text {
-                text: root.data.value;
-                min-width: 36px;
-                horizontal-alignment: right;
-                font-family: Theme.font-text;
-                font-size: 14px;
-                font-weight: 600;
-                color: root.data.value-dim ? Theme.text-secondary : Theme.text-primary;
+                text: root.data.right-text;
+                font-family: Theme.font-small;
+                letter-spacing: Theme.small-tracking;
+                font-size: 12px;
+                font-weight: root.data.right-kind == 1 ? 600 : 400;
+                color: root.data.right-kind == 1 ? Theme.text-primary : Theme.text-secondary;
                 vertical-alignment: center;
+                accessible-role: none;
             }
         }
-        PaceBar {
-            geom: root.data.bar;
-            tone: root.data.tone;
+        Rectangle {
+            width: 12px;
         }
-        if root.data.line != "": Text {
-            text: root.data.line;
+        Text {
+            text: root.data.value;
+            min-width: 36px;
+            horizontal-alignment: right;
+            font-family: Theme.font-text;
+            font-size: 14px;
+            font-weight: 600;
+            color: root.data.value-dim ? Theme.text-secondary : Theme.text-primary;
+            vertical-alignment: center;
+            accessible-role: none;
+        }
+    }
+    PaceBar {
+        geom: root.data.bar;
+        tone: root.data.tone;
+    }
+    if root.data.line != "": Text {
+        height: 16px;
+        text: root.data.line;
+        font-family: Theme.font-small;
+        letter-spacing: Theme.small-tracking;
+        font-size: 12px;
+        color: Theme.text-secondary;
+        overflow: elide;
+        vertical-alignment: center;
+        accessible-role: none;
+    }
+}
+
+// F§4.5: row 28 (amount 20/28, 6, unit 14/20, forecast right), 2, row 16 (spent · burn, 8, until).
+component BalanceBody inherits VerticalLayout {
+    in property <CardData> data;
+    spacing: 2px;
+    accessible-role: text;
+    accessible-label: root.data.balance-a11y;
+
+    // Baselines of the 20/28 amount, the 14/20 unit and the 14/20 forecast line up: the 14 px
+    // texts sit in a 20 px box whose bottom is 3 px above the row's bottom (the 28 px box's
+    // descent minus the 20 px box's).
+    Rectangle {
+        height: 28px;
+        amount := Text {
+            x: 0px;
+            y: 0px;
+            height: 28px;
+            text: root.data.amount;
+            font-family: Theme.font-display;
+            font-size: 20px;
+            font-weight: 600;
+            color: Theme.text-primary;
+            vertical-alignment: center;
+            accessible-role: none;
+        }
+        Text {
+            x: amount.preferred-width + 6px;
+            y: 5px;
+            height: 20px;
+            text: root.data.unit;
+            font-family: Theme.font-text;
+            font-size: 14px;
+            color: Theme.text-secondary;
+            vertical-alignment: center;
+            accessible-role: none;
+        }
+        HorizontalLayout {
+            x: parent.width - self.width;
+            // One px lower than the unit: the mock's baseline alignment of the forecast.
+            y: 6px;
+            width: self.preferred-width;
+            height: 20px;
+            spacing: 4px;
+            if root.data.forecast-tone != Tone.calm: VerticalLayout {
+                alignment: center;
+                GlyphIcon {
+                    glyph: root.data.forecast-tone == Tone.caution ? Glyph.warning : Glyph.critical;
+                    size: 12px;
+                }
+            }
+            Text {
+                text: root.data.forecast;
+                font-family: Theme.font-text;
+                font-size: 14px;
+                font-weight: root.data.forecast-tone == Tone.calm ? 400 : 600;
+                color: Theme.text-primary;
+                vertical-alignment: center;
+                accessible-role: none;
+            }
+        }
+    }
+    HorizontalLayout {
+        height: 16px;
+        spacing: 8px;
+        Text {
+            text: root.data.burn;
             font-family: Theme.font-small;
+            letter-spacing: Theme.small-tracking;
             font-size: 12px;
             color: Theme.text-secondary;
             overflow: elide;
+            horizontal-stretch: 1;
+            vertical-alignment: center;
+            accessible-role: none;
+        }
+        if root.data.until != "": Text {
+            text: root.data.until;
+            font-family: Theme.font-small;
+            letter-spacing: Theme.small-tracking;
+            font-size: 12px;
+            color: Theme.text-secondary;
+            horizontal-stretch: 0;
+            vertical-alignment: center;
+            accessible-role: none;
+        }
+    }
+}
+
+// F§4.3: margin-top 8 (from the card), glyph 12 (cell 12 × 16) + 6 + text, Small 12/16; the lead
+// semibold TextPrimary, the rest TextSecondary; at most 2 lines. The link follows on the same line
+// when it fits, else on the second line.
+component MessageLine inherits HorizontalLayout {
+    in property <int> kind;
+    in property <string> lead;
+    in property <string> body;
+    in property <string> action;
+    // The width of the text column: the card's inner 310 minus glyph 12 and gap 6 (F§2, F§4.3).
+    // A constant, so whether the link fits does not feed back into the layout.
+    in property <length> text-width: 292px;
+    callback activated();
+    spacing: 6px;
+
+    VerticalLayout {
+        alignment: start;
+        Rectangle {
+            width: 12px;
+            height: 16px;
+            GlyphIcon {
+                glyph: root.kind == 3 || root.kind == 6 ? Glyph.info : root.kind == 5 ? Glyph.critical : Glyph.stale;
+                size: 12px;
+            }
+        }
+    }
+    texts := VerticalLayout {
+        horizontal-stretch: 1;
+        property <bool> link-inline: root.action == "" || lead-text.preferred-width + body-text.preferred-width + 6px + link-probe.preferred-width <= root.text-width;
+        HorizontalLayout {
+            lead-text := Text {
+                text: root.lead;
+                font-family: Theme.font-small;
+                letter-spacing: Theme.small-tracking;
+                font-size: 12px;
+                font-weight: 600;
+                color: Theme.text-primary;
+                vertical-alignment: top;
+                horizontal-stretch: 0;
+            }
+            body-text := Text {
+                text: root.body;
+                font-family: Theme.font-small;
+                letter-spacing: Theme.small-tracking;
+                font-size: 12px;
+                color: Theme.text-secondary;
+                wrap: word-wrap;
+                max-lines: 2;
+                overflow: elide;
+                horizontal-stretch: 0;
+                vertical-alignment: top;
+            }
+            if root.action != "" && texts.link-inline: HorizontalLayout {
+                padding-left: 6px;
+                alignment: start;
+                HyperlinkButton {
+                    text: root.action;
+                    clicked => {
+                        root.activated();
+                    }
+                }
+            }
+            Rectangle {
+                horizontal-stretch: 1;
+            }
+        }
+        if root.action != "" && !texts.link-inline: HorizontalLayout {
+            alignment: start;
+            HyperlinkButton {
+                text: root.action;
+                clicked => {
+                    root.activated();
+                }
+            }
+        }
+        // Measures the link's width for `link-inline`; a 0 px row, its text outside any layout.
+        Rectangle {
+            height: 0px;
+            link-probe := Text {
+                visible: false;
+                text: root.action;
+                font-family: Theme.font-small;
+                letter-spacing: Theme.small-tracking;
+                font-size: 12px;
+            }
         }
     }
 }
@@ -123,173 +324,196 @@ component MeterRow inherits Rectangle {
 component ServiceCard inherits Rectangle {
     in property <CardData> data;
     in property <int> index;
+    in property <string> menu-usage-label;
+    in property <string> menu-readout-label;
+    // Programmatic focus (Up/Down, keyboard open, sign-in card, F§9): focuses when the token
+    // changes and the target is this card.
+    in property <int> focus-target: -1;
+    in property <int> focus-token: 0;
     callback message-action(int);
-    callback open-dashboard(int);
-    callback menu(int, length, length);
+    callback open-usage(int);
+    callback refresh-service(int);
+    callback toggle-pin(int, int);
+    callback move-focus(int);
+    callback focused(length, length);
     background: Theme.card-fill;
     border-width: 1px;
     border-color: Theme.card-stroke;
     border-radius: 8px;
-    accessible-role: groupbox;
-    accessible-label: root.data.a11y;
+    height: content.preferred-height;
 
-    TouchArea {
-        pointer-event(event) => {
-            if (event.button == PointerEventButton.right && event.kind == PointerEventKind.up) {
-                root.menu(root.index, self.mouse-x, self.mouse-y);
-            }
+    changed focus-token => {
+        if (root.focus-target == root.index) {
+            focus.focus();
         }
     }
 
-    VerticalLayout {
-        padding: 12px;
-        HorizontalLayout {
-            height: 20px;
-            spacing: 8px;
-            VerticalLayout {
-                alignment: center;
-                ProviderGlyph {
-                    glyph: root.data.glyph;
-                    size: 16px;
+    menu := ContextMenuArea {
+        Menu {
+            MenuItem {
+                title: root.menu-usage-label;
+                enabled: root.data.has-usage-page;
+                activated => {
+                    root.open-usage(root.index);
                 }
             }
-            Text {
-                text: root.data.name;
-                font-family: Theme.font-text;
-                font-size: 14px;
-                font-weight: 600;
-                color: Theme.text-primary;
-                vertical-alignment: center;
+            MenuItem {
+                title: root.data.menu-refresh;
+                activated => {
+                    root.refresh-service(root.index);
+                }
             }
-            if root.data.plan != "": Rectangle {
-                height: 18px;
-                border-radius: 4px;
-                background: Theme.badge-fill;
+            Menu {
+                title: root.menu-readout-label;
+                for pin[m] in root.data.pins: MenuItem {
+                    title: pin.name;
+                    checkable: true;
+                    checked: pin.pinned;
+                    activated => {
+                        root.toggle-pin(root.index, m);
+                    }
+                }
+            }
+        }
+
+        focus := FocusScope {
+            focus-on-click: false;
+            accessible-role: groupbox;
+            accessible-label: root.data.a11y;
+            focus-gained => {
+                root.focused(root.y, root.height);
+            }
+            key-pressed(event) => {
+                if (event.text == Key.UpArrow) {
+                    Theme.keyboard-focus-visible = true;
+                    root.move-focus(root.index - 1);
+                    return accept;
+                }
+                if (event.text == Key.DownArrow) {
+                    Theme.keyboard-focus-visible = true;
+                    root.move-focus(root.index + 1);
+                    return accept;
+                }
+                if (event.text == Key.Return) {
+                    root.open-usage(root.index);
+                    return accept;
+                }
+                if (event.text == Key.F10 && event.modifiers.shift) {
+                    menu.show({ x: 12px, y: 12px });
+                    return accept;
+                }
+                reject
+            }
+
+            content := VerticalLayout {
+                // 1 px border + 12 px padding (F§4.1): inner width 310 in a 336 px card.
+                padding: 13px;
+                // Card header (F§4.2): [glyph 16] 8 [name] 8 [plan badge] [flex] [age] 8 [spark 55 × 16].
                 HorizontalLayout {
-                    padding-left: 6px;
-                    padding-right: 6px;
+                    height: 20px;
+                    VerticalLayout {
+                        alignment: center;
+                        ProviderGlyph {
+                            glyph: root.data.glyph;
+                            size: 16px;
+                        }
+                    }
+                    Rectangle {
+                        width: 8px;
+                    }
                     Text {
-                        text: root.data.plan;
+                        text: root.data.name;
+                        font-family: Theme.font-text;
+                        font-size: 14px;
+                        font-weight: 600;
+                        color: Theme.text-primary;
+                        vertical-alignment: center;
+                        overflow: elide;
+                        accessible-role: none;
+                    }
+                    if root.data.plan != "": HorizontalLayout {
+                        padding-left: 8px;
+                        VerticalLayout {
+                            alignment: center;
+                            Rectangle {
+                                height: 18px;
+                                border-radius: 4px;
+                                background: Theme.badge-fill;
+                                border-width: Theme.high-contrast ? 1px : 0px;
+                                border-color: Theme.text-secondary;
+                                HorizontalLayout {
+                                    padding-left: 6px;
+                                    padding-right: 6px;
+                                    Text {
+                                        text: root.data.plan;
+                                        font-family: Theme.font-small;
+                                        letter-spacing: Theme.small-tracking;
+                                        font-size: 12px;
+                                        color: Theme.text-secondary;
+                                        vertical-alignment: center;
+                                        accessible-role: none;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    Rectangle {
+                        horizontal-stretch: 1;
+                    }
+                    Text {
+                        text: root.data.age;
                         font-family: Theme.font-small;
+                        letter-spacing: Theme.small-tracking;
                         font-size: 12px;
                         color: Theme.text-secondary;
                         vertical-alignment: center;
+                        accessible-role: none;
+                    }
+                    Rectangle {
+                        width: 8px;
+                    }
+                    VerticalLayout {
+                        alignment: center;
+                        Sparkline {
+                            data: root.data.spark;
+                        }
                     }
                 }
-            }
-            Rectangle {
-                horizontal-stretch: 1;
-            }
-            Text {
-                text: root.data.age;
-                font-family: Theme.font-small;
-                font-size: 12px;
-                color: Theme.text-secondary;
-                vertical-alignment: center;
-            }
-            VerticalLayout {
-                alignment: center;
-                Sparkline {
-                    data: root.data.spark;
-                }
-            }
-        }
-        if root.data.msg-kind != 0: HorizontalLayout {
-            padding-top: 8px;
-            spacing: 6px;
-            GlyphIcon {
-                glyph: root.data.msg-kind == 3 || root.data.msg-kind == 6 ? Glyph.info
-                    : root.data.msg-kind == 5 ? Glyph.critical : Glyph.stale;
-                size: 12px;
-            }
-            Text {
-                text: root.data.msg-lead + root.data.msg-text;
-                font-family: Theme.font-small;
-                font-size: 12px;
-                color: Theme.text-secondary;
-                wrap: word-wrap;
-                horizontal-stretch: 1;
-            }
-            if root.data.msg-action != "": Text {
-                text: root.data.msg-action;
-                font-family: Theme.font-small;
-                font-size: 12px;
-                color: Theme.link;
-                accessible-role: button;
-                accessible-label: self.text;
-                TouchArea {
-                    clicked => {
-                        root.message-action(root.index);
+                if root.data.msg-kind != 0: VerticalLayout {
+                    padding-top: 8px;
+                    MessageLine {
+                        kind: root.data.msg-kind;
+                        lead: root.data.msg-lead;
+                        body: root.data.msg-text;
+                        action: root.data.msg-action;
+                        activated => {
+                            root.message-action(root.index);
+                        }
                     }
                 }
-            }
-        }
-        VerticalLayout {
-            padding-top: 10px;
-            spacing: 8px;
-            if !root.data.is-balance: VerticalLayout {
-                spacing: 8px;
-                for meter in root.data.meters: MeterRow {
-                    data: meter;
-                }
-            }
-            if root.data.is-balance: VerticalLayout {
-                spacing: 2px;
-                accessible-role: text;
-                accessible-label: root.data.balance-a11y;
-                HorizontalLayout {
-                    height: 28px;
-                    spacing: 6px;
-                    Text {
-                        text: root.data.amount;
-                        font-family: Theme.font-display;
-                        font-size: 20px;
-                        font-weight: 600;
-                        color: Theme.text-primary;
-                        vertical-alignment: bottom;
-                    }
-                    Text {
-                        text: root.data.unit;
-                        font-family: Theme.font-text;
-                        font-size: 14px;
-                        color: Theme.text-secondary;
-                        vertical-alignment: bottom;
-                        horizontal-stretch: 1;
-                    }
-                    GlyphIcon {
-                        glyph: root.data.forecast-tone == Tone.caution ? Glyph.warning
-                            : root.data.forecast-tone == Tone.critical ? Glyph.critical : Glyph.none;
-                        size: 12px;
-                    }
-                    Text {
-                        text: root.data.forecast;
-                        font-family: Theme.font-text;
-                        font-size: 14px;
-                        font-weight: root.data.forecast-tone == Tone.calm ? 400 : 600;
-                        color: Theme.text-primary;
-                        vertical-alignment: bottom;
-                    }
-                }
-                HorizontalLayout {
-                    height: 16px;
+                // Body (F§2): margin-top 10, meters 8 apart.
+                VerticalLayout {
+                    padding-top: 10px;
                     spacing: 8px;
-                    Text {
-                        text: root.data.burn;
-                        font-family: Theme.font-small;
-                        font-size: 12px;
-                        color: Theme.text-secondary;
-                        overflow: elide;
-                        horizontal-stretch: 1;
+                    if !root.data.is-balance: VerticalLayout {
+                        spacing: 8px;
+                        for meter in root.data.meters: MeterRow {
+                            data: meter;
+                        }
                     }
-                    Text {
-                        text: root.data.until;
-                        font-family: Theme.font-small;
-                        font-size: 12px;
-                        color: Theme.text-secondary;
+                    if root.data.is-balance: BalanceBody {
+                        data: root.data;
                     }
                 }
             }
         }
+    }
+    if focus.has-focus && Theme.keyboard-focus-visible: FocusRect {
+        x: -2px;
+        y: -2px;
+        width: parent.width + 4px;
+        height: parent.height + 4px;
+        radius: 8px;
     }
 }
 
@@ -324,10 +548,16 @@ export component Flyout inherits Window {
     in property <string> settings-label: "Settings";
     in property <string> footer-text;
     in property <string> footer-link;
-    // Card to scroll into view and focus (sign-in, R§10); -1 = none.
-    in property <int> focus-card: -1;
+    in property <string> menu-usage-label: "Open usage page";
+    in property <string> menu-readout-label: "Show in taskbar readout";
     // Header 40 + list + footer 48 (F§1.2), for Rust to size the window.
     out property <length> content-height: 40px + list.preferred-height + 48px;
+    // The content height changed (cards were laid out, a line was added): Rust resizes the open
+    // window with its bottom edge anchored (F§1.2).
+    callback content-height-changed();
+    changed content-height => {
+        root.content-height-changed();
+    }
 
     callback open-settings();
     callback refresh();
@@ -336,13 +566,42 @@ export component Flyout inherits Window {
     callback dismiss();
     callback message-action(int);
     callback footer-action();
-    callback card-menu(int, length, length);
+    callback card-refresh(int);
+    callback card-toggle-pin(int, int);
+
+    property <int> focus-target: -1;
+    property <int> focus-token: 0;
+    // F§9: the refresh button's tooltip `Refresh (F5)` after the hover time (Windows' default
+    // SPI_GETMOUSEHOVERTIME, 400 ms); hidden when the pointer leaves or the button is used.
+    property <bool> tooltip-shown: false;
+
+    // Focuses card `index` (F§9): with the focus rectangle after a keyboard open, without it for
+    // the sign-in card opened by a click. Scrolls it into view. -1 focuses the window itself.
+    public function focus-card-at(index: int, show-rect: bool) {
+        Theme.keyboard-focus-visible = show-rect;
+        if (index < 0 || index >= root.cards.length) {
+            keys.focus();
+            return;
+        }
+        root.focus-target = index;
+        root.focus-token += 1;
+    }
+
+    // Back to the opened-by-mouse look: the window has focus, no element shows a rectangle.
+    public function reset-focus() {
+        Theme.keyboard-focus-visible = false;
+        root.focus-target = -1;
+        sv.content-y = 0px;
+        keys.focus();
+    }
 
     Rectangle {
         background: root.repaint-tick ? #00000001 : #00000000;
     }
     Rectangle {
         background: Theme.window-fill;
+        border-width: Theme.high-contrast ? 1px : 0px;
+        border-color: Theme.hc-window-text;
     }
     // F§10: the window's description is the header verdict; announcements go through a live
     // region.
@@ -350,7 +609,8 @@ export component Flyout inherits Window {
         width: 0px;
         height: 0px;
         accessible-role: text;
-        accessible-label: root.verdict-text;
+        accessible-label: root.title-text;
+        accessible-description: root.verdict-text;
     }
     Rectangle {
         width: 0px;
@@ -361,6 +621,7 @@ export component Flyout inherits Window {
     }
 
     keys := FocusScope {
+        focus-on-tab-navigation: false;
         key-pressed(event) => {
             if (event.text == Key.Escape) {
                 root.dismiss();
@@ -370,166 +631,208 @@ export component Flyout inherits Window {
                 root.refresh();
                 return accept;
             }
+            if (event.text == Key.Tab || event.text == Key.Backtab) {
+                Theme.keyboard-focus-visible = true;
+                return reject;
+            }
+            if (event.text == Key.DownArrow && root.cards.length > 0) {
+                root.focus-card-at(0, true);
+                return accept;
+            }
             reject
         }
-    }
-
-    VerticalLayout {
-        HorizontalLayout {
-            height: 40px;
-            padding-left: 16px;
-            padding-right: 4px;
-            spacing: 8px;
-            Text {
-                text: root.title-text;
-                font-family: Theme.font-text;
-                font-size: 14px;
-                font-weight: 600;
-                color: Theme.text-primary;
-                vertical-alignment: center;
+        capture-key-pressed(event) => {
+            if (event.text == Key.Tab || event.text == Key.Backtab) {
+                Theme.keyboard-focus-visible = true;
             }
+            reject
+        }
+
+        VerticalLayout {
+            // Header (F§3): 40 high, padding 0 4 0 16; title, 8, verdict, refresh 32 × 32.
             HorizontalLayout {
-                spacing: 4px;
-                horizontal-stretch: 1;
+                height: 40px;
+                padding-left: 16px;
+                padding-right: 4px;
+                Text {
+                    text: root.title-text;
+                    font-family: Theme.font-text;
+                    font-size: 14px;
+                    font-weight: 600;
+                    color: Theme.text-primary;
+                    vertical-alignment: center;
+                    accessible-role: none;
+                }
+                HorizontalLayout {
+                    padding-left: 8px;
+                    padding-right: 8px;
+                    spacing: 4px;
+                    horizontal-stretch: 1;
+                    if root.verdict-glyph != Glyph.none: VerticalLayout {
+                        alignment: center;
+                        GlyphIcon {
+                            glyph: root.verdict-glyph;
+                            size: 12px;
+                        }
+                    }
+                    Text {
+                        text: root.verdict-text;
+                        font-family: Theme.font-small;
+                        letter-spacing: Theme.small-tracking;
+                        font-size: 12px;
+                        color: Theme.text-secondary;
+                        overflow: elide;
+                        horizontal-stretch: 1;
+                        vertical-alignment: center;
+                        accessible-role: none;
+                    }
+                }
                 VerticalLayout {
                     alignment: center;
-                    GlyphIcon {
-                        glyph: root.verdict-glyph;
-                        size: 12px;
-                    }
-                }
-                Text {
-                    text: root.verdict-text;
-                    font-family: Theme.font-small;
-                    font-size: 12px;
-                    color: Theme.text-secondary;
-                    overflow: elide;
-                    horizontal-stretch: 1;
-                    vertical-alignment: center;
-                }
-            }
-            VerticalLayout {
-                alignment: center;
-                refresh := Rectangle {
-                    width: 32px;
-                    height: 32px;
-                    border-radius: 4px;
-                    background: refresh-touch.pressed ? Theme.subtle-pressed : refresh-touch.has-hover ? Theme.subtle-hover : transparent;
-                    accessible-role: button;
-                    accessible-label: root.refresh-name;
-                    accessible-enabled: !root.refreshing;
-                    Text {
-                        // M1: a 16 px indeterminate progress ring (accent) while refreshing (F§3).
-                        text: root.refreshing ? "\u{E895}" : "\u{E72C}";
-                        font-family: Theme.font-icons;
-                        font-size: 16px;
-                        color: root.refreshing ? Theme.accent : Theme.text-primary;
-                        horizontal-alignment: center;
-                        vertical-alignment: center;
-                    }
-                    refresh-touch := TouchArea {
+                    refresh-button := SubtleButton {
+                        width: 32px;
+                        icon: "\u{E72C}";
+                        accessible-name: root.refresh-name;
                         enabled: !root.refreshing;
+                        busy: root.refreshing;
                         clicked => {
+                            root.tooltip-shown = false;
                             root.refresh();
+                        }
+                        changed hovered => {
+                            if (!self.hovered) {
+                                root.tooltip-shown = false;
+                            }
                         }
                     }
                 }
             }
-        }
 
-        ScrollView {
-            vertical-stretch: 1;
-            list := VerticalLayout {
-                padding-left: 12px;
-                padding-right: 12px;
-                padding-bottom: 12px;
-                spacing: 8px;
-                for card[i] in root.cards: ServiceCard {
-                    data: card;
-                    index: i;
-                    message-action(index) => {
-                        root.message-action(index);
-                    }
-                    open-dashboard(index) => {
-                        root.open-service-dashboard(index);
-                    }
-                    menu(index, x, y) => {
-                        root.card-menu(index, x, y);
+            sv := ScrollView {
+                vertical-stretch: 1;
+                content-width: self.visible-width;
+                content-height: list.preferred-height;
+                list := VerticalLayout {
+                    width: sv.visible-width;
+                    padding-left: 12px;
+                    padding-right: 12px;
+                    padding-bottom: 12px;
+                    spacing: 8px;
+                    for card[i] in root.cards: ServiceCard {
+                        data: card;
+                        index: i;
+                        menu-usage-label: root.menu-usage-label;
+                        menu-readout-label: root.menu-readout-label;
+                        focus-target: root.focus-target;
+                        focus-token: root.focus-token;
+                        message-action(index) => {
+                            root.message-action(index);
+                        }
+                        open-usage(index) => {
+                            root.open-service-dashboard(index);
+                        }
+                        refresh-service(index) => {
+                            root.card-refresh(index);
+                        }
+                        toggle-pin(index, meter) => {
+                            root.card-toggle-pin(index, meter);
+                        }
+                        move-focus(index) => {
+                            if (index >= 0 && index < root.cards.length) {
+                                root.focus-card-at(index, true);
+                            }
+                        }
+                        focused(y, h) => {
+                            // Moving focus to a card scrolls it fully into view (F§2.3).
+                            if (y < -sv.content-y) {
+                                sv.content-y = -y;
+                            } else if (y + h + 12px > -sv.content-y + sv.visible-height) {
+                                sv.content-y = -(y + h + 12px - sv.visible-height);
+                            }
+                        }
                     }
                 }
             }
-        }
 
-        Rectangle {
-            height: 1px;
-            background: Theme.divider;
-        }
-        Rectangle {
-            height: 47px;
-            background: Theme.footer-fill;
-            HorizontalLayout {
-                padding-left: 8px;
-                padding-right: 8px;
-                spacing: 4px;
-                if root.footer-text != "": Text {
-                    text: root.footer-text;
-                    font-family: Theme.font-small;
-                    font-size: 12px;
-                    color: Theme.text-secondary;
-                    vertical-alignment: center;
+            // Footer (F§5): 48 incl. the 1 px divider; FooterFill; padding 0 8. The Settings button
+            // comes first in the tree so Tab reaches it before the footer link (F§9).
+            Rectangle {
+                height: 1px;
+                background: Theme.divider;
+            }
+            Rectangle {
+                height: 47px;
+                background: Theme.footer-fill;
+                settings-button := SubtleButton {
+                    x: parent.width - self.width - 8px;
+                    y: (parent.height - self.height) / 2;
+                    width: self.preferred-width;
+                    icon: "\u{E713}";
+                    label: root.settings-label;
+                    clicked => {
+                        root.open-settings();
+                    }
                 }
-                if root.footer-link != "": Text {
-                    text: root.footer-link;
-                    font-family: Theme.font-small;
-                    font-size: 12px;
-                    color: Theme.link;
-                    vertical-alignment: center;
-                    accessible-role: button;
-                    accessible-label: self.text;
-                    TouchArea {
+                if root.footer-text != "": HorizontalLayout {
+                    x: 8px;
+                    y: (parent.height - 16px) / 2;
+                    height: 16px;
+                    width: settings-button.x - 16px;
+                    spacing: 0px;
+                    Text {
+                        text: root.footer-text + (root.footer-link != "" ? " · " : "");
+                        font-family: Theme.font-small;
+                        letter-spacing: Theme.small-tracking;
+                        font-size: 12px;
+                        color: Theme.text-secondary;
+                        vertical-alignment: center;
+                        horizontal-stretch: 0;
+                    }
+                    if root.footer-link != "": HyperlinkButton {
+                        text: root.footer-link;
                         clicked => {
                             root.footer-action();
                         }
                     }
-                }
-                Rectangle {
-                    horizontal-stretch: 1;
-                }
-                VerticalLayout {
-                    alignment: center;
                     Rectangle {
-                        height: 32px;
-                        border-radius: 4px;
-                        background: settings-touch.pressed ? Theme.subtle-pressed : settings-touch.has-hover ? Theme.subtle-hover : transparent;
-                        accessible-role: button;
-                        accessible-label: root.settings-label;
-                        HorizontalLayout {
-                            padding-left: 11px;
-                            padding-right: 11px;
-                            spacing: 8px;
-                            Text {
-                                text: "\u{E713}";
-                                font-family: Theme.font-icons;
-                                font-size: 16px;
-                                color: Theme.text-primary;
-                                vertical-alignment: center;
-                            }
-                            Text {
-                                text: root.settings-label;
-                                font-family: Theme.font-text;
-                                font-size: 14px;
-                                color: Theme.text-primary;
-                                vertical-alignment: center;
-                            }
-                        }
-                        settings-touch := TouchArea {
-                            clicked => {
-                                root.open-settings();
-                            }
-                        }
+                        horizontal-stretch: 1;
                     }
                 }
             }
+        }
+    }
+
+    Timer {
+        interval: 400ms;
+        running: refresh-button.hovered && !root.tooltip-shown;
+        triggered => {
+            root.tooltip-shown = true;
+        }
+    }
+    if root.tooltip-shown && root.refresh-tooltip != "": Rectangle {
+        // Below the button, right-aligned with it; opaque like a tooltip card.
+        x: root.width - 4px - self.width;
+        y: 38px;
+        width: tip.preferred-width + 16px;
+        height: 24px;
+        border-radius: 4px;
+        border-width: 1px;
+        border-color: Theme.high-contrast ? Theme.hc-window-text : Theme.dark ? #00000033 : #0000000f;
+        background: Theme.high-contrast ? Theme.hc-window : Theme.dark ? #2c2c2c : #f9f9f9;
+        drop-shadow-blur: 6px;
+        drop-shadow-color: #00000026;
+        drop-shadow-offset-y: 2px;
+        accessible-role: text;
+        accessible-label: root.refresh-tooltip;
+        tip := Text {
+            text: root.refresh-tooltip;
+            font-family: Theme.font-small;
+            letter-spacing: Theme.small-tracking;
+            font-size: 12px;
+            color: Theme.text-primary;
+            horizontal-alignment: center;
+            vertical-alignment: center;
+            accessible-role: none;
         }
     }
 }

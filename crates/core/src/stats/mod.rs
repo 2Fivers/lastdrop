@@ -20,14 +20,17 @@ mod window;
 
 pub(crate) use assess::candidate;
 pub use assess::{
-    AssessedMeter, Assessment, BalanceAssessment, EvalInput, EvalMemory, Evaluation, LiveChange,
-    RowState, ServiceEval, ServiceInput, WindowAssessment, evaluate,
+    AbsentMeter, AssessedMeter, Assessment, BalanceAssessment, EvalInput, EvalMemory, Evaluation,
+    LiveChange, RowState, ServiceEval, ServiceInput, WindowAssessment, evaluate,
 };
 pub use balance::{BalanceStats, balance_reference, balance_stats, burn_per_day};
 pub use forecast::{
-    Forecast, current_instance, forecast, runway_minutes, same_window_instance, trailing_span,
+    Forecast, current_instance, forecast, instance_of, latest_instance, runway_minutes,
+    same_window_instance, trailing_span,
 };
-pub use freshness::{FailureKind, Freshness, ServiceStatus, StaleReason, freshness, stale_after};
+pub use freshness::{
+    FailureKind, Freshness, ServiceStatus, StaleReason, freshness, stale_after, stale_after_paced,
+};
 pub use history::{HistoryView, NoHistory, Sample};
 pub use rank::{AutoRows, Candidate, DisplayClass, compare, rank, select_rows, winner};
 pub use reset::{EffectiveWindow, ResetView, effective_window, reset_refresh_at};

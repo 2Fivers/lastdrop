@@ -8,8 +8,9 @@
 //! Placeholders: `{time}`, `{reset}`, `{since}`, `{next}`, `{until}` are formatted time points
 //! (R§5.2 or R§8.2; in `a11y.*` the spoken form of [`super::time::spoken_time`], `at 2:56 PM`);
 //! `{date}` a card date (`Mon 19 Oct`); `{duration}` and `{span}` long durations (R§5.0; spoken
-//! in `a11y.*`), `{countdown}` a COUNTDOWN (R§5.3); `{age}` an age; `{n}`, `{h}`, `{m}`, `{d}`
-//! bare integers — **spoken percentages are `{n} percent`**, never `{pct}`; `{pct}`, `{e}`,
+//! in `a11y.*`), `{countdown}` a COUNTDOWN (R§5.3); `{age}` an age; `{n}`, `{h}`, `{m}`, `{d}`,
+//! `{course}` bare integers — **spoken percentages are `{n} percent`** (`{course} percent`),
+//! never `{pct}`; `{pct}`, `{e}`,
 //! `{p}`, `{left}` formatted percents (R§5.6, sign included: `42%`, sv-SE `42 %`); `{meter}` a
 //! meter's `short_name` (capitalised at the start of a sentence, Appendix B) except in `a11y.*`
 //! and `flyout.spark.*`, where it is the spoken name ([`super::a11y`]); `{service}` the service
@@ -53,6 +54,8 @@ messages! {
     ReasonSignIn = "reason.signin" => "Sign in",
     ReasonPaused = "reason.paused" => "Paused",
     ReasonNoData = "reason.nodata" => "No data",
+    // Never drawn in the readout (an old reading shows AGE on every row); for completeness.
+    ReasonOldReading = "reason.oldreading" => "No new data",
     Loading = "loading" => "Reading…",
     Today = "today" => "Today",
     Out = "out" => "Out {time}",
@@ -102,6 +105,10 @@ messages! {
     CardTitleOkMany = "card.title.ok.n" => "You'll make it to every reset",
     CardTitleWarning = "card.title.warning" => "{meter} limit runs out at {time}",
     CardTitleWarningService = "card.title.warning.service" => "{service} {meter} limit runs out at {time}",
+    // A WARNING that hysteresis holds although the run-out moved past the reset (R§5.3): the
+    // projection instead of a run-out time.
+    CardTitleWarningCourse = "card.title.warning.course" => "{meter} limit is on course for {p} at the reset",
+    CardTitleWarningCourseService = "card.title.warning.course.service" => "{service} {meter} limit is on course for {p} at the reset",
     CardTitleCriticalRunway = "card.title.critical.runway" => "{meter} limit runs out in {duration}",
     CardTitleCriticalLevel = "card.title.critical.level" => "{meter} limit is {pct} used",
     CardTitleExhausted = "card.title.exhausted" => "{meter} limit is used up until {time}",
@@ -116,10 +123,21 @@ messages! {
     CardSentenceOkOneAbout = "card.sentence.ok.1.about" => "It is being used about as fast as time passes. At your recent pace about {left} of the {window} will be left when it resets.",
     CardSentenceOkOneAhead = "card.sentence.ok.1.ahead" => "It is being used faster than time passes, but at your recent pace about {left} of the {window} will be left when it resets.",
     CardSentenceOkManyMixed = "card.sentence.ok.n.mixed" => "At your recent pace about {left} will be left when they reset.",
+    // The OK sentence in parts, for windows without `e` (no pace, R§3.4) or without a valid
+    // forecast (no "at your recent pace", R§3.5): only what is known is said.
+    CardSentenceOkOnePaceUnder = "card.sentence.ok.1.pace.under" => "It is being used more slowly than time passes.",
+    CardSentenceOkOnePaceAbout = "card.sentence.ok.1.pace.about" => "It is being used about as fast as time passes.",
+    CardSentenceOkOnePaceAhead = "card.sentence.ok.1.pace.ahead" => "It is being used faster than time passes.",
+    CardSentenceOkManyPace = "card.sentence.ok.n.pace" => "All limits are being used more slowly than time passes.",
+    CardSentenceOkOneLeft = "card.sentence.ok.1.left" => "At your recent pace about {left} of the {window} will be left when it resets.",
+    // OK while no shown window has a reset time (Claude Desktop's history alone): no claim about
+    // making it to a reset.
+    CardTitleOkNoReset = "card.title.ok.noreset" => "Within your limits",
     CardWindowSession = "card.window.session" => "session",
     CardWindowWeek = "card.window.week" => "week",
     CardWindowMonth = "card.window.month" => "month",
     CardSentenceWarning = "card.sentence.warning" => "You're using it faster than time passes: {pct} used with {e} of the window gone. At the pace of the last {span} it runs out {duration} before the {time} reset.",
+    CardSentenceWarningCourse = "card.sentence.warning.course" => "You're using it faster than time passes: {pct} used with {e} of the window gone. At the pace of the last {span} it reaches about {p} by the {time} reset.",
     CardSentenceOtherFine = "card.sentence.other" => " The {other} limit is fine.",
     CardSentenceCritical = "card.sentence.critical" => "{pct} used. At the pace of the last {span} it is empty at about {time}, {duration} before the reset at {reset}.",
     CardSentenceLevel = "card.sentence.level" => "Nearly used up. At your recent pace it lasts until the reset at {time}.",
@@ -127,6 +145,7 @@ messages! {
     CardSentenceExhaustedNoSince = "card.sentence.exhausted.nosince" => "Used up. It is back at {time}, in {duration}.",
     CardSentenceOffline = "card.sentence.offline" => "Lastdrop is offline, so these are the numbers from {time}. Bars are dashed and frozen at that moment until a new reading arrives. Next try at {next}.",
     CardSentenceNoData = "card.sentence.nodata" => "{service} isn't answering ({detail}), so these are the numbers from {time}. Next try at {next}.",
+    CardSentenceOldReading = "card.sentence.oldreading" => "{service} answers, but its newest numbers are from {time}. Next try at {next}.",
     CardSentenceSignIn = "card.sentence.signin" => "{service}'s sign-in has expired. Lastdrop never signs in for you: open {client} in this account to renew it. Select the readout for the steps.",
     CardSentencePaused = "card.sentence.paused" => "Updates are paused until {until}. These are the numbers from {time}.",
     CardSentencePausedOpen = "card.sentence.paused.open" => "Updates are paused. These are the numbers from {time}.",
@@ -147,6 +166,8 @@ messages! {
     CardLineNoReset = "card.line.noreset" => "No reset time given",
     CardLineNoLength = "card.line.nolength" => "window length unknown",
     CardLineJustReset = "card.line.justreset" => "Reset at {time} · waiting for the first reading",
+    // R§3.9 ENDED: the hover card's reset line and the flyout row's right cluster.
+    CardLineEnded = "card.line.ended" => "Ended by {time}",
     CardValue = "card.value" => "{pct} used",
     CardBalanceValue = "card.balance.value" => "{pct} of top-up used",
     CardBalanceLeft = "card.balance.left" => "{amount} of {ref} {unit} left",
@@ -166,7 +187,9 @@ messages! {
     // ---- Flyout (F§3–F§6, F§10)
     FlyoutTitle = "flyout.title" => "Lastdrop",
     FlyoutVerdictOk = "flyout.verdict.ok" => "All limits last until their reset",
+    FlyoutVerdictOkNoReset = "flyout.verdict.ok.noreset" => "Within your limits",
     FlyoutVerdictWarning = "flyout.verdict.warning" => "{label} runs out at {time}",
+    FlyoutVerdictWarningCourse = "flyout.verdict.warning.course" => "{label} is on course for {p} at the reset",
     FlyoutVerdictRunway = "flyout.verdict.critical.runway" => "{label} runs out in {countdown}",
     FlyoutVerdictLevel = "flyout.verdict.critical.level" => "{label} is {pct} used",
     FlyoutVerdictExhausted = "flyout.verdict.exhausted" => "{label} is used up until {time}",
@@ -185,6 +208,7 @@ messages! {
     FlyoutMsgSep = "flyout.msg.sep" => " · ",
     FlyoutMsgOffline = "flyout.msg.offline" => "Offline",
     FlyoutMsgNoData = "flyout.msg.nodata" => "Not answering",
+    FlyoutMsgOldReading = "flyout.msg.oldreading" => "No new reading",
     FlyoutMsgShowing = "flyout.msg.showing" => "showing {time}",
     FlyoutMsgNextTry = "flyout.msg.nexttry" => "next try {time}",
     FlyoutMsgSignInLead = "flyout.msg.signin.lead" => "Sign-in expired.",
@@ -197,10 +221,11 @@ messages! {
     FlyoutMsgApiKeyLead = "flyout.msg.apikey.lead" => "API key missing or rejected.",
     FlyoutMsgApiKeyAction = "flyout.msg.apikey.action" => "Enter key…",
     FlyoutLineWarning = "flyout.line.warning" => "Runs out {duration} before the reset at {time}.",
+    FlyoutLineWarningCourse = "flyout.line.warning.course" => "On course for {p} at the {time} reset.",
     FlyoutLineCritical = "flyout.line.critical" => "Empty ≈ {time}, {duration} before the {reset} reset.",
     FlyoutLineLevel = "flyout.line.level" => "Nearly used up. Lasts until the reset at your recent pace.",
     FlyoutLineExhausted = "flyout.line.exhausted" => "Used up since {since}. Back in {duration}.",
-    FlyoutLineExhaustedNoSince = "flyout.line.exhausted.nosince" => "Back in {duration}.",
+    FlyoutLineExhaustedNoSince = "flyout.line.exhausted.nosince" => "Used up. Back in {duration}.",
     FlyoutBalanceLeft = "flyout.balance.left" => "≈ {duration} left",
     FlyoutBalanceMax = "flyout.balance.max" => "More than 8 weeks left",
     FlyoutBalanceNoUse = "flyout.balance.nouse" => "No use in 7 days",
@@ -225,14 +250,18 @@ messages! {
     A11yAgo = "a11y.ago" => "{duration} ago",
     A11yRowOk = "a11y.row.ok" => "{service} {meter}: on track, {n} percent used, resets {reset}.",
     A11yRowWarning = "a11y.row.warning" => "{service} {meter}: warning, runs out at about {time}, before the reset {reset}; {n} percent used.",
+    A11yRowWarningCourse = "a11y.row.warning.course" => "{service} {meter}: warning, on course for {course} percent at the reset {reset}; {n} percent used.",
     A11yRowRunway = "a11y.row.critical.runway" => "{service} {meter}: critical, runs out in about {duration}; {n} percent used; resets {reset}.",
     A11yRowLevel = "a11y.row.critical.level" => "{service} {meter}: critical, {n} percent used, lasts until the reset {reset}.",
     A11yRowExhausted = "a11y.row.exhausted" => "{service} {meter}: empty, back {time}.",
+    A11yRowExhaustedNoReset = "a11y.row.exhausted.noreset" => "{service} {meter}: empty, {n} percent used, no reset time given.",
     A11yRowIdle = "a11y.row.idle" => "{service} {meter}: not started, {n} percent used, starts with your next message.",
     A11yRowNoReset = "a11y.row.noreset" => "{service} {meter}: {n} percent used, no reset time given.",
     A11yRowLoading = "a11y.row.loading" => "{service} {meter}: reading.",
+    A11yRowEnded = "a11y.row.ended" => "{service} {meter}: ended by {time}, no newer reading.",
     A11yServiceOffline = "a11y.service.offline" => "{service}: offline, last reading {age} ago. Then: {rows}.",
     A11yServiceNoData = "a11y.service.nodata" => "{service}: not answering, last reading {age} ago. Then: {rows}.",
+    A11yServiceOldReading = "a11y.service.oldreading" => "{service}: no new reading, last reading {age} ago. Then: {rows}.",
     A11yServicePaused = "a11y.service.paused" => "{service}: updates paused, last reading {age} ago. Then: {rows}.",
     A11yServiceSignIn = "a11y.service.signin" => "{service}: sign-in expired, last reading {age} ago. Select to open Lastdrop and see how to sign in.",
     A11yServiceApiKey = "a11y.service.apikey" => "{service}: API key missing or rejected. Select to open Lastdrop and add one.",
@@ -250,6 +279,7 @@ messages! {
     TrayExhausted = "tray.exhausted" => "Lastdrop: {service} {meter} used up until {time}",
     TrayOffline = "tray.offline" => "Lastdrop: {service} offline, last reading {age} ago",
     TrayNoData = "tray.nodata" => "Lastdrop: {service} not answering, last reading {age} ago",
+    TrayOldReading = "tray.oldreading" => "Lastdrop: {service} has no new reading, last reading {age} ago",
     TraySignIn = "tray.signin" => "Lastdrop: {service} needs you to sign in again",
     TrayApiKey = "tray.apikey" => "Lastdrop: {service} needs an API key",
     TrayPaused = "tray.paused" => "Lastdrop: updates paused",

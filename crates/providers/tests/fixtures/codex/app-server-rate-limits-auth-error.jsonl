@@ -1,0 +1,3 @@
+{"id":1,"result":{"userAgent":"lastdrop/0.1.0 codex_app_server/0.0.0-fixture","codexHome":"C:\\Users\\tester\\.codex","platformFamily":"windows","platformOs":"windows"}}
+{"id":2,"result":{"account":{"type":"chatgpt","email":null,"planType":"pro"},"requiresOpenaiAuth":true}}
+{"id":3,"error":{"code":-32600,"message":"codex account authentication required to read rate limits"}}

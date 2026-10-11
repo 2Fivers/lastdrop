@@ -15,7 +15,7 @@ use crate::consts::{SPARK_BALANCE_FLOOR_SHARE, SPARK_DAYS, SPARK_WINDOW_FLOOR_PP
 use crate::glyph::{ProviderGlyph, SeverityGlyph};
 use crate::grammar::TextContext;
 use crate::grammar::a11y::{row_sentence, runout_point, unit_word};
-use crate::grammar::cells::{back_text, pct, resets_at, t_out};
+use crate::grammar::cells::{course_pct, pct, resets_at, t_out};
 use crate::grammar::numbers::{amount, balance_forecast_long, percent};
 use crate::grammar::strings::{Msg, text};
 use crate::grammar::time::{
@@ -28,7 +28,8 @@ use crate::readout::build::BuildContext;
 use crate::readout::hovercard::{balance, before_reset, capitalise, last_reading, window};
 use crate::stats::{
     Assessment, DisplayClass, Evaluation, FailureKind, Freshness, HistoryView, LiveChange,
-    ResetView, RowState, ServiceEval, StaleReason, candidate, runway_minutes, same_window_instance,
+    ResetView, RowState, Sample, ServiceEval, StaleReason, candidate, instance_of, runway_minutes,
+    same_window_instance,
 };
 use crate::util::{duration_from_hours, round_i32, sub};
 
@@ -344,23 +345,29 @@ pub fn spark_values(
             values[i].get_or_insert(0.0);
         }
     }
-    for pair in samples.windows(2) {
-        let (a, b) = (pair[0], pair[1]);
-        if b.t < start || b.t > now {
-            continue;
-        }
-        let used = match kind {
-            SparkKind::Window if same_window_instance(a.resets_at, b.resets_at) => {
-                (b.value - a.value).max(0.0) * 100.0
-            }
-            SparkKind::Window => 0.0,
-            SparkKind::Balance => (a.value - b.value).max(0.0),
-        };
-        if let Some(i) = index(b.t)
-            && used.is_finite()
+    // Window instances per `instance_of`: a reading without a reset time inside a known instance
+    // belongs to it, so its increases count.
+    let mut previous: Option<(Sample, Option<Timestamp>)> = None;
+    for &b in samples {
+        let b_instance = instance_of(previous.and_then(|(_, i)| i), &b);
+        if let Some((a, a_instance)) = previous
+            && b.t >= start
+            && b.t <= now
         {
-            *values[i].get_or_insert(0.0) += used;
+            let used = match kind {
+                SparkKind::Window if same_window_instance(a_instance, b_instance) => {
+                    (b.value - a.value).max(0.0) * 100.0
+                }
+                SparkKind::Window => 0.0,
+                SparkKind::Balance => (a.value - b.value).max(0.0),
+            };
+            if let Some(i) = index(b.t)
+                && used.is_finite()
+            {
+                *values[i].get_or_insert(0.0) += used;
+            }
         }
+        previous = Some((b, b_instance));
     }
     values
 }
@@ -526,8 +533,25 @@ fn verdict(eval: &Evaluation, cx: &TextContext<'_>) -> Verdict {
     items.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)));
     let Some((_, _, worst)) = items.first() else {
         let all_loading = !eval.services.is_empty() && eval.services.iter().all(|s| s.loading);
+        // "Last until their reset" needs reset times: without any (Claude Desktop's history
+        // alone) the verdict claims none.
+        let windows: Vec<_> = eval
+            .services
+            .iter()
+            .flat_map(|s| s.meters.iter())
+            .filter_map(window)
+            .collect();
+        let no_reset = !windows.is_empty()
+            && windows.iter().all(|w| w.resets_at.is_none())
+            && eval
+                .services
+                .iter()
+                .flat_map(|s| s.meters.iter())
+                .all(|a| balance(a).is_none());
         let msg = if all_loading {
             Msg::FlyoutVerdictLoading
+        } else if no_reset {
+            Msg::FlyoutVerdictOkNoReset
         } else {
             Msg::FlyoutVerdictOk
         };
@@ -548,7 +572,7 @@ fn verdict(eval: &Evaluation, cx: &TextContext<'_>) -> Verdict {
                     SeverityGlyph::Stale,
                     s.template(Msg::FlyoutVerdictPaused).to_owned(),
                 ),
-                StaleReason::Offline | StaleReason::NoData => {
+                StaleReason::Offline | StaleReason::NoData | StaleReason::OldReading => {
                     let age = last_reading(service)
                         .map(|t| long_duration(shown_age(cx.now, t), s))
                         .unwrap_or_default();
@@ -609,13 +633,19 @@ fn verdict(eval: &Evaluation, cx: &TextContext<'_>) -> Verdict {
                 ),
                 RowState::Warning => (
                     SeverityGlyph::Warning,
-                    match t_out(a) {
-                        Some(t) => text(
+                    match (t_out(a), course_pct(a)) {
+                        (Some(t), _) => text(
                             s,
                             Msg::FlyoutVerdictWarning,
                             &[("label", &label), ("time", &runout_point(a, t, cx))],
                         ),
-                        None => level(),
+                        // Held by hysteresis without a run-out before the reset (R§5.3).
+                        (None, Some(p)) => text(
+                            s,
+                            Msg::FlyoutVerdictWarningCourse,
+                            &[("label", &label), ("p", &percent(p, cx.locale))],
+                        ),
+                        (None, None) => level(),
                     },
                 ),
                 _ => (SeverityGlyph::Critical, level()),
@@ -715,23 +745,26 @@ fn message_line(service: &ServiceEval, cx: &TextContext<'_>) -> Option<MessageLi
         .unwrap_or_default();
     match reason {
         StaleReason::SignIn => sign_in(),
-        StaleReason::Offline | StaleReason::NoData => Some(MessageLine {
-            kind: if reason == StaleReason::Offline {
-                MessageKind::Offline
-            } else {
-                MessageKind::NoData
-            },
-            glyph: SeverityGlyph::Stale,
-            lead: s
-                .template(if reason == StaleReason::Offline {
-                    Msg::FlyoutMsgOffline
+        StaleReason::Offline | StaleReason::NoData | StaleReason::OldReading => {
+            Some(MessageLine {
+                kind: if reason == StaleReason::Offline {
+                    MessageKind::Offline
                 } else {
-                    Msg::FlyoutMsgNoData
-                })
-                .to_owned(),
-            text: format!("{showing}{next}"),
-            action: None,
-        }),
+                    // The same look as NO_DATA; only the words differ.
+                    MessageKind::NoData
+                },
+                glyph: SeverityGlyph::Stale,
+                lead: s
+                    .template(match reason {
+                        StaleReason::Offline => Msg::FlyoutMsgOffline,
+                        StaleReason::OldReading => Msg::FlyoutMsgOldReading,
+                        _ => Msg::FlyoutMsgNoData,
+                    })
+                    .to_owned(),
+                text: format!("{showing}{next}"),
+                action: None,
+            })
+        }
         StaleReason::Paused => Some(MessageLine {
             kind: MessageKind::Paused,
             glyph: SeverityGlyph::Stale,
@@ -773,18 +806,35 @@ fn meter_row(a: &Assessment, service: &ServiceEval, cx: &TextContext<'_>) -> Met
         || w.is_some_and(|w| w.resets_at.is_none() && w.used <= 0.0 && w.starts_on_use);
     let right = match a.state {
         RowState::Ok | RowState::CriticalLevel | RowState::JustReset => reset_cluster(),
+        RowState::Ended => match w.map(|w| w.reset) {
+            Some(ResetView::Ended { by }) => {
+                plain(text(s, Msg::CardLineEnded, &[("time", &card_time(by, cx))]))
+            }
+            _ => plain(String::new()),
+        },
         RowState::Idle => plain(s.template(Msg::CardLineIdle).to_owned()),
         RowState::OkNoReset => plain(s.template(Msg::CardLineNoReset).to_owned()),
         RowState::OkBalance | RowState::Loading => plain(String::new()),
-        RowState::Warning => match t_out(a) {
-            Some(t) => say(SeverityGlyph::Warning, runout_text(t, false, cx)),
-            None => reset_cluster(),
+        RowState::Warning => match (t_out(a), reset) {
+            (Some(t), _) => say(SeverityGlyph::Warning, runout_text(t, false, cx)),
+            // Held by hysteresis without a run-out before the reset: ▲ + the reset; the trouble
+            // line gives the projection.
+            (None, Some(r)) => say(SeverityGlyph::Warning, resets(r)),
+            (None, None) => reset_cluster(),
         },
         RowState::CriticalRunway => match t_out(a) {
             Some(t) => say(SeverityGlyph::Critical, runout_text(t, true, cx)),
             None => reset_cluster(),
         },
-        RowState::Exhausted => say(SeverityGlyph::Critical, back_text(a, cx)),
+        // F§4.4: flyout times follow the card rule (`Back 4:30 PM`, `Back Mon 09:00`), not the
+        // readout token.
+        RowState::Exhausted => say(
+            SeverityGlyph::Critical,
+            match reset {
+                Some(r) => text(s, Msg::Back, &[("time", &card_time(r, cx))]),
+                None => s.template(Msg::Empty).to_owned(),
+            },
+        ),
         RowState::Stale(_) => match reset {
             Some(r) => plain(resets(r)),
             None if not_started() => plain(s.template(Msg::CardLineIdle).to_owned()),
@@ -800,16 +850,21 @@ fn meter_row(a: &Assessment, service: &ServiceEval, cx: &TextContext<'_>) -> Met
                     &[("time", &card_time(previous, cx))],
                 ))
             }
-            ResetView::Live => None,
+            ResetView::Live | ResetView::Ended { .. } => None,
         },
-        (RowState::Warning, _) => match (t_out(a), reset) {
-            (Some(t), Some(r)) => Some(text(
+        (RowState::Warning, _) => match (t_out(a), course_pct(a), reset) {
+            (Some(t), _, Some(r)) => Some(text(
                 s,
                 Msg::FlyoutLineWarning,
                 &[
                     ("duration", &before_reset(t, r, cx)),
                     ("time", &card_time(r, cx)),
                 ],
+            )),
+            (None, Some(p), Some(r)) => Some(text(
+                s,
+                Msg::FlyoutLineWarningCourse,
+                &[("p", &percent(p, cx.locale)), ("time", &card_time(r, cx))],
             )),
             _ => None,
         },
@@ -847,9 +902,11 @@ fn meter_row(a: &Assessment, service: &ServiceEval, cx: &TextContext<'_>) -> Met
         RowState::Warning => Tone::Caution,
         RowState::CriticalLevel | RowState::CriticalRunway | RowState::Exhausted => Tone::Critical,
         RowState::Stale(_) => Tone::Stale,
+        RowState::Ended if matches!(service.freshness, Freshness::Stale(_)) => Tone::Stale,
         _ => Tone::Calm,
     };
-    let loading = a.state == RowState::Loading;
+    // LOADING and ENDED rows have no value to show.
+    let loading = matches!(a.state, RowState::Loading | RowState::Ended);
     MeterRowModel {
         key: a.key.clone(),
         name: a.names.name.clone(),

@@ -1,0 +1,41 @@
+{
+  "numStartups": 412,
+  "installMethod": "native",
+  "autoUpdates": true,
+  "userID": "0000000000000000000000000000000000000000000000000000000000000000",
+  "oauthAccount": {
+    "accountUuid": "00000000-0000-4000-8000-000000000002",
+    "emailAddress": "tester@example.invalid",
+    "organizationUuid": "00000000-0000-4000-8000-000000000001",
+    "organizationName": "Invented Org",
+    "displayName": "Tester"
+  },
+  "projects": {
+    "C:/Users/tester/src/alpha": {
+      "allowedTools": [],
+      "history": [{ "display": "invented prompt" }],
+      "lastCost": 0.42
+    },
+    "C:/Users/tester/src/beta": { "allowedTools": ["Bash"], "history": [], "lastCost": 1.5 }
+  },
+  "cachedUsageUtilization": {
+    "fetchedAtMs": 1791618120000,
+    "accountUuid": "00000000-0000-4000-8000-000000000002",
+    "utilization": {
+      "five_hour": { "utilization": 20.0, "resets_at": "2026-10-10T11:00:00.000000+00:00" },
+      "seven_day": { "utilization": 55.0, "resets_at": "2026-10-12T07:00:00.000000+00:00" },
+      "seven_day_opus": null,
+      "extra_usage": { "is_enabled": false },
+      "limits": [
+        {
+          "kind": "weekly_scoped",
+          "percent": 21,
+          "resets_at": "2026-10-12T07:00:00+00:00",
+          "scope": { "model": { "id": null, "display_name": "Fable" }, "surface": null },
+          "is_active": true
+        }
+      ]
+    }
+  },
+  "tipsHistory": { "invented-tip": 3 }
+}

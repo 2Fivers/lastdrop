@@ -1,6 +1,6 @@
-//! The injectable I/O traits of a fetch: [`Clock`], [`Http`], [`Fs`], [`Secrets`], [`Spawner`]
-//! (with [`ChildIo`]) and [`Env`]. Production implementations are in [`crate::real`], test
-//! implementations in [`crate::fakes`].
+//! The injectable I/O traits of a fetch: [`Clock`], [`Http`], [`Fs`] (with [`ReadAt`]),
+//! [`Secrets`], [`Spawner`] (with [`ChildIo`]) and [`Env`]. Production implementations are in
+//! [`crate::real`], test implementations in [`crate::fakes`].
 
 use std::ffi::OsString;
 use std::io;
@@ -98,9 +98,19 @@ impl HttpResponse {
 
     /// `Retry-After` as a duration from `now`: delta-seconds or an HTTP-date (RFC 9110 §10.2.3);
     /// `None` when absent or unreadable.
-    #[expect(unused_variables, reason = "M1 contract stub")]
+    ///
+    /// An HTTP-date in the past is a wait of zero. Only the preferred IMF-fixdate form
+    /// (`Sun, 06 Nov 1994 08:49:37 GMT`, RFC 5322 syntax) is read; the obsolete RFC 850 and
+    /// asctime forms give `None`.
     pub fn retry_after(&self, now: Timestamp) -> Option<Duration> {
-        todo!("M1: parse Retry-After (seconds or HTTP-date)")
+        static HTTP_DATE: jiff::fmt::rfc2822::DateTimeParser =
+            jiff::fmt::rfc2822::DateTimeParser::new();
+        let value = self.header("Retry-After")?.trim();
+        if !value.is_empty() && value.bytes().all(|b| b.is_ascii_digit()) {
+            return value.parse::<u64>().ok().map(Duration::from_secs);
+        }
+        let at = HTTP_DATE.parse_timestamp(value).ok()?;
+        Some(Duration::try_from(at.duration_since(now)).unwrap_or(Duration::ZERO))
     }
 }
 
@@ -169,6 +179,16 @@ pub trait Fs: Send + Sync {
     /// event is at the end (Codex rollouts).
     fn read_tail(&self, path: &Path, max_len: u64) -> io::Result<Vec<u8>>;
 
+    /// The file opened for reads at any offset, for formats that are walked rather than read
+    /// front to back (Chromium's block-file HTTP cache: an index of addresses into block files).
+    /// Opened read-only and sharing read, write **and delete** with every other process, so the
+    /// owner keeps writing, renaming and deleting its files while Lastdrop reads (Chromium opens
+    /// its cache files with `DELETE` access, which a handle without `FILE_SHARE_DELETE` would
+    /// refuse). Not the folder: Windows refuses to rename or delete a folder while a file in it
+    /// is open, whatever the sharing, so callers keep such handles only as long as they read.
+    /// Nothing is read until asked, so memory stays at what the caller reads.
+    fn open_at(&self, path: &Path) -> io::Result<Box<dyn ReadAt>>;
+
     /// Metadata of a file or directory.
     fn metadata(&self, path: &Path) -> io::Result<FileMeta>;
 
@@ -178,6 +198,16 @@ pub trait Fs: Send + Sync {
     /// The entries of `dir` whose file name matches `pattern` (`*` = any run of characters,
     /// `?` = one character, case-insensitive like Windows), sorted by path.
     fn glob(&self, dir: &Path, pattern: &str) -> io::Result<Vec<DirEntry>>;
+}
+
+/// A file opened by [`Fs::open_at`]: reads at any offset, never writes.
+pub trait ReadAt: Send {
+    /// The file's length when it was opened (another process may grow it meanwhile).
+    fn size(&self) -> u64;
+
+    /// Fills `buf` with the bytes at `offset`; `ErrorKind::UnexpectedEof` when the file ends
+    /// first.
+    fn read_exact_at(&mut self, offset: u64, buf: &mut [u8]) -> io::Result<()>;
 }
 
 /// `*`/`?` wildcard match of a file name, ASCII case-insensitive (used by [`Fs::glob`]
@@ -276,7 +306,9 @@ pub trait ChildIo: Send {
     /// `ErrorKind::TimedOut` when nothing complete arrives within `timeout`.
     fn read_line(&mut self, timeout: Duration) -> io::Result<Option<String>>;
 
-    /// Kills the child (and waits for it, briefly). Idempotent.
+    /// Ends the child: closes its stdin, lets it exit by itself for a grace period
+    /// (`real::EXIT_GRACE`: `codex app-server` may be saving a renewed sign-in), then terminates
+    /// it and waits for it, briefly. Idempotent.
     fn kill(&mut self) -> io::Result<()>;
 }
 
@@ -315,7 +347,45 @@ pub trait Env: Send + Sync {
 
 #[cfg(test)]
 mod tests {
-    use super::wildcard_match;
+    use std::time::Duration;
+
+    use jiff::Timestamp;
+
+    use super::{HttpResponse, wildcard_match};
+
+    fn with_retry_after(value: &str) -> HttpResponse {
+        HttpResponse {
+            status: 429,
+            headers: vec![("retry-after".to_owned(), value.to_owned())],
+            body: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn retry_after_reads_seconds_and_http_dates() {
+        let now: Timestamp = "2026-10-10T10:00:00Z".parse().expect("timestamp");
+        assert_eq!(
+            with_retry_after("120").retry_after(now),
+            Some(Duration::from_secs(120))
+        );
+        assert_eq!(
+            with_retry_after(" 0 ").retry_after(now),
+            Some(Duration::ZERO)
+        );
+        assert_eq!(
+            with_retry_after("Sat, 10 Oct 2026 10:05:00 GMT").retry_after(now),
+            Some(Duration::from_secs(300))
+        );
+        assert_eq!(
+            with_retry_after("Sat, 10 Oct 2026 09:00:00 GMT").retry_after(now),
+            Some(Duration::ZERO),
+            "a date in the past means retry now"
+        );
+        assert_eq!(with_retry_after("-5").retry_after(now), None);
+        assert_eq!(with_retry_after("soon").retry_after(now), None);
+        assert_eq!(with_retry_after("").retry_after(now), None);
+        assert_eq!(HttpResponse::new(429, "").retry_after(now), None);
+    }
 
     #[test]
     fn wildcards() {

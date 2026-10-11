@@ -44,14 +44,18 @@ Windows-specific and has no I/O.
 | Thread | Owns | Never does |
 |---|---|---|
 | **main** | Slint event loop: flyout, hover card, settings and about windows; the tray icon (our own `Shell_NotifyIcon`, version 4); the app state | blocking I/O |
-| **readout** | the taskbar readout: a hidden top-level window that receives `TaskbarCreated`, the layered readout window parented into the taskbar, the WinEvent hook on the taskbar, its own message loop and drawing | I/O, waiting on locks held by other threads, synchronous cross-process calls while holding a lock |
+| **readout** | the taskbar readout: a hidden top-level window that receives `TaskbarCreated`, the layered readout window (a topmost `WS_POPUP` over the taskbar, never parented into it; readout-spec §6.1), the WinEvent hooks on the taskbar, its own message loop and drawing | I/O, waiting on locks held by other threads, synchronous cross-process calls while holding a lock |
 | **occupancy** | a UI Automation client (MTA) that measures where the taskbar's app buttons are, with connection and transaction timeouts | anything else |
 | **refresh workers** | provider fetches (files, HTTP, `codex app-server`), one job per credential source at a time | touching UI objects |
+| **writer** | every file write after start-up, one job at a time in the order the main thread queued them: history appends and the daily compaction, settings and state saves (atomic replace); the log has a writer thread of its own | anything but writing files |
 
-Why a separate readout thread: a window parented into Explorer's taskbar attaches its thread's
-input queue to Explorer's. If that thread were the main thread, a slow frame or a blocked lock
-on our side could freeze the taskbar's input (the reference tool's issues #22 and #92). The
-readout thread does nothing but draw a small model and handle a handful of messages.
+Why a separate readout thread: the readout follows Explorer's taskbar (WinEvent hooks, geometry
+reads, re-raising itself when the taskbar comes to the top of the topmost band) and must react
+whatever the UI thread is doing; a slow Slint frame never delays it, and a hung Explorer never
+blocks the flyout. The readout is never parented into the taskbar: a cross-process child window
+attaches its thread's input queue to Explorer's, which in the reference tool froze the taskbar's
+input (its issues #22 and #92). The readout thread does nothing but draw a small model and handle
+a handful of messages.
 
 Messages between threads: workers send results to the main thread with
 `slint::invoke_from_event_loop`; the main thread hands the readout a new immutable
@@ -62,7 +66,8 @@ Messages between threads: workers send results to the main thread with
 
 - **Snapshot** — one reading of one account of one service: provider, account (label, plan),
   `measured_at` (when the service computed it), `fetched_at`, `source` (for example
-  `ClaudeDesktopHistory`, `ClaudeOAuthUsage`, `CodexAppServer`, `CodexRollout`, `MeshyApi`),
+  `ClaudeOAuthUsage`, `ClaudeDesktopCache`, `ClaudeDesktopHistory`, `CodexAppServer`,
+  `CodexRollout`, `MeshyApi`),
   `meters`, `balances`, and `health` (`Ok`, `Stale`, `SignInRequired`, `Error`).
 - **Meter** — a usage window: stable id (`five_hour`, `weekly`, `weekly:fable`, …), label,
   `used` as a share (1.0 = the limit; may exceed 1 when the service says so), whether the limit
@@ -97,8 +102,8 @@ fixed order and returns the freshest success; every attempt is logged (without s
 
 | Provider | Sources, in order |
 |---|---|
-| Claude | Claude Desktop's `plan-usage-history.json` (no token) → OAuth usage endpoint with Claude Code's token, read-only, never refreshed, at most every 5 min, `Retry-After` honoured → Claude Code's cached usage in `.claude.json` |
-| Codex | `codex app-server` (`account/rateLimits/read`, newest bundled or PATH `codex.exe`, no window, 8 s init / 3 s per call) → newest rollout `token_count.rate_limits` |
+| Claude | OAuth usage endpoint with Claude Code's token when the file holds a usable one, read-only, never refreshed, at most every 5 min, `Retry-After` honoured → Claude Desktop's own last usage response in its Chromium HTTP cache (`Cache\Cache_Data`, block-file format, read-only and shared, no token; only the answers of Claude Code's organisation when Claude Code names one) → Claude Desktop's `plan-usage-history.json` (no token) → Claude Code's cached usage in `.claude.json`; the most recently measured reading wins, readings under 2 min apart count as one and the earlier source wins |
+| Codex | newest rollout `token_count.rate_limits` while younger than 10 min (nothing started) → `codex app-server -c features.plugins=false` (`account/rateLimits/read`, newest bundled or PATH `codex.exe`, no window, 8 s init / 3 s per call; plugins off so no marketplace sync starts; started at most every 15 min per `CODEX_HOME`, its last answer standing in between, earlier for a manual refresh or once a window of that answer has reset; so the service counts as fresh for 15 min plus the poll interval, not from the spec) → newest rollout `token_count.rate_limits` (session files read again only when they changed) |
 | Meshy | `GET https://api.meshy.ai/openapi/v1/balance` with the key from Credential Manager |
 
 Rules for every provider:
@@ -121,9 +126,11 @@ Rules for every provider:
   It is unit-tested against a matrix of recorded layouts. Gathering geometry uses
   `GetWindowRect`, never `SHAppBarMessage` (which can deadlock when Explorer hangs).
 - **Taskbar events:** `EVENT_OBJECT_LOCATIONCHANGE` (out of context, filtered to the taskbar
-  and tray), `TaskbarCreated`, `WM_DISPLAYCHANGE`, `WM_SETTINGCHANGE`, `WM_DPICHANGED` and
-  `WM_DPICHANGED_AFTERPARENT`, debounced; no polling loop for geometry. After an Explorer
-  restart the readout is rebuilt in-process.
+  and tray), `EVENT_SYSTEM_FOREGROUND` and `EVENT_OBJECT_REORDER` on the taskbar (re-assert
+  topmost), `TaskbarCreated`, `WM_DISPLAYCHANGE`, `WM_SETTINGCHANGE` and `WM_DPICHANGED` (the
+  readout is a top-level window, so `WM_DPICHANGED_AFTERPARENT` never reaches it; readout-spec
+  §6.9), debounced; no polling loop for geometry. After an Explorer restart the readout is
+  rebuilt in-process.
 - **Flyout placement:** `Shell_NotifyIconGetRect` → `CalculatePopupWindowPosition` with the
   work area (from the spike).
 - **Theme:** taskbar light/dark (`SystemUsesLightTheme`), app light/dark, accent, transparency,
@@ -145,7 +152,11 @@ Rules for every provider:
   window's reset time; one job per credential source in flight.
 - **Persistence:** settings in `%APPDATA%\Lastdrop\settings.json` (atomic write, no
   secrets); history in `%LOCALAPPDATA%\Lastdrop\` (thinned to one sample per meter per
-  5 minutes, 90 days); logs in `%LOCALAPPDATA%\Lastdrop\logs` (rotated, local only).
+  5 minutes, 90 days); `%LOCALAPPDATA%\Lastdrop\state.json` (what the app remembers that is
+  not a setting: the meters a source has reported, so their room in the readout survives a
+  restart; meter keys and names only, no secrets); logs in `%LOCALAPPDATA%\Lastdrop\logs`
+  (rotated, local only). Start-up reads them on the main thread before the event loop; every
+  later write is queued for the writer thread, so the UI thread never waits on the disk.
 - **No telemetry.** The only network traffic is to the services whose usage is being read.
 
 ## Quality bar

@@ -13,6 +13,8 @@ lastdrop-core.workspace = true
 log.workspace = true
 serde.workspace = true
 thiserror.workspace = true
+windows-core.workspace = true
+windows-numerics.workspace = true
 
 [dependencies.windows]
 workspace = true

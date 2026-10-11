@@ -80,3 +80,28 @@ pub struct PointF {
     /// y.
     pub y: f32,
 }
+
+/// `Rect` from a Win32 `RECT` (same layout and meaning).
+pub(crate) const fn rect_from_win(r: windows::Win32::Foundation::RECT) -> Rect {
+    Rect {
+        left: r.left,
+        top: r.top,
+        right: r.right,
+        bottom: r.bottom,
+    }
+}
+
+/// A Win32 `RECT` from a `Rect`.
+pub(crate) const fn rect_to_win(r: Rect) -> windows::Win32::Foundation::RECT {
+    windows::Win32::Foundation::RECT {
+        left: r.left,
+        top: r.top,
+        right: r.right,
+        bottom: r.bottom,
+    }
+}
+
+/// A Win32 `POINT` from a `Point`.
+pub(crate) const fn point_to_win(p: Point) -> windows::Win32::Foundation::POINT {
+    windows::Win32::Foundation::POINT { x: p.x, y: p.y }
+}
