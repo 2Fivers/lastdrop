@@ -2,16 +2,23 @@
 //! on/off, the Meshy API key (Credential Manager, never echoed back), the refresh interval, the
 //! readout (on/off, auto or pinned meters, time style), the global hotkey and start with Windows.
 //!
-//! The window edits a [`Draft`] of the settings; **Apply** commits it (state, settings file,
-//! autostart, hotkey, readout). The API key is the exception: it is stored at once when the user
-//! saves it and never kept anywhere else — not in the draft, not in a Slint property, not in
-//! `settings.json`, not in the log.
+//! It runs in the dialog process ([`crate::dialog`]), not in the tray process. Opening reads
+//! `settings.json` and the meters earlier readings reported (`state.json`); the window edits a
+//! [`Draft`] of the settings. **Apply** re-reads `settings.json`, takes every field from the
+//! draft except the pause ([`apply_onto`]), sets autostart, tests a changed hotkey, writes the
+//! file (atomic) and tells the tray process, which re-reads and applies it. The API key is the
+//! exception: it is stored at once when the user saves it and never kept anywhere else — not in
+//! the draft, not in a Slint property, not in `settings.json`, not in the log — and the tray
+//! process is told so it reads Meshy again.
 //!
-//! Threading: main thread.
+//! Threading: the dialog process's main thread.
 
-use jiff::Timestamp;
+use std::cell::RefCell;
+use std::path::PathBuf;
+use std::rc::Rc;
+
 use lastdrop_core::grammar::TimeStyle;
-use lastdrop_core::model::{AccountKey, MeterId, MeterKey, ProviderId, catalog};
+use lastdrop_core::model::{AccountKey, MeterKey, MeterNames, ProviderId, catalog};
 use lastdrop_core::secret::SecretString;
 use lastdrop_core::settings::{
     Hotkey, ProviderEntry, ReadoutContent, RefreshInterval, Settings, SourceSettings,
@@ -19,8 +26,10 @@ use lastdrop_core::settings::{
 use lastdrop_providers::io::CredentialName;
 use slint::{ComponentHandle, ModelRc, SharedString, VecModel};
 
-use crate::ui;
-use crate::wiring::{self, App, toggle_in, with_app};
+use crate::dialog::{self, Changes};
+use crate::persist::{self, LoadOutcome, Paths, SavedState};
+use crate::wiring::{self, toggle_in};
+use crate::{AppError, ui};
 
 /// The refresh interval choices: label and minutes (`None` = manual).
 pub const INTERVALS: [(&str, Option<u16>); 7] = [
@@ -75,7 +84,7 @@ fn pins(settings: &Settings) -> Vec<MeterKey> {
 }
 
 /// The meters to list for `settings`: every enabled service's catalogue meters plus the meters
-/// its latest reading reported (Claude's per-model weekly windows), with their labels.
+/// its readings reported (Claude's per-model weekly windows), with their labels.
 pub fn meter_choices(
     settings: &Settings,
     reported: &[(MeterKey, String)],
@@ -106,6 +115,45 @@ pub fn meter_choices(
     out
 }
 
+/// The meters the tray process's readings reported, as it remembers them in `state.json`
+/// (`SavedState::seen`), plus any pinned meter it does not remember, each with a
+/// `{service} {short_name}` label.
+pub fn reported_meters(saved: &SavedState, settings: &Settings) -> Vec<(MeterKey, String)> {
+    let label =
+        |key: &MeterKey, short_name: &str| format!("{} {short_name}", key.provider.display_name());
+    let mut out: Vec<(MeterKey, String)> = saved
+        .seen
+        .iter()
+        .map(|m| (m.key.clone(), label(&m.key, &m.names.short_name)))
+        .collect();
+    for key in pins(settings) {
+        if !out.iter().any(|(k, _)| *k == key) {
+            let short_name = pinned_short_name(&key);
+            out.push((key.clone(), label(&key, &short_name)));
+        }
+    }
+    out
+}
+
+/// The `short_name` of a pinned meter no reading is remembered for: the catalogue's, a per-model
+/// weekly window's (`weekly:fable` → `Fable weekly`), else its id.
+fn pinned_short_name(key: &MeterKey) -> String {
+    if let Some(def) = catalog(key.provider).iter().find(|d| d.id == key.meter.0) {
+        return def.short_name.to_owned();
+    }
+    match key.meter.0.strip_prefix("weekly:") {
+        Some(model) => {
+            let mut chars = model.chars();
+            let model: String = chars
+                .next()
+                .map(|c| c.to_uppercase().chain(chars).collect())
+                .unwrap_or_default();
+            MeterNames::weekly_model(&model).short_name
+        }
+        None => key.meter.0.clone(),
+    }
+}
+
 /// The Meshy API key's credential name for the primary account.
 fn meshy_credential(settings: &Settings) -> CredentialName {
     let name = settings
@@ -123,54 +171,93 @@ fn meshy_credential(settings: &Settings) -> CredentialName {
     }
 }
 
-/// Opens the settings window (created on each open, released by [`close`]); `focus_pins` scrolls to the readout's pins
-/// (tray menu "Taskbar readout ▸ Pinned meters…").
-pub fn open(app: &App, focus_pins: bool) {
-    let created = {
-        let mut slot = app.windows.settings.borrow_mut();
-        if slot.is_none() {
-            match wiring::create_window(false, ui::SettingsWindow::new) {
-                Ok(window) => {
-                    connect(&window);
-                    *slot = Some(window);
-                }
-                Err(e) => {
-                    log::error!("settings window: {e}");
-                    return;
-                }
-            }
+/// The open settings window and what it edits.
+struct Session {
+    /// The window.
+    window: ui::SettingsWindow,
+    /// The draft.
+    draft: RefCell<Draft>,
+    /// The meters the readings reported ([`reported_meters`]), read when the window opened.
+    reported: Vec<(MeterKey, String)>,
+    /// `settings.json`.
+    settings_path: PathBuf,
+}
+
+thread_local! {
+    /// The settings window while it is open (main thread). Callbacks look it up instead of
+    /// capturing it, so closing can take it back.
+    static SESSION: RefCell<Option<Rc<Session>>> = const { RefCell::new(None) };
+}
+
+/// Runs `f` with the open window's session. The `Rc` is cloned out first, so `f` may itself call
+/// `with_session` (no `RefCell` borrow is held while it runs).
+fn with_session(f: impl FnOnce(&Session)) {
+    let session = SESSION.with(|s| s.borrow().clone());
+    if let Some(session) = session {
+        f(&session);
+    }
+}
+
+/// Opens the settings window, created on each open and released by [`close`]: reads
+/// `settings.json` and `state.json`, fills the window and brings it to the front. `focus_pins`
+/// scrolls to the readout's pins (tray menu "Taskbar readout ▸ Pinned meters…"). When the window
+/// is open already it keeps its edits and only comes to the front (and to the pins).
+pub fn open(paths: &Paths, focus_pins: bool) -> Result<(), AppError> {
+    let open = SESSION.with(|s| s.borrow().clone());
+    if let Some(session) = open {
+        let window = &session.window;
+        if focus_pins {
+            show_pins(window);
         }
-        slot.as_ref().map(ComponentHandle::clone_strong)
-    };
-    let Some(window) = created else {
-        return;
-    };
-    let mut settings = app.state.borrow().settings.clone();
+        window.show()?;
+        if focus_pins {
+            window.invoke_show_pins();
+        }
+        dialog::bring_to_front(window.as_weak());
+        return Ok(());
+    }
+
+    let (mut settings, outcome) = persist::load_settings(&paths.settings);
+    log::info!("settings: {outcome:?}");
+    let reported = reported_meters(&persist::load_state(&paths.state), &settings);
     if focus_pins && !matches!(settings.readout.content, ReadoutContent::Pinned(_)) {
         settings.readout.enabled = true;
     }
-    let draft = draft_of(app, settings);
-    populate(app, &window, &draft);
-    window.set_focus_pins(focus_pins);
+    let draft = draft_with(settings, &reported);
+    let window = wiring::create_window(false, ui::SettingsWindow::new)?;
+    connect(&window);
+    let stored = meshy_key_stored(&draft.settings);
+    fill(&window, &draft, &reported, stored);
+    window.set_focus_pins(false);
     if focus_pins {
-        window.set_readout_enabled(true);
-        window.set_readout_content_index(1);
+        show_pins(&window);
     }
     window.set_status_text(SharedString::new());
     window.set_hotkey_error(SharedString::new());
-    *app.rt.settings_draft.borrow_mut() = Some(draft);
+    SESSION.with(|s| {
+        *s.borrow_mut() = Some(Rc::new(Session {
+            window: window.clone_strong(),
+            draft: RefCell::new(draft),
+            reported,
+            settings_path: paths.settings.clone(),
+        }));
+    });
     if let Err(e) = window.show() {
-        log::error!("settings window: {e}");
-        return;
+        release();
+        return Err(e.into());
     }
     if focus_pins {
         window.invoke_show_pins();
     }
+    dialog::bring_to_front(window.as_weak());
+    Ok(())
 }
 
-/// A draft of `settings` with its provider and meter rows.
-fn draft_of(app: &App, settings: Settings) -> Draft {
-    draft_with(settings, &reported_meters(app))
+/// Highlights the readout's pins: the readout on and in pinned mode (Apply saves it so).
+fn show_pins(window: &ui::SettingsWindow) {
+    window.set_focus_pins(true);
+    window.set_readout_enabled(true);
+    window.set_readout_content_index(1);
 }
 
 /// A draft of `settings` with the meters the readings reported.
@@ -192,46 +279,12 @@ pub fn draft_with(settings: Settings, reported: &[(MeterKey, String)]) -> Draft 
     }
 }
 
-/// Meters the latest readings reported, with `{service} {short_name}` labels.
-fn reported_meters(app: &App) -> Vec<(MeterKey, String)> {
-    let st = app.state.borrow();
-    st.sources
-        .iter()
-        .flat_map(|(key, source)| {
-            source.latest.iter().flat_map(move |snap| {
-                let meters = snap
-                    .meters
-                    .iter()
-                    .map(|m| (m.id.clone(), m.names.short_name.clone()));
-                let balances = snap
-                    .balances
-                    .iter()
-                    .map(|b| (b.id.clone(), b.names.short_name.clone()));
-                meters
-                    .chain(balances)
-                    .map(move |(id, short): (MeterId, String)| {
-                        (
-                            MeterKey {
-                                provider: key.provider,
-                                account: key.account.clone(),
-                                meter: id,
-                            },
-                            format!("{} {short}", key.provider.display_name()),
-                        )
-                    })
-            })
-        })
-        .collect()
-}
-
-/// Fills every property of the window from the draft.
-fn populate(app: &App, window: &ui::SettingsWindow, draft: &Draft) {
-    let stored =
-        lastdrop_win::credentials::last_written(&meshy_credential(&draft.settings).target())
-            .ok()
-            .flatten()
-            .is_some();
-    fill(window, draft, &reported_meters(app), stored);
+/// Whether a Meshy key is stored (its credential exists; the secret is not read into the app).
+fn meshy_key_stored(settings: &Settings) -> bool {
+    lastdrop_win::credentials::last_written(&meshy_credential(settings).target())
+        .ok()
+        .flatten()
+        .is_some()
 }
 
 /// Fills every property of the window from the draft, the meters the readings reported and
@@ -286,11 +339,6 @@ pub fn fill(
     }
 }
 
-/// Fills the meter rows of the draft.
-fn set_meters(app: &App, window: &ui::SettingsWindow, draft: &Draft) {
-    fill_meters(window, draft, &reported_meters(app));
-}
-
 /// Fills the meter rows of the draft from the reported meters.
 fn fill_meters(window: &ui::SettingsWindow, draft: &Draft, reported: &[(MeterKey, String)]) {
     let pinned = pins(&draft.settings);
@@ -312,31 +360,19 @@ fn fill_meters(window: &ui::SettingsWindow, draft: &Draft, reported: &[(MeterKey
     window.set_meters(ModelRc::new(VecModel::from(rows)));
 }
 
-/// Runs `f` on the draft and the window, then refreshes the meter rows.
+/// Runs `f` on the draft, then refreshes the meter rows.
 fn edit(f: impl FnOnce(&mut Draft)) {
-    with_app(|app| {
-        let window = app
-            .windows
-            .settings
-            .borrow()
-            .as_ref()
-            .map(ComponentHandle::clone_strong);
-        let Some(window) = window else {
-            return;
-        };
+    with_session(|session| {
         let draft = {
-            let mut slot = app.rt.settings_draft.borrow_mut();
-            let Some(draft) = slot.as_mut() else {
-                return;
-            };
-            f(draft);
-            draft.meters = meter_choices(&draft.settings, &reported_meters(app))
+            let mut draft = session.draft.borrow_mut();
+            f(&mut draft);
+            draft.meters = meter_choices(&draft.settings, &session.reported)
                 .into_iter()
                 .map(|(k, _)| k)
                 .collect();
             draft.clone()
         };
-        set_meters(app, &window, &draft);
+        fill_meters(&session.window, &draft, &session.reported);
     });
 }
 
@@ -388,27 +424,30 @@ fn connect(window: &ui::SettingsWindow) {
             set_pins(&mut draft.settings, current);
         });
     });
-    window.on_set_meshy_key(|key| with_app(|app| store_key(app, &key)));
-    window.on_clear_meshy_key(|| with_app(clear_key));
-    window.on_apply(|| with_app(apply));
-    window.on_dismiss(|| with_app(close));
+    window.on_set_meshy_key(|key| with_session(|session| store_key(session, &key)));
+    window.on_clear_meshy_key(|| with_session(clear_key));
+    window.on_apply(|| with_session(apply));
+    window.on_dismiss(close);
     window.window().on_close_requested(|| {
-        with_app(close);
+        close();
         slint::CloseRequestResponse::HideWindow
     });
 }
 
-/// Closes the settings window (Close button or the title bar's ✕) and releases it. A hidden Slint
-/// window keeps its pixel buffer (480 × 640 × 4 bytes at 100 %) and its item tree, and settings are
-/// opened rarely, so [`open`] builds it again next time. The handle is dropped on the next turn of
-/// the event loop, not inside the window's own callback.
-fn close(app: &App) {
-    *app.rt.settings_draft.borrow_mut() = None;
-    let window = app.windows.settings.borrow_mut().take();
-    if let Some(window) = window {
-        let _ = window.hide();
-        wiring::defer(move |_| drop(window));
+/// Closes the settings window (Close button or the title bar's ✕) and releases it, not inside
+/// the window's own callback ([`dialog::release_later`]). Unapplied edits are dropped. The last
+/// window closing ends the dialog process's event loop.
+fn close() {
+    let session = SESSION.with(|s| s.borrow_mut().take());
+    if let Some(session) = session {
+        let _ = session.window.hide();
+        dialog::release_later(session);
     }
+}
+
+/// Drops the settings window (after the event loop, or when it could not be shown).
+pub fn release() {
+    drop(SESSION.with(|s| s.borrow_mut().take()));
 }
 
 /// Pinned meters, or auto when none is left. Kept while the content mode is auto too, so
@@ -421,89 +460,69 @@ fn set_pins(settings: &mut Settings, pins: Vec<MeterKey>) {
     };
 }
 
-/// Stores the Meshy API key in Credential Manager at once and drops it. A stored key lifts
-/// Meshy's sign-in stop (Meshy has no credential fingerprint, so only this can lift it) and
-/// enables Meshy in the draft.
-fn store_key(app: &App, key: &SharedString) {
+/// Stores the Meshy API key in Credential Manager at once and drops it, then tells the tray
+/// process, which lifts Meshy's sign-in stop (Meshy has no credential fingerprint, so only this
+/// can lift it). Enables Meshy in the draft (Apply saves that).
+fn store_key(session: &Session, key: &SharedString) {
     let secret = SecretString::new(key.trim().to_owned());
     if secret.is_empty() {
         return;
     }
-    let window = app
-        .windows
-        .settings
-        .borrow()
-        .as_ref()
-        .map(ComponentHandle::clone_strong);
-    let credential = meshy_credential(&app.state.borrow().settings);
+    let credential = meshy_credential(&session.draft.borrow().settings);
     let stored = lastdrop_win::credentials::write(&credential.target(), &secret);
     drop(secret);
+    let window = &session.window;
     match stored {
         Ok(()) => {
             log::info!("Meshy API key stored");
-            {
-                let mut st = app.state.borrow_mut();
-                for (k, source) in st.sources.iter_mut() {
-                    if k.provider == ProviderId::Meshy {
-                        source.refresh.auth_stopped = None;
-                        source.refresh.backoff_until = None;
-                        source.status.last_failure = None;
-                        source.status.failure_detail = None;
-                        source.status.sign_in_required = false;
-                    }
-                }
-            }
+            dialog::notify(Changes {
+                meshy_key: true,
+                ..Changes::default()
+            });
             edit(|draft| {
                 if let Some(p) = draft.settings.provider_mut(ProviderId::Meshy) {
                     p.enabled = true;
                 }
             });
-            if let Some(w) = &window {
-                w.set_meshy_key_stored(true);
-                let rows = w.get_providers();
-                let draft = app.rt.settings_draft.borrow().clone();
-                if let Some(draft) = draft {
-                    for (i, id) in draft.providers.iter().enumerate() {
-                        if let Some(mut row) = slint::Model::row_data(&rows, i) {
-                            row.enabled = draft.settings.provider(*id).is_some_and(|p| p.enabled);
-                            slint::Model::set_row_data(&rows, i, row);
-                        }
-                    }
+            window.set_meshy_key_stored(true);
+            let rows = window.get_providers();
+            let draft = session.draft.borrow().clone();
+            for (i, id) in draft.providers.iter().enumerate() {
+                if let Some(mut row) = slint::Model::row_data(&rows, i) {
+                    row.enabled = draft.settings.provider(*id).is_some_and(|p| p.enabled);
+                    slint::Model::set_row_data(&rows, i, row);
                 }
-                w.set_status_text("Key saved. Apply to start reading Meshy.".into());
             }
-            wiring::replan(app);
+            window.set_status_text("Key saved. Apply to start reading Meshy.".into());
         }
         Err(e) => {
             log::warn!("cannot store the Meshy key: {e}");
-            if let Some(w) = &window {
-                w.set_status_text(format!("Couldn't store the key: {e}").into());
-            }
+            window.set_status_text(format!("Couldn't store the key: {e}").into());
         }
     }
 }
 
-/// Removes the stored Meshy API key.
-fn clear_key(app: &App) {
-    let credential = meshy_credential(&app.state.borrow().settings);
-    let window = app
-        .windows
-        .settings
-        .borrow()
-        .as_ref()
-        .map(ComponentHandle::clone_strong);
+/// Removes the stored Meshy API key and tells the tray process, which reads Meshy again (and so
+/// shows that the key is missing).
+fn clear_key(session: &Session) {
+    let credential = meshy_credential(&session.draft.borrow().settings);
+    let window = &session.window;
     let status = match lastdrop_win::credentials::delete(&credential.target()) {
         Ok(()) => {
-            if let Some(w) = &window {
-                w.set_meshy_key_stored(false);
-            }
+            log::info!("Meshy API key removed");
+            window.set_meshy_key_stored(false);
+            dialog::notify(Changes {
+                meshy_key: true,
+                ..Changes::default()
+            });
             "Key removed.".to_owned()
         }
-        Err(e) => format!("Couldn't remove the key: {e}"),
+        Err(e) => {
+            log::warn!("cannot remove the Meshy key: {e}");
+            format!("Couldn't remove the key: {e}")
+        }
     };
-    if let Some(w) = &window {
-        w.set_status_text(status.into());
-    }
+    window.set_status_text(status.into());
 }
 
 /// The hotkey the window describes, or why it is not valid.
@@ -535,54 +554,54 @@ fn hotkey_of(window: &ui::SettingsWindow) -> Result<Option<Hotkey>, String> {
     Ok(Some(hotkey))
 }
 
-/// Apply: commits the draft with the window's fields (state, file, autostart, hotkey, readout).
-fn apply(app: &App) {
-    let window = app
-        .windows
-        .settings
-        .borrow()
-        .as_ref()
-        .map(ComponentHandle::clone_strong);
-    let Some(window) = window else {
-        return;
-    };
-    let Some(mut settings) = app
-        .rt
-        .settings_draft
-        .borrow()
-        .as_ref()
-        .map(|d| d.settings.clone())
-    else {
-        return;
-    };
-    settings.refresh.interval = interval_at(window.get_interval_index());
-    settings.readout.enabled = window.get_readout_enabled();
-    if window.get_readout_content_index() == 0 {
-        settings.readout.content = ReadoutContent::Auto;
+/// The settings Apply writes: every field of the draft, except `pause`, which stays as
+/// `settings.json` has it now. The tray menu owns the pause and may have paused or resumed while
+/// the window was open.
+pub fn apply_onto(draft: Settings, disk: &Settings) -> Settings {
+    Settings {
+        pause: disk.pause,
+        ..draft
     }
-    settings.readout.time_style = if window.get_time_style_index() == 1 {
+}
+
+/// Apply: the draft with the window's fields onto `settings.json` as it is now ([`apply_onto`]);
+/// autostart when "Start Lastdrop when I sign in" changed; a changed hotkey is tested by
+/// registering it here and unregistering it at once (the tray process registers it for real);
+/// the file is written atomically and the tray process is told.
+fn apply(session: &Session) {
+    let window = &session.window;
+    let mut draft = session.draft.borrow().settings.clone();
+    draft.refresh.interval = interval_at(window.get_interval_index());
+    draft.readout.enabled = window.get_readout_enabled();
+    if window.get_readout_content_index() == 0 {
+        draft.readout.content = ReadoutContent::Auto;
+    }
+    draft.readout.time_style = if window.get_time_style_index() == 1 {
         TimeStyle::Relative
     } else {
         TimeStyle::Clock
     };
-    settings.start_with_windows = window.get_start_with_windows();
+    draft.start_with_windows = window.get_start_with_windows();
+
+    let (disk, outcome) = persist::load_settings(&session.settings_path);
+    if !matches!(outcome, LoadOutcome::Loaded) {
+        log::info!("settings before Apply: {outcome:?}");
+    }
+    let mut settings = apply_onto(draft, &disk);
     let mut problems = Vec::new();
-    match hotkey_of(&window) {
+    match hotkey_of(window) {
         Ok(hotkey) => {
             settings.hotkey = hotkey;
             window.set_hotkey_error(SharedString::new());
         }
         Err(why) => {
+            settings.hotkey.clone_from(&disk.hotkey);
             window.set_hotkey_error(why.as_str().into());
             problems.push("the shortcut");
         }
     }
 
-    let previous = app.state.borrow().settings.clone();
-    // The pause may have changed from the tray menu while the window was open.
-    settings.pause = previous.pause;
-
-    if settings.start_with_windows != previous.start_with_windows {
+    if settings.start_with_windows != disk.start_with_windows {
         let changed = if settings.start_with_windows {
             std::env::current_exe().and_then(|exe| lastdrop_win::autostart::enable(&exe))
         } else {
@@ -590,36 +609,35 @@ fn apply(app: &App) {
         };
         if let Err(e) = changed {
             log::warn!("autostart: {e}");
-            settings.start_with_windows = previous.start_with_windows;
-            window.set_start_with_windows(previous.start_with_windows);
+            settings.start_with_windows = disk.start_with_windows;
+            window.set_start_with_windows(disk.start_with_windows);
             problems.push("start with Windows");
         }
     }
-    if settings.hotkey != previous.hotkey {
-        match &settings.hotkey {
-            Some(hotkey) => {
-                if let Some(why) = wiring::register_hotkey(app, hotkey) {
-                    window.set_hotkey_error(why.as_str().into());
-                    problems.push("the shortcut");
-                }
-            }
-            None => {
-                if let Some(old) = app.hotkey.borrow_mut().take() {
-                    old.unregister();
-                }
+    if settings.hotkey != disk.hotkey
+        && let Some(hotkey) = &settings.hotkey
+    {
+        match lastdrop_win::hotkey::register(hotkey, Box::new(|| {})) {
+            Ok(registration) => registration.unregister(),
+            Err(e) => {
+                log::warn!("hotkey: {e}");
+                window.set_hotkey_error(e.to_string().into());
+                settings.hotkey.clone_from(&disk.hotkey);
+                problems.push("the shortcut");
             }
         }
     }
 
-    let allowed = app.readout_allowed(&settings);
-    app.state.borrow_mut().apply_settings(settings.clone());
-    app.readout.set_enabled(allowed);
-    wiring::save_settings(app);
-    if let Some(draft) = app.rt.settings_draft.borrow_mut().as_mut() {
-        draft.settings = settings;
+    if let Err(e) = persist::save_settings(&session.settings_path, &settings) {
+        log::error!("cannot save settings: {e}");
+        window.set_status_text(format!("Couldn't save the settings: {e}").into());
+        return;
     }
-    wiring::rebuild(app, Timestamp::now());
-    wiring::replan(app);
+    dialog::notify(Changes {
+        settings: true,
+        ..Changes::default()
+    });
+    session.draft.borrow_mut().settings = settings;
     let status = if problems.is_empty() {
         "Saved.".to_owned()
     } else {
@@ -631,7 +649,10 @@ fn apply(app: &App) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use lastdrop_core::settings::ProviderSettings;
+    use lastdrop_core::model::MeterId;
+    use lastdrop_core::settings::{Pause, ProviderSettings};
+
+    use crate::persist::SeenMeter;
 
     #[test]
     fn intervals_round_trip_and_snap_to_the_nearest_choice() {
@@ -678,5 +699,86 @@ mod tests {
             meshy_credential(&settings).target(),
             "Lastdrop:meshy:default:api_key"
         );
+    }
+
+    fn claude(meter: MeterId) -> MeterKey {
+        MeterKey {
+            provider: ProviderId::Claude,
+            account: AccountKey::primary(),
+            meter,
+        }
+    }
+
+    #[test]
+    fn reported_meters_come_from_the_state_file_and_the_pins() {
+        let fable = claude(MeterId::weekly_model("fable"));
+        let saved = SavedState {
+            seen: vec![SeenMeter {
+                key: fable.clone(),
+                names: MeterNames::weekly_model("Fable"),
+                balance: false,
+            }],
+            ..SavedState::default()
+        };
+        let opus = claude(MeterId::weekly_model("opus"));
+        let five = claude(MeterId::new(MeterId::FIVE_HOUR));
+        let mut settings = Settings::default();
+        set_pins(
+            &mut settings,
+            vec![fable.clone(), opus.clone(), five.clone()],
+        );
+        let reported = reported_meters(&saved, &settings);
+        assert_eq!(
+            reported,
+            [
+                (fable, "Claude Fable weekly".to_owned()),
+                (opus, "Claude Opus weekly".to_owned()),
+                (five, "Claude 5-hour".to_owned()),
+            ]
+        );
+        assert!(reported_meters(&SavedState::default(), &Settings::default()).is_empty());
+    }
+
+    #[test]
+    fn apply_keeps_the_pause_on_disk_and_takes_everything_else_from_the_draft() {
+        let mut draft = Settings {
+            start_with_windows: true,
+            ..Settings::default()
+        };
+        draft.refresh.interval = RefreshInterval::Minutes(15);
+        draft.readout.enabled = false;
+        draft.hotkey = Some(Hotkey {
+            ctrl: true,
+            alt: true,
+            shift: false,
+            win: false,
+            key: "L".to_owned(),
+        });
+        draft.pause = None;
+        set_pins(&mut draft, vec![claude(MeterId::new(MeterId::WEEKLY))]);
+
+        // The tray menu paused while the window was open; the file also differs elsewhere.
+        let mut disk = Settings {
+            pause: Some(Pause { until: None }),
+            ..Settings::default()
+        };
+        disk.refresh.interval = RefreshInterval::Manual;
+
+        let applied = apply_onto(draft.clone(), &disk);
+        assert_eq!(applied.pause, disk.pause, "the pause stays as on disk");
+        assert_eq!(
+            applied,
+            Settings {
+                pause: disk.pause,
+                ..draft.clone()
+            },
+            "everything else is the draft's"
+        );
+
+        // Resumed from the tray while the window was open: the draft's old pause is not
+        // brought back.
+        let mut paused_draft = draft;
+        paused_draft.pause = Some(Pause { until: None });
+        assert_eq!(apply_onto(paused_draft, &Settings::default()).pause, None);
     }
 }

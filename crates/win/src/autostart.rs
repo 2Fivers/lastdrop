@@ -1,7 +1,8 @@
 //! Start with Windows: `HKCU\Software\Microsoft\Windows\CurrentVersion\Run\Lastdrop`
 //! (ARCHITECTURE "Autostart"). Per user, no elevation.
 //!
-//! Threading: main thread (settings window, first run); registry calls only, no locks held.
+//! Threading: the dialog process's main thread (the settings window's Apply); registry calls
+//! only, no locks held.
 
 use std::ffi::OsString;
 use std::os::windows::ffi::OsStrExt;

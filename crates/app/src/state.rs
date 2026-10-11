@@ -227,6 +227,21 @@ pub fn build_sources(
     sources
 }
 
+/// Lifts the sign-in stop of every source of `provider` (auth stop, back-off, last failure and its
+/// detail, sign-in required), so the next plan reads it again. A new Meshy API key does this:
+/// Meshy has no credential fingerprint, so nothing else can lift its stop.
+pub fn lift_sign_in_stop(sources: &mut BTreeMap<SourceKey, SourceRuntime>, provider: ProviderId) {
+    for (key, source) in sources.iter_mut() {
+        if key.provider == provider {
+            source.refresh.auth_stopped = None;
+            source.refresh.backoff_until = None;
+            source.status.last_failure = None;
+            source.status.failure_detail = None;
+            source.status.sign_in_required = false;
+        }
+    }
+}
+
 /// Applies a worker's result to its source (see [`AppState::apply_result`]). Returns the
 /// snapshot to record in history when a newer reading arrived.
 pub fn apply_to_source(source: &mut SourceRuntime, result: JobResult) -> Option<Snapshot> {
@@ -653,6 +668,30 @@ pub(crate) mod tests {
             refreshing: false,
             providers: Vec::new(),
             saved_seen: SeenMap::new(),
+        }
+    }
+
+    #[test]
+    fn a_new_key_lifts_only_that_services_sign_in_stop() {
+        let providers = [ProviderId::Claude, ProviderId::Meshy];
+        let settings = settings_of(&providers);
+        let mut sources = sources_of(&settings, &providers);
+        let at = ts("2026-10-10T10:42:00Z");
+        for source in sources.values_mut() {
+            source.refresh.auth_stopped = Some(CredentialFingerprint("old".to_owned()));
+            source.refresh.backoff_until = Some(at);
+            source.status.last_failure = Some((at, FailureKind::Auth));
+            source.status.failure_detail = Some("HTTP 401".to_owned());
+            source.status.sign_in_required = true;
+        }
+        lift_sign_in_stop(&mut sources, ProviderId::Meshy);
+        for (key, source) in &sources {
+            let lifted = key.provider == ProviderId::Meshy;
+            assert_eq!(source.refresh.auth_stopped.is_none(), lifted, "{key:?}");
+            assert_eq!(source.refresh.backoff_until.is_none(), lifted, "{key:?}");
+            assert_eq!(source.status.last_failure.is_none(), lifted, "{key:?}");
+            assert_eq!(source.status.failure_detail.is_none(), lifted, "{key:?}");
+            assert_eq!(!source.status.sign_in_required, lifted, "{key:?}");
         }
     }
 

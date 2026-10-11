@@ -102,32 +102,43 @@ pub enum LoadOutcome {
 /// Loads settings; never fails (defaults on any problem, see [`LoadOutcome`]). Unknown fields are
 /// kept (core's schema flattens them).
 pub fn load_settings(path: &Path) -> (Settings, LoadOutcome) {
-    let bytes = match std::fs::read(path) {
-        Ok(bytes) => bytes,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-            return (Settings::default(), LoadOutcome::Missing);
-        }
-        Err(e) => {
-            log::error!("settings unreadable: {e}");
-            return (Settings::default(), set_aside(path));
-        }
-    };
-    let parsed = serde_json::from_slice::<serde_json::Value>(&bytes).and_then(|doc| {
-        let version = version_of(&doc);
-        if version < SETTINGS_VERSION {
-            migrate(doc).map(|s| (s, LoadOutcome::Migrated { from: version }))
-        } else {
-            // The current version, or a newer build's file: unknown fields are kept.
-            serde_json::from_value::<Settings>(doc).map(|s| (s, LoadOutcome::Loaded))
-        }
-    });
-    match parsed {
+    match read_settings(path) {
         Ok(loaded) => loaded,
         Err(e) => {
-            log::error!("settings not understood ({e}); using defaults");
+            if e.kind() == std::io::ErrorKind::InvalidData {
+                log::error!("settings not understood ({e}); using defaults");
+            } else {
+                log::error!("settings unreadable: {e}");
+            }
             (Settings::default(), set_aside(path))
         }
     }
+}
+
+/// Reads settings without side effects: defaults with [`LoadOutcome::Missing`] when there is no
+/// file, [`LoadOutcome::Loaded`] or [`LoadOutcome::Migrated`] otherwise, and an error
+/// (`InvalidData` when the file is not understood) that leaves the file where it is. The tray
+/// process re-reads with it when the dialog process says the file changed; [`load_settings`]
+/// adds setting a broken file aside.
+pub fn read_settings(path: &Path) -> std::io::Result<(Settings, LoadOutcome)> {
+    let bytes = match std::fs::read(path) {
+        Ok(bytes) => bytes,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            return Ok((Settings::default(), LoadOutcome::Missing));
+        }
+        Err(e) => return Err(e),
+    };
+    serde_json::from_slice::<serde_json::Value>(&bytes)
+        .and_then(|doc| {
+            let version = version_of(&doc);
+            if version < SETTINGS_VERSION {
+                migrate(doc).map(|s| (s, LoadOutcome::Migrated { from: version }))
+            } else {
+                // The current version, or a newer build's file: unknown fields are kept.
+                serde_json::from_value::<Settings>(doc).map(|s| (s, LoadOutcome::Loaded))
+            }
+        })
+        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))
 }
 
 /// The `version` of a settings document; a document without one is version 1 (the first
@@ -173,7 +184,8 @@ pub fn settings_bytes(settings: &Settings) -> std::io::Result<Vec<u8>> {
     Ok(bytes)
 }
 
-/// Saves settings atomically ([`write_atomic`], pretty JSON) on the calling thread.
+/// Saves settings atomically ([`write_atomic`], pretty JSON) on the calling thread (the dialog
+/// process's Apply; the tray process queues its saves for the writer thread instead).
 pub fn save_settings(path: &Path, settings: &Settings) -> std::io::Result<()> {
     write_atomic(path, &settings_bytes(settings)?)
 }
@@ -440,6 +452,32 @@ mod tests {
             .map(|e| e.file_name())
             .collect();
         assert_eq!(names, [OsString::from("settings.json")]);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn reading_has_no_side_effects() {
+        let dir = temp_dir("read");
+        let path = dir.join("settings.json");
+        let (s, outcome) = read_settings(&path).expect("missing is not an error");
+        assert_eq!((s, outcome), (Settings::default(), LoadOutcome::Missing));
+        std::fs::write(&path, b"{ not json").expect("write");
+        let e = read_settings(&path).expect_err("corrupt");
+        assert_eq!(e.kind(), std::io::ErrorKind::InvalidData);
+        assert_eq!(
+            std::fs::read(&path).expect("still there"),
+            b"{ not json",
+            "a broken file is left where it is"
+        );
+        let saved = Settings {
+            start_with_windows: true,
+            ..Settings::default()
+        };
+        save_settings(&path, &saved).expect("save");
+        assert_eq!(
+            read_settings(&path).expect("read"),
+            (saved, LoadOutcome::Loaded)
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 

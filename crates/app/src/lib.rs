@@ -2,6 +2,11 @@
 //! between the threads, the refresh scheduler, and settings and history persistence
 //! (ARCHITECTURE "App"). The binary (`src/main.rs`) only sequences start-up.
 //!
+//! Two processes run the same executable (ARCHITECTURE "Processes"): the **tray process**
+//! (always running: tray icon, readout, flyout, hover card, refreshes) and the short-lived
+//! **dialog process** (`--settings`, `--settings-pins`, `--about`: [`dialog`]), so the window
+//! setup a decorated window with text fields costs never stays in the tray process.
+//!
 //! - [`ui`]: the compiled Slint windows and structs (`ui/*.slint`).
 //! - [`state`]: [`state::AppState`], the main thread's state.
 //! - [`scheduler`]: refresh worker threads driven by `lastdrop_core::refresh`.
@@ -13,12 +18,13 @@
 //! - [`demo`]: the built-in demo data of `--preview-flyout --demo` (invented, no I/O).
 //! - [`preview`]: `--preview-flyout`: renders the flyout headless and saves a PNG.
 //! - [`png`]: the minimal PNG writer the preview uses.
-//! - [`settings_window`]: the settings window's draft and callbacks.
+//! - [`dialog`]: the dialog process, the requests between it and the tray process.
+//! - [`settings_window`]: the settings window's draft and callbacks (dialog process).
 //! - [`writer`]: the file writer thread (history appends and compaction, settings and state
 //!   saves, in queue order).
 //!
-//! Threads (ARCHITECTURE "Threads"): **main** owns the Slint event loop, every window, the tray
-//! icon and [`state::AppState`], and never blocks on I/O; the **readout** and **occupancy**
+//! Threads of the tray process (ARCHITECTURE "Threads"): **main** owns the Slint event loop, the
+//! flyout and the hover card, the tray icon and [`state::AppState`], and never blocks on I/O; the **readout** and **occupancy**
 //! threads live in `lastdrop-win`; **refresh workers** ([`scheduler`]) run provider fetches and
 //! never touch UI objects; the **writer** ([`writer`]) does every file write in queue order and
 //! the **log** writer ([`logger`]) the log's. Workers report with
@@ -35,6 +41,7 @@ use std::time::Duration;
 
 pub mod bench;
 pub mod demo;
+pub mod dialog;
 pub mod history;
 pub mod logger;
 pub mod persist;
@@ -80,6 +87,9 @@ pub struct Args {
     pub scale: Option<f64>,
     /// `--dark`: the preview in the dark Windows mode.
     pub dark: bool,
+    /// `--settings`, `--settings-pins` or `--about`: run as the dialog process with that dialog
+    /// ([`dialog`]) instead of the app. The last one given counts.
+    pub dialog: Option<dialog::DialogKind>,
 }
 
 impl Args {
@@ -114,6 +124,9 @@ impl Args {
                     out.demo_scenario = iter.next().and_then(|v| v.to_str().map(str::to_owned));
                 }
                 Some("--dark") => out.dark = true,
+                Some(flag @ ("--settings" | "--settings-pins" | "--about")) => {
+                    out.dialog = dialog::DialogKind::from_flag(flag);
+                }
                 Some("--scale") => {
                     out.scale = iter
                         .next()
@@ -189,6 +202,37 @@ mod tests {
         assert_eq!(p.preview_flyout, Some(PathBuf::from("f.png")));
         assert!(p.demo && p.dark);
         assert_eq!(p.scale, Some(1.5));
+    }
+
+    #[test]
+    fn dialog_flags() {
+        use crate::dialog::DialogKind;
+        assert_eq!(
+            args(&["lastdrop.exe", "--settings"]).dialog,
+            Some(DialogKind::Settings)
+        );
+        assert_eq!(
+            args(&["lastdrop.exe", "--settings-pins"]).dialog,
+            Some(DialogKind::SettingsPins)
+        );
+        assert_eq!(
+            args(&["lastdrop.exe", "--about"]).dialog,
+            Some(DialogKind::About)
+        );
+        assert_eq!(args(&["lastdrop.exe"]).dialog, None);
+        assert_eq!(args(&["--settings"]).dialog, None, "argv[0] is the program");
+        assert_eq!(
+            args(&["x", "--about", "--settings-pins"]).dialog,
+            Some(DialogKind::SettingsPins),
+            "the last one counts"
+        );
+        // Each dialog's own flag parses back to it.
+        for kind in DialogKind::ALL {
+            assert_eq!(args(&["x", kind.flag()]).dialog, Some(kind));
+        }
+        let with_autostart = args(&["x", "--autostart", "--settings"]);
+        assert!(with_autostart.autostart);
+        assert_eq!(with_autostart.dialog, Some(DialogKind::Settings));
     }
 
     #[test]

@@ -1,5 +1,7 @@
 //! A tiny file logger for the `log` facade (no heavy logging stacks): one line per record to
-//! `%LOCALAPPDATA%\Lastdrop\logs\lastdrop.log`, rotated by size, local only, never sent anywhere.
+//! `%LOCALAPPDATA%\Lastdrop\logs\lastdrop.log` (the tray process) or `settings.log` (the dialog
+//! process, [`crate::dialog`]), rotated by size, local only, never sent anywhere. Each process
+//! writes its own file, so the two never share one.
 //!
 //! **Never log a secret** (ARCHITECTURE): callers log no tokens, keys, cookies, account ids or
 //! e-mail addresses; [`redact`] masks known shapes as a second line of defence on every line.
@@ -22,11 +24,17 @@ use std::thread::JoinHandle;
 /// Rotate when the current file reaches 1 MiB.
 pub const MAX_FILE_BYTES: u64 = 1 << 20;
 
-/// Files kept: `lastdrop.log`, `lastdrop.1.log`, `lastdrop.2.log`.
+/// Files kept: `lastdrop.log`, `lastdrop.1.log`, `lastdrop.2.log` (and so on for another stem).
 pub const KEEP_FILES: usize = 3;
 
-/// The log file name.
+/// The tray process's log file name ([`APP_STEM`]).
 pub const FILE_NAME: &str = "lastdrop.log";
+
+/// The tray process's log file stem: `lastdrop.log`, `lastdrop.1.log`, …
+pub const APP_STEM: &str = "lastdrop";
+
+/// The dialog process's log file stem: `settings.log`, `settings.1.log`, …
+pub const DIALOG_STEM: &str = "settings";
 
 /// What the writer thread receives.
 enum Line {
@@ -74,10 +82,15 @@ impl log::Log for FileLogger {
 }
 
 /// Installs the logger at `level` (`log::set_boxed_logger`) and starts its writer thread, which
-/// writes into `dir`.
+/// writes `lastdrop.log` into `dir`.
 pub fn init(dir: &Path, level: log::LevelFilter) -> std::io::Result<()> {
+    init_named(dir, APP_STEM, level)
+}
+
+/// [`init`] for the file `{stem}.log` (rotated to `{stem}.1.log`, …).
+pub fn init_named(dir: &Path, stem: &str, level: log::LevelFilter) -> std::io::Result<()> {
     std::fs::create_dir_all(dir)?;
-    let mut file = LogFile::open(dir.to_path_buf())?;
+    let mut file = LogFile::open(dir.to_path_buf(), stem)?;
     let (tx, rx) = mpsc::channel::<Line>();
     let handle = std::thread::Builder::new()
         .name("lastdrop-log".to_owned())
@@ -106,20 +119,32 @@ pub fn shutdown() {
 /// The open log file and its rotation.
 struct LogFile {
     dir: PathBuf,
+    /// The file name without `.log` (`lastdrop`, `settings`).
+    stem: String,
     out: BufWriter<File>,
     size: u64,
 }
 
 impl LogFile {
-    fn open(dir: PathBuf) -> std::io::Result<LogFile> {
-        let path = dir.join(FILE_NAME);
+    fn open(dir: PathBuf, stem: &str) -> std::io::Result<LogFile> {
+        let path = dir.join(format!("{stem}.log"));
         let file = OpenOptions::new().create(true).append(true).open(&path)?;
         let size = file.metadata().map(|m| m.len()).unwrap_or(0);
         Ok(LogFile {
             dir,
+            stem: stem.to_owned(),
             out: BufWriter::new(file),
             size,
         })
+    }
+
+    /// `{stem}.log` (`n` = 0) or the rotated `{stem}.{n}.log`.
+    fn path(&self, n: usize) -> PathBuf {
+        if n == 0 {
+            self.dir.join(format!("{}.log", self.stem))
+        } else {
+            self.dir.join(format!("{}.{n}.log", self.stem))
+        }
     }
 
     /// The writer loop: block for a line, write it and whatever else is queued, flush.
@@ -159,25 +184,22 @@ impl LogFile {
         }
     }
 
-    /// `lastdrop.1.log` → `lastdrop.2.log`, `lastdrop.log` → `lastdrop.1.log`, new file.
+    /// `lastdrop.1.log` → `lastdrop.2.log`, `lastdrop.log` → `lastdrop.1.log`, new file (the
+    /// same for another stem).
     fn rotate(&mut self) -> std::io::Result<()> {
         self.out.flush()?;
-        let name = |n: usize| {
-            if n == 0 {
-                self.dir.join(FILE_NAME)
-            } else {
-                self.dir.join(format!("lastdrop.{n}.log"))
-            }
-        };
         for n in (1..KEEP_FILES).rev() {
-            let from = name(n - 1);
+            let from = self.path(n - 1);
             if from.exists() {
                 // Windows refuses to rename onto an existing file.
-                let _ = std::fs::remove_file(name(n));
-                std::fs::rename(&from, name(n))?;
+                let _ = std::fs::remove_file(self.path(n));
+                std::fs::rename(&from, self.path(n))?;
             }
         }
-        let file = OpenOptions::new().create(true).append(true).open(name(0))?;
+        let file = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(self.path(0))?;
         self.out = BufWriter::new(file);
         self.size = 0;
         Ok(())
@@ -442,15 +464,21 @@ mod tests {
         }
     }
 
-    #[test]
-    fn writes_rotates_and_stops() {
+    /// A fresh folder under the system temp folder for one test.
+    fn temp_dir(tag: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!(
-            "lastdrop-log-test-{}-{}",
+            "lastdrop-log-test-{tag}-{}-{}",
             std::process::id(),
             jiff::Timestamp::now().as_nanosecond()
         ));
         std::fs::create_dir_all(&dir).expect("dir");
-        let mut file = LogFile::open(dir.clone()).expect("open");
+        dir
+    }
+
+    #[test]
+    fn writes_rotates_and_stops() {
+        let dir = temp_dir("app");
+        let mut file = LogFile::open(dir.clone(), APP_STEM).expect("open");
         let (tx, rx) = mpsc::channel();
         let long = "x".repeat(1000);
         // Enough to rotate twice.
@@ -465,6 +493,26 @@ mod tests {
         assert!(
             !dir.join("lastdrop.3.log").exists(),
             "only three files are kept"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn the_dialog_process_writes_and_rotates_its_own_file() {
+        let dir = temp_dir("dialog");
+        let mut file = LogFile::open(dir.clone(), DIALOG_STEM).expect("open");
+        let (tx, rx) = mpsc::channel();
+        let long = "y".repeat(1000);
+        for _ in 0..(MAX_FILE_BYTES as usize / 1000 + 10) {
+            tx.send(Line::Text(long.clone())).expect("send");
+        }
+        tx.send(Line::Stop).expect("send");
+        file.run(&rx);
+        assert!(dir.join("settings.log").exists());
+        assert!(dir.join("settings.1.log").exists());
+        assert!(
+            !dir.join(FILE_NAME).exists(),
+            "the tray process's file is not touched"
         );
         let _ = std::fs::remove_dir_all(&dir);
     }

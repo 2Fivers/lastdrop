@@ -11,7 +11,10 @@
 //!   context menu is shown with `Tray::show_menu` and returns the chosen command id;
 //! - the optional global hotkey (`lastdrop_win::hotkey`, R§10);
 //! - the second-instance listener (`lastdrop_win::single_instance`: open the flyout);
-//! - Slint callbacks of the flyout, hover card, settings and about windows;
+//! - the settings-changed listener (`lastdrop_win::single_instance`): the dialog process
+//!   ([`crate::dialog`]) wrote `settings.json` or the Meshy key ([`on_settings_changed`]);
+//! - Slint callbacks of the flyout and the hover card (settings and about run in the dialog
+//!   process, which [`open_dialog`] starts);
 //! - the minute tick: a `slint::Timer` at the next local minute boundary + 250 ms (R§12), re-armed
 //!   after every tick, resume and time change;
 //! - the refresh timer: one `slint::Timer` for the scheduler's next wake-up.
@@ -47,7 +50,7 @@ use lastdrop_core::flyout::{
 use lastdrop_core::glyph::{Icon, ProviderGlyph, SeverityGlyph, provider_paths};
 use lastdrop_core::grammar::strings::text;
 use lastdrop_core::grammar::{Msg, Strings};
-use lastdrop_core::model::{MeterKey, SourceKey, catalog};
+use lastdrop_core::model::{MeterKey, ProviderId, SourceKey, catalog};
 use lastdrop_core::readout::bar::{BarGeometry, bar_geometry};
 use lastdrop_core::readout::hovercard::{AlsoLine, CardMeter, HoverCardModel};
 use lastdrop_core::readout::{
@@ -64,7 +67,7 @@ use lastdrop_win::palette::{self, Argb};
 use lastdrop_win::placement::{Placement, TaskbarEdge};
 use lastdrop_win::readout::{ReadoutConfig, ReadoutEvent, ReadoutHandle, SystemEvent};
 use lastdrop_win::render::RenderFactory;
-use lastdrop_win::single_instance::{InstanceGuard, Listener};
+use lastdrop_win::single_instance::{self, InstanceGuard, Listener};
 use lastdrop_win::theme::ThemeInfo;
 use lastdrop_win::tray::{MenuItem, Tray, TrayImage, TrayInput};
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
@@ -77,12 +80,13 @@ use windows::Win32::UI::WindowsAndMessaging::{
     GetCursorPos, GetForegroundWindow, GetWindowThreadProcessId,
 };
 
+use crate::dialog::{self, Changes, DialogKind};
 use crate::history::HistoryStore;
-use crate::persist::Paths;
+use crate::persist::{LoadOutcome, Paths};
 use crate::scheduler::{Job, JobResult, Scheduler, WorkerIo};
 use crate::state::AppState;
 use crate::writer::Writer;
-use crate::{AppError, Args, bench, persist, settings_window, ui};
+use crate::{AppError, Args, bench, persist, ui};
 
 /// What `main` hands over.
 pub struct Startup {
@@ -121,7 +125,7 @@ pub fn defer(f: impl FnOnce(&App) + 'static) {
 }
 
 /// Creates a Slint window with the popup attributes (flyout, hover card) or the default ones
-/// (settings, about).
+/// (settings and about, in the dialog process).
 pub(crate) fn create_window<T>(
     popup: bool,
     new: impl FnOnce() -> Result<T, slint::PlatformError>,
@@ -130,6 +134,36 @@ pub(crate) fn create_window<T>(
     let made = new();
     NEXT_WINDOW_IS_POPUP.with(|p| p.set(false));
     Ok(made?)
+}
+
+/// Selects the Slint backend of both processes: winit with the software renderer. Windows made
+/// with [`create_window`]`(true, …)` get the spike's popup attributes (not active, no taskbar
+/// entry, no decorations, always on top, off-screen, acrylic, round corners); the others winit's
+/// defaults.
+pub(crate) fn select_backend() -> Result<(), AppError> {
+    slint::BackendSelector::new()
+        .backend_name("winit".into())
+        .renderer_name("software".into())
+        .with_winit_window_attributes_hook(|attrs| {
+            use slint::winit_030::winit;
+            use winit::platform::windows::{
+                BackdropType, CornerPreference, WindowAttributesExtWindows,
+            };
+            if !NEXT_WINDOW_IS_POPUP.with(Cell::get) {
+                return attrs;
+            }
+            attrs
+                .with_active(false)
+                .with_skip_taskbar(true)
+                .with_decorations(false)
+                .with_resizable(false)
+                .with_window_level(winit::window::WindowLevel::AlwaysOnTop)
+                .with_position(winit::dpi::PhysicalPosition::new(-32000, -32000))
+                .with_system_backdrop(BackdropType::TransientWindow)
+                .with_corner_preference(CornerPreference::Round)
+        })
+        .select()?;
+    Ok(())
 }
 
 /// Runs the app until "Quit Lastdrop": DPI awareness (the manifest's per-monitor v2), dark menus,
@@ -172,28 +206,7 @@ pub fn run(startup: Startup) -> Result<(), AppError> {
     let state = Rc::new(RefCell::new(state));
 
     // The Slint backend: winit with the software renderer. Popups get the spike's attributes.
-    slint::BackendSelector::new()
-        .backend_name("winit".into())
-        .renderer_name("software".into())
-        .with_winit_window_attributes_hook(|attrs| {
-            use slint::winit_030::winit;
-            use winit::platform::windows::{
-                BackdropType, CornerPreference, WindowAttributesExtWindows,
-            };
-            if !NEXT_WINDOW_IS_POPUP.with(Cell::get) {
-                return attrs;
-            }
-            attrs
-                .with_active(false)
-                .with_skip_taskbar(true)
-                .with_decorations(false)
-                .with_resizable(false)
-                .with_window_level(winit::window::WindowLevel::AlwaysOnTop)
-                .with_position(winit::dpi::PhysicalPosition::new(-32000, -32000))
-                .with_system_backdrop(BackdropType::TransientWindow)
-                .with_corner_preference(CornerPreference::Round)
-        })
-        .select()?;
+    select_backend()?;
 
     let flyout = create_window(true, ui::Flyout::new)?;
     let hover_card = create_window(true, ui::HoverCard::new)?;
@@ -263,6 +276,10 @@ pub fn run(startup: Startup) -> Result<(), AppError> {
             open_flyout(app, anchor, false);
         });
     }))?;
+    // The dialog process says what it changed (settings.json, the Meshy key).
+    let settings_listener = single_instance::listen_settings_changed(Box::new(|flags| {
+        defer(move |app| on_settings_changed(app, Changes::from_wparam(flags)));
+    }))?;
 
     let menu = {
         let st = state.borrow();
@@ -270,18 +287,14 @@ pub fn run(startup: Startup) -> Result<(), AppError> {
     };
     let app = Rc::new(App {
         state,
-        windows: Windows {
-            flyout,
-            hover_card,
-            settings: RefCell::new(None),
-            about: RefCell::new(None),
-        },
+        windows: Windows { flyout, hover_card },
         readout,
         scheduler,
         tray,
         menu: RefCell::new(menu),
         render,
         listener,
+        settings_listener,
         hotkey: RefCell::new(None),
         args: args.clone(),
         paths,
@@ -328,8 +341,8 @@ pub fn run(startup: Startup) -> Result<(), AppError> {
 }
 
 /// The orderly shutdown after the event loop: windows hidden, hotkey unregistered, tray icon
-/// removed (`NIM_DELETE` on drop), the second-instance listener closed, readout joined, queued
-/// refreshes dropped and running ones given `scheduler::SHUTDOWN_WAIT`.
+/// removed (`NIM_DELETE` on drop), the second-instance and settings-changed listeners closed,
+/// readout joined, queued refreshes dropped and running ones given `scheduler::SHUTDOWN_WAIT`.
 fn shutdown() {
     let Some(app) = APP.with(|a| a.borrow_mut().take()) else {
         return;
@@ -351,6 +364,7 @@ fn shutdown() {
                 scheduler,
                 windows,
                 listener,
+                settings_listener,
                 writer,
                 ..
             } = app;
@@ -358,8 +372,9 @@ fn shutdown() {
             // on screen for a process that is ending.
             drop(tray);
             // A second launch from now on finds no listener and exits; it must not signal an
-            // instance whose event loop has ended.
+            // instance whose event loop has ended. Nor may the dialog process.
             drop(listener);
+            drop(settings_listener);
             readout.shutdown();
             // Every queued write (history, settings, state) reaches the disk, within
             // `writer::SHUTDOWN_WAIT`, before the threads end.
@@ -433,7 +448,7 @@ fn setup_popup<T: ComponentHandle + 'static>(weak: slint::Weak<T>, hover: bool, 
 }
 
 /// The Win32 handle of a Slint window (winit backend).
-fn hwnd_of_window(window: &slint::Window) -> Option<HWND> {
+pub(crate) fn hwnd_of_window(window: &slint::Window) -> Option<HWND> {
     let handle = window.window_handle();
     let raw = handle.window_handle().ok()?.as_raw();
     match raw {
@@ -447,17 +462,13 @@ fn hwnd(raw: isize) -> Option<HWND> {
     (raw != 0).then_some(HWND(raw as *mut core::ffi::c_void))
 }
 
-/// The Slint windows. The flyout and the hover card are created hidden at start-up and kept alive
-/// (F§1.1: "open in a few ms"); settings and about exist only while open.
+/// The tray process's Slint windows, created hidden at start-up and kept alive (F§1.1: "open in a
+/// few ms"). Settings and about are windows of the dialog process ([`crate::dialog`]).
 pub struct Windows {
     /// The flyout.
     pub flyout: ui::Flyout,
     /// The hover card.
     pub hover_card: ui::HoverCard,
-    /// The settings window while it is open.
-    pub settings: RefCell<Option<ui::SettingsWindow>>,
-    /// The about window while it is open.
-    pub about: RefCell<Option<ui::AboutWindow>>,
 }
 
 /// A tray menu command (R§10 context menu).
@@ -473,13 +484,13 @@ pub enum MenuCommand {
     Resume,
     /// Taskbar readout ▸ Auto.
     ReadoutAuto,
-    /// Taskbar readout ▸ Pinned meters… (opens settings at the pins).
+    /// Taskbar readout ▸ Pinned meters… (opens settings at the pins, in the dialog process).
     ReadoutPinned,
     /// Taskbar readout ▸ Off.
     ReadoutOff,
-    /// Settings…
+    /// Settings… (the dialog process).
     Settings,
-    /// About Lastdrop (required by Slint's licence).
+    /// About Lastdrop (required by Slint's licence; the dialog process).
     About,
     /// Quit Lastdrop.
     Quit,
@@ -655,8 +666,6 @@ pub struct Runtime {
     pub last_compact: Cell<Option<jiff::civil::Date>>,
     /// `--bench`.
     pub bench: Option<Rc<bench::Bench>>,
-    /// The settings window's draft.
-    pub settings_draft: RefCell<Option<settings_window::Draft>>,
 }
 
 /// Everything the handlers need, shared by the closures of the event loop (main thread only).
@@ -677,6 +686,8 @@ pub struct App {
     pub render: RenderFactory,
     /// The second-instance listener.
     pub listener: Listener,
+    /// The settings-changed listener (the dialog process wrote settings or the Meshy key).
+    pub settings_listener: Listener,
     /// The global hotkey, when set in settings (R§10).
     pub hotkey: RefCell<Option<HotkeyRegistration>>,
     /// Command-line flags.
@@ -1082,9 +1093,9 @@ pub fn on_menu_command(app: &App, command: MenuCommand) {
             save_settings(app);
             rebuild(app, now);
         }
-        MenuCommand::ReadoutPinned => settings_window::open(app, true),
-        MenuCommand::Settings => settings_window::open(app, false),
-        MenuCommand::About => open_about(app),
+        MenuCommand::ReadoutPinned => open_dialog(app, DialogKind::SettingsPins),
+        MenuCommand::Settings => open_dialog(app, DialogKind::Settings),
+        MenuCommand::About => open_dialog(app, DialogKind::About),
         MenuCommand::Quit => {
             hide_flyout(app, false);
             hide_hover_card(app);
@@ -1114,7 +1125,8 @@ pub fn save_settings(app: &App) {
     }
 }
 
-/// Registers the global hotkey (R§10); a failure is logged and shown in the settings window.
+/// Registers the global hotkey (R§10); a failure is logged (the dialog process tested the
+/// combination before saving it, so this fails only when another program took it since).
 pub fn register_hotkey(app: &App, hotkey: &lastdrop_core::settings::Hotkey) -> Option<String> {
     if let Some(old) = app.hotkey.borrow_mut().take() {
         old.unregister();
@@ -1140,44 +1152,76 @@ pub fn register_hotkey(app: &App, hotkey: &lastdrop_core::settings::Hotkey) -> O
     }
 }
 
-/// The about window (R§10 "About Lastdrop", Slint licence), created on each open and released by
-/// [`close_about`].
-fn open_about(app: &App) {
+/// Settings and About (R§10): starts the dialog process ([`dialog::spawn`]; a dialog process
+/// that runs already opens the dialog or brings it to the front), then hides the flyout. In that
+/// order: while the flyout (or the tray menu's window) is still in front this process holds the
+/// foreground right it passes on to the dialog.
+pub fn open_dialog(app: &App, kind: DialogKind) {
+    if let Err(e) = dialog::spawn(kind) {
+        log::error!("cannot start the dialog process ({}): {e}", kind.flag());
+    }
     hide_flyout(app, false);
-    let mut slot = app.windows.about.borrow_mut();
-    if slot.is_none() {
-        match create_window(false, ui::AboutWindow::new) {
-            Ok(window) => {
-                window.set_version(env!("CARGO_PKG_VERSION").into());
-                window.on_dismiss(|| with_app(close_about));
-                window.window().on_close_requested(|| {
-                    with_app(close_about);
-                    slint::CloseRequestResponse::HideWindow
-                });
-                *slot = Some(window);
-            }
-            Err(e) => {
-                log::error!("about window: {e}");
-                return;
+}
+
+/// The dialog process changed something (already deferred to the event loop):
+/// - `settings`: re-read `settings.json` ([`reloaded_settings`]; a missing or broken file is
+///   ignored) and apply it as Apply did in this process: hotkey re-registered when it changed,
+///   providers and sources rebuilt, readout on or off, models rebuilt, refreshes re-planned. The
+///   file is not saved again here (it is the dialog's write, and saving would race it).
+/// - `meshy_key`: lift Meshy's sign-in stop ([`crate::state::lift_sign_in_stop`]) and re-plan.
+pub fn on_settings_changed(app: &App, changes: Changes) {
+    log::info!("the dialog process changed {changes:?}");
+    if changes.settings {
+        let current = app.state.borrow().settings.clone();
+        match reloaded_settings(&current, persist::read_settings(&app.paths.settings)) {
+            Some(settings) => apply_reloaded(app, &current, settings),
+            None => {
+                log::warn!("settings.json is missing or unreadable; keeping the current settings");
             }
         }
     }
-    if let Some(window) = slot.as_ref()
-        && let Err(e) = window.show()
-    {
-        log::error!("about window: {e}");
+    if changes.meshy_key {
+        crate::state::lift_sign_in_stop(&mut app.state.borrow_mut().sources, ProviderId::Meshy);
+    }
+    rebuild(app, Timestamp::now());
+    replan(app);
+}
+
+/// The settings to apply after the dialog process wrote `settings.json`: the file's, with this
+/// process's pause (the tray menu owns it, and a pause queued for the writer thread may not be in
+/// the file yet). `None` when the file is missing or cannot be read or understood: a broken file
+/// never replaces the running settings with defaults (the next start sets it aside).
+pub fn reloaded_settings(
+    current: &Settings,
+    read: std::io::Result<(Settings, LoadOutcome)>,
+) -> Option<Settings> {
+    match read {
+        Ok((settings, LoadOutcome::Loaded | LoadOutcome::Migrated { .. })) => Some(Settings {
+            pause: current.pause,
+            ..settings
+        }),
+        Ok((_, LoadOutcome::Missing | LoadOutcome::Corrupt { .. })) | Err(_) => None,
     }
 }
 
-/// Closes the about window and releases it, like the settings window: a hidden window keeps its
-/// pixel buffer and item tree. Dropped on the next turn of the event loop, not inside its own
-/// callback.
-fn close_about(app: &App) {
-    let window = app.windows.about.borrow_mut().take();
-    if let Some(window) = window {
-        let _ = window.hide();
-        defer(move |_| drop(window));
+/// Applies settings the dialog process saved: hotkey (when it changed), state, readout.
+fn apply_reloaded(app: &App, previous: &Settings, settings: Settings) {
+    if settings.hotkey != previous.hotkey {
+        match &settings.hotkey {
+            Some(hotkey) => {
+                // A failure is logged there.
+                let _ = register_hotkey(app, hotkey);
+            }
+            None => {
+                if let Some(old) = app.hotkey.borrow_mut().take() {
+                    old.unregister();
+                }
+            }
+        }
     }
+    let allowed = app.readout_allowed(&settings);
+    app.state.borrow_mut().apply_settings(settings);
+    app.readout.set_enabled(allowed);
 }
 
 // ---- Flyout ------------------------------------------------------------------------------------------
@@ -1518,12 +1562,7 @@ fn connect_flyout(window: &ui::Flyout) {
         });
     });
     window.on_refresh(|| with_app(|app| refresh_now(app, None)));
-    window.on_open_settings(|| {
-        with_app(|app| {
-            hide_flyout(app, false);
-            settings_window::open(app, false);
-        });
-    });
+    window.on_open_settings(|| with_app(|app| open_dialog(app, DialogKind::Settings)));
     window.on_footer_action(|| with_app(resume));
     window.on_card_refresh(|index| {
         with_app(|app| {
@@ -1573,10 +1612,7 @@ fn on_card_action(app: &App, index: i32) {
     match card.action {
         Some(CardAction::Retry) => refresh_now(app, Some(&card.source)),
         Some(CardAction::Resume) => resume(app),
-        Some(CardAction::OpenSettings) => {
-            hide_flyout(app, false);
-            settings_window::open(app, false);
-        }
+        Some(CardAction::OpenSettings) => open_dialog(app, DialogKind::Settings),
         Some(CardAction::OpenSignIn) => {
             let command = {
                 let st = app.state.borrow();
@@ -2460,6 +2496,71 @@ mod tests {
             _ => false,
         });
         assert!(off_checked);
+    }
+
+    #[test]
+    fn a_reload_ignores_a_missing_or_broken_file_and_keeps_the_pause() {
+        let current = Settings {
+            pause: Some(Pause { until: None }),
+            ..Settings::default()
+        };
+        let mut saved = Settings {
+            start_with_windows: true,
+            ..Settings::default()
+        };
+        saved.readout.enabled = false;
+
+        let loaded = reloaded_settings(&current, Ok((saved.clone(), LoadOutcome::Loaded)))
+            .expect("a clean load applies");
+        assert_eq!(
+            loaded,
+            Settings {
+                pause: current.pause,
+                ..saved.clone()
+            }
+        );
+        assert!(
+            reloaded_settings(
+                &current,
+                Ok((saved.clone(), LoadOutcome::Migrated { from: 0 }))
+            )
+            .is_some()
+        );
+        assert_eq!(
+            reloaded_settings(&current, Ok((Settings::default(), LoadOutcome::Missing))),
+            None,
+            "no file: keep the current settings"
+        );
+        assert_eq!(
+            reloaded_settings(
+                &current,
+                Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    "not json"
+                ))
+            ),
+            None,
+            "a broken file never brings the defaults"
+        );
+        assert_eq!(
+            reloaded_settings(
+                &current,
+                Ok((
+                    Settings::default(),
+                    LoadOutcome::Corrupt {
+                        backup: std::path::PathBuf::from("settings.json.bad-1")
+                    }
+                ))
+            ),
+            None
+        );
+        assert_eq!(
+            reloaded_settings(
+                &current,
+                Err(std::io::Error::from(std::io::ErrorKind::PermissionDenied))
+            ),
+            None
+        );
     }
 
     #[test]
