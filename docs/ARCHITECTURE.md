@@ -101,7 +101,7 @@ fixed order and returns the freshest success; every attempt is logged (without s
 | Provider | Sources, in order |
 |---|---|
 | Claude | Claude Desktop's `plan-usage-history.json` (no token) → OAuth usage endpoint with Claude Code's token, read-only, never refreshed, at most every 5 min, `Retry-After` honoured → Claude Code's cached usage in `.claude.json` |
-| Codex | `codex app-server -c features.plugins=false` (`account/rateLimits/read`, newest bundled or PATH `codex.exe`, no window, 8 s init / 3 s per call; plugins off so no marketplace sync starts) → newest rollout `token_count.rate_limits` |
+| Codex | newest rollout `token_count.rate_limits` while younger than 10 min (nothing started) → `codex app-server -c features.plugins=false` (`account/rateLimits/read`, newest bundled or PATH `codex.exe`, no window, 8 s init / 3 s per call; plugins off so no marketplace sync starts; started at most every 15 min per `CODEX_HOME`, its last answer standing in between) → newest rollout `token_count.rate_limits` |
 | Meshy | `GET https://api.meshy.ai/openapi/v1/balance` with the key from Credential Manager |
 
 Rules for every provider:

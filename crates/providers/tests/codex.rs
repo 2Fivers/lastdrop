@@ -1,7 +1,9 @@
 //! The Codex provider against invented fixtures (tests/fixtures/codex/README.md): app-server
 //! JSON-RPC transcripts through `FakeSpawner`, rollout tails through `FakeFs`.
 
+use std::io;
 use std::path::{Path, PathBuf};
+use std::sync::Mutex;
 use std::time::Duration;
 
 use jiff::{SignedDuration, Timestamp};
@@ -12,9 +14,9 @@ use lastdrop_core::settings::CodexOptions;
 use lastdrop_providers::codex::{
     self, CodexProvider, CodexUsage, CodexWindow, app_server, meter, rollout, to_snapshot,
 };
-use lastdrop_providers::fakes::{FakeLine, Fakes};
-use lastdrop_providers::io::CredentialName;
-use lastdrop_providers::{AccountSource, FetchError, Provider};
+use lastdrop_providers::fakes::{FakeLine, FakeSpawner, Fakes};
+use lastdrop_providers::io::{ChildIo, CredentialName, SpawnSpec, Spawner};
+use lastdrop_providers::{AccountSource, FetchContext, FetchError, Provider};
 use serde_json::Value;
 
 // ---- Fixtures and helpers -------------------------------------------------------------------------
@@ -1127,6 +1129,456 @@ fn rollout_fallback_can_be_turned_off() {
         provider_without_fallback().fetch(&f.context(budget()), &account()),
         Err(FetchError::Unavailable { .. })
     ));
+}
+
+// ---- Pace: a fresh rollout first, the app-server at most every 15 minutes -----------------------
+
+/// The time of `ROLLOUT_TWO_WINDOWS`' last `codex` event.
+const EVENT_AT: &str = "2026-10-10T10:30:01Z";
+
+/// `ROLLOUT_TWO_WINDOWS` as today's session, last written two seconds after its last event.
+fn with_rollout(f: &Fakes) {
+    add_rollout(
+        f,
+        r"2026\10\10",
+        "rollout-2026-10-10T10-20-00-a.jsonl",
+        ROLLOUT_TWO_WINDOWS,
+        ts("2026-10-10T10:30:03Z"),
+    );
+}
+
+fn at(f: &Fakes, when: &str) -> SignedDuration {
+    f.clock.set(ts(when));
+    budget()
+}
+
+/// Runs `hook` whenever it starts a child, then starts it like `FakeSpawner`: what happens while
+/// an app-server runs (Codex renewing its sign-in, the user signing in, another fetch).
+struct HookSpawner<'a, H> {
+    inner: &'a FakeSpawner,
+    hook: H,
+}
+
+impl<H: Fn() + Send + Sync> Spawner for HookSpawner<'_, H> {
+    fn spawn(&self, spec: &SpawnSpec) -> io::Result<Box<dyn ChildIo>> {
+        (self.hook)();
+        self.inner.spawn(spec)
+    }
+}
+
+/// `f.context(budget())` with another spawner.
+fn context_with<'a>(f: &'a Fakes, spawner: &'a dyn Spawner) -> FetchContext<'a> {
+    FetchContext {
+        spawner,
+        ..f.context(budget())
+    }
+}
+
+/// An `auth.json` written a day before [`now`].
+fn with_auth_json(f: &Fakes) -> PathBuf {
+    let auth = codex_home().join("auth.json");
+    f.fs.add_file(
+        &auth,
+        r#"{"auth_mode":"fixture"}"#,
+        now() - SignedDuration::from_hours(24),
+    );
+    auth
+}
+
+/// A spawner that rewrites `auth.json` (dated `now()`) as it starts the child.
+fn rewriting_auth_json<'a>(
+    f: &'a Fakes,
+    auth: &'a Path,
+) -> HookSpawner<'a, impl Fn() + Send + Sync> {
+    HookSpawner {
+        inner: &f.spawner,
+        hook: move || {
+            f.fs.add_file(auth, r#"{"auth_mode":"fixture","renewed":true}"#, now());
+        },
+    }
+}
+
+#[test]
+fn a_rollout_event_younger_than_ten_minutes_is_used_without_starting_the_app_server() {
+    let f = fakes();
+    with_rollout(&f);
+    f.spawner.script(script(WEEKLY_ONLY));
+    let p = provider();
+
+    let budget = at(&f, "2026-10-10T10:39:59Z");
+    let snap = p.fetch(&f.context(budget), &account()).expect("rollout");
+    assert_eq!(snap.source, SourceKind::CodexRollout);
+    assert_eq!(snap.health, Health::Ok, "a fresh event is not cached data");
+    assert_eq!(snap.measured_at, ts(EVENT_AT));
+    assert_eq!(snap.fetched_at, ts("2026-10-10T10:39:59Z"));
+    assert_close(snap.meters[0].used, 0.42);
+    assert!(f.spawner.spawned().is_empty(), "no process started");
+
+    // Ten minutes after the event it is no longer fresh: the app-server is asked.
+    let budget = at(&f, "2026-10-10T10:40:01Z");
+    let snap = p.fetch(&f.context(budget), &account()).expect("app-server");
+    assert_eq!(snap.source, SourceKind::CodexAppServer);
+    assert_eq!(snap.account.plan.as_deref(), Some("Pro Lite"));
+    assert_eq!(f.spawner.spawned().len(), 1);
+}
+
+#[test]
+fn a_fresh_rollout_is_not_read_when_the_rollout_is_off() {
+    let f = fakes();
+    with_rollout(&f);
+    f.spawner.script(script(RATE_LIMITS));
+    let budget = at(&f, "2026-10-10T10:31:00Z");
+    let snap = provider_without_fallback()
+        .fetch(&f.context(budget), &account())
+        .expect("app-server");
+    assert_eq!(snap.source, SourceKind::CodexAppServer);
+    assert_eq!(f.spawner.spawned().len(), 1);
+}
+
+#[test]
+fn freshness_is_judged_from_the_event_time_with_a_minute_of_tolerance_ahead() {
+    let event = CodexUsage {
+        measured_at: Some(ts("2026-10-10T10:30:00Z")),
+        ..usage(Some(window(10.0, Some(300))), None)
+    };
+    let age_at = |now: &str| codex::fresh_age(&event, ts(now));
+    assert_eq!(age_at("2026-10-10T10:30:00Z"), Some(SignedDuration::ZERO));
+    assert_eq!(
+        age_at("2026-10-10T10:39:59Z"),
+        Some(SignedDuration::from_secs(599))
+    );
+    assert_eq!(
+        age_at("2026-10-10T10:40:00Z"),
+        None,
+        "ten minutes is not younger than ten minutes"
+    );
+    assert_eq!(
+        age_at("2026-10-10T10:29:00Z"),
+        Some(SignedDuration::ZERO),
+        "up to a minute ahead of the clock counts as now"
+    );
+    assert_eq!(
+        age_at("2026-10-10T10:28:59Z"),
+        None,
+        "further ahead is not trusted to be fresh"
+    );
+    let undated = CodexUsage {
+        measured_at: None,
+        ..event.clone()
+    };
+    assert_eq!(codex::fresh_age(&undated, ts("2026-10-10T10:30:00Z")), None);
+    assert_eq!(codex::ROLLOUT_FRESH, SignedDuration::from_mins(10));
+    assert_eq!(codex::APP_SERVER_PACE, Duration::from_secs(15 * 60));
+}
+
+#[test]
+fn the_app_server_starts_at_most_every_fifteen_minutes_and_its_answer_stands_in() {
+    let f = fakes();
+    // An older rollout event (10:30:01, 12 minutes before the first fetch): never fresh here,
+    // and older than the app-server's answer.
+    with_rollout(&f);
+    f.spawner
+        .script(script(RATE_LIMITS))
+        .script(script(WEEKLY_ONLY));
+    let p = provider();
+    let first = p
+        .fetch(&f.context(budget()), &account())
+        .expect("first start");
+    assert_eq!(first.source, SourceKind::CodexAppServer);
+    assert_eq!(f.spawner.spawned().len(), 1);
+
+    for later in [
+        SignedDuration::from_mins(5),
+        SignedDuration::from_secs(14 * 60 + 29),
+    ] {
+        f.clock.set(now() + later);
+        let snap = p
+            .clone()
+            .fetch(&f.context(budget()), &account())
+            .expect("stand-in");
+        assert_eq!(snap.source, SourceKind::CodexAppServer, "{later:?}");
+        assert_eq!(snap.measured_at, now(), "the answer keeps its own time");
+        assert_eq!(snap.fetched_at, now() + later);
+        assert_eq!(snap.health, Health::Ok);
+        assert_eq!(snap.meters, first.meters);
+        assert_eq!(snap.account.plan.as_deref(), Some("Plus"));
+        assert_eq!(f.spawner.spawned().len(), 1, "not started at {later:?}");
+    }
+
+    // 15 minutes after the first fetch began, less the 30 s slack: started again.
+    let second = now() + SignedDuration::from_secs(14 * 60 + 30);
+    f.clock.set(second);
+    let snap = p
+        .fetch(&f.context(budget()), &account())
+        .expect("second start");
+    assert_eq!(f.spawner.spawned().len(), 2);
+    assert_eq!(snap.measured_at, second);
+    assert_eq!(
+        snap.account.plan.as_deref(),
+        Some("Pro Lite"),
+        "a new answer"
+    );
+}
+
+#[test]
+fn while_the_app_server_rests_a_newer_rollout_event_wins() {
+    let f = fakes();
+    f.spawner.script(script(RATE_LIMITS));
+    let p = provider();
+    let budget = at(&f, "2026-10-10T10:29:00Z");
+    p.fetch(&f.context(budget), &account()).expect("start");
+
+    // Codex was used at 10:30:01. At 10:41 that event is 11 minutes old (not fresh) but newer
+    // than the app-server's answer from 10:29, which rests until 10:43:30.
+    with_rollout(&f);
+    let budget = at(&f, "2026-10-10T10:41:00Z");
+    let snap = p.fetch(&f.context(budget), &account()).expect("rollout");
+    assert_eq!(snap.source, SourceKind::CodexRollout);
+    assert_eq!(snap.measured_at, ts(EVENT_AT));
+    assert_eq!(snap.health, Health::Stale, "cached values, not live");
+    assert_eq!(f.spawner.spawned().len(), 1);
+}
+
+#[test]
+fn the_pace_is_per_codex_folder_shared_by_accounts_and_clones() {
+    let f = fakes();
+    let work_home = PathBuf::from(r"C:\Users\tester\.codex-work");
+    f.fs.add_file(
+        work_home.join("config.toml"),
+        "model = \"gpt-fixture\"\n",
+        now(),
+    );
+    f.spawner
+        .script(script(RATE_LIMITS))
+        .script(script(WEEKLY_ONLY));
+    let p = provider();
+    p.fetch(&f.context(budget()), &account()).expect("home");
+
+    // Another account entry on the same folder, through a clone: it rests.
+    let alias = AccountSource::Codex {
+        account: AccountKey("alias".to_owned()),
+        codex_home: codex_home(),
+    };
+    f.clock.set(now() + SignedDuration::from_mins(1));
+    let snap = p
+        .clone()
+        .fetch(&f.context(budget()), &alias)
+        .expect("stand-in");
+    assert_eq!(snap.account.key, AccountKey("alias".to_owned()));
+    assert_eq!(snap.source, SourceKind::CodexAppServer);
+    assert_eq!(f.spawner.spawned().len(), 1);
+
+    // Another folder keeps its own pace.
+    let work = AccountSource::Codex {
+        account: AccountKey("work".to_owned()),
+        codex_home: work_home.clone(),
+    };
+    let snap = p.fetch(&f.context(budget()), &work).expect("work");
+    assert_eq!(snap.account.plan.as_deref(), Some("Pro Lite"));
+    let spawned = f.spawner.spawned();
+    assert_eq!(spawned.len(), 2);
+    assert_eq!(spawned[1].cwd.as_deref(), Some(work_home.as_path()));
+}
+
+#[test]
+fn a_new_sign_in_lifts_the_pace() {
+    let f = fakes();
+    let auth = codex_home().join("auth.json");
+    f.fs.add_file(
+        &auth,
+        r#"{"auth_mode":"fixture"}"#,
+        now() - SignedDuration::from_hours(24),
+    );
+    f.spawner
+        .script(script(NOT_SIGNED_IN))
+        .script(script(RATE_LIMITS));
+    let p = provider_without_fallback();
+    let err = p
+        .fetch(&f.context(budget()), &account())
+        .expect_err("signed out");
+    assert!(matches!(err, FetchError::Auth { .. }), "{err:?}");
+
+    // Two minutes later the app-server rests: the same sign-in error, nothing started.
+    f.clock.set(now() + SignedDuration::from_mins(2));
+    let again = p
+        .fetch(&f.context(budget()), &account())
+        .expect_err("resting");
+    assert_eq!(again, err);
+    assert_eq!(f.spawner.spawned().len(), 1);
+
+    // The user signs in again (auth.json rewritten): started at once.
+    f.fs.add_file(
+        &auth,
+        r#"{"auth_mode":"fixture","renewed":true}"#,
+        now() + SignedDuration::from_mins(3),
+    );
+    f.clock.set(now() + SignedDuration::from_mins(4));
+    let snap = p
+        .fetch(&f.context(budget()), &account())
+        .expect("signed in");
+    assert_eq!(snap.source, SourceKind::CodexAppServer);
+    assert_eq!(f.spawner.spawned().len(), 2);
+}
+
+#[test]
+fn the_app_servers_own_sign_in_renewal_does_not_lift_the_pace() {
+    let f = fakes();
+    let auth = with_auth_json(&f);
+    let before = provider().credential_fingerprint(&f.context(budget()), &account());
+    f.spawner
+        .script(script(RATE_LIMITS))
+        .script(script(WEEKLY_ONLY));
+    let p = provider_without_fallback();
+
+    // The app-server renews Codex's sign-in while it runs and answers.
+    let renewing = rewriting_auth_json(&f, &auth);
+    let first = p
+        .fetch(&context_with(&f, &renewing), &account())
+        .expect("start");
+    assert_eq!(first.account.plan.as_deref(), Some("Plus"));
+    let after = p.credential_fingerprint(&f.context(budget()), &account());
+    assert_ne!(after, before, "auth.json was rewritten");
+
+    // Five minutes later the renewal is not taken for a new sign-in: the answer stands in.
+    f.clock.set(now() + SignedDuration::from_mins(5));
+    let snap = p.fetch(&f.context(budget()), &account()).expect("stand-in");
+    assert_eq!(snap.measured_at, now());
+    assert_eq!(snap.account.plan.as_deref(), Some("Plus"));
+    assert_eq!(f.spawner.spawned().len(), 1);
+}
+
+#[test]
+fn a_sign_in_while_a_signed_out_start_runs_lifts_the_pace() {
+    let f = fakes();
+    let auth = with_auth_json(&f);
+    f.spawner
+        .script(script(NOT_SIGNED_IN))
+        .script(script(RATE_LIMITS));
+    let p = provider_without_fallback();
+
+    // auth.json changes while the app-server answers "not signed in": the user signing in.
+    let signing_in = rewriting_auth_json(&f, &auth);
+    let err = p
+        .fetch(&context_with(&f, &signing_in), &account())
+        .expect_err("signed out");
+    assert!(matches!(err, FetchError::Auth { .. }), "{err:?}");
+
+    // A minute later the changed file is a new sign-in: started at once.
+    f.clock.set(now() + SignedDuration::from_mins(1));
+    let snap = p
+        .fetch(&f.context(budget()), &account())
+        .expect("signed in");
+    assert_eq!(snap.source, SourceKind::CodexAppServer);
+    assert_eq!(f.spawner.spawned().len(), 2);
+}
+
+#[test]
+fn a_fetch_while_the_app_server_of_its_folder_runs_does_not_start_another() {
+    let f = fakes();
+    f.spawner
+        .script(script(RATE_LIMITS))
+        .script(script(WEEKLY_ONLY));
+    let p = provider_without_fallback();
+    let alias = AccountSource::Codex {
+        account: AccountKey("alias".to_owned()),
+        codex_home: codex_home(),
+    };
+
+    // While the first start runs, the other account on the same folder is fetched.
+    let during = Mutex::new(None);
+    let concurrent = HookSpawner {
+        inner: &f.spawner,
+        hook: || {
+            let result = p.clone().fetch(&f.context(budget()), &alias);
+            *during.lock().expect("lock") = Some(result);
+        },
+    };
+    let first = p
+        .fetch(&context_with(&f, &concurrent), &account())
+        .expect("start");
+    assert_eq!(first.account.plan.as_deref(), Some("Plus"));
+
+    let during = during
+        .into_inner()
+        .expect("lock")
+        .expect("fetched during the start");
+    let err = during.expect_err("nothing to stand in yet");
+    assert!(
+        matches!(
+            &err,
+            FetchError::Transient {
+                from: SourceKind::CodexAppServer,
+                ..
+            }
+        ),
+        "{err:?}"
+    );
+    assert_eq!(f.spawner.spawned().len(), 1, "one app-server per folder");
+
+    // Afterwards the other account gets the first start's answer.
+    f.clock.set(now() + SignedDuration::from_mins(1));
+    let snap = p.fetch(&f.context(budget()), &alias).expect("stand-in");
+    assert_eq!(snap.account.plan.as_deref(), Some("Plus"));
+    assert_eq!(f.spawner.spawned().len(), 1);
+}
+
+#[test]
+fn a_resting_sign_in_error_still_shows_the_rollout_marked_sign_in_required() {
+    let f = fakes();
+    with_rollout(&f);
+    f.spawner.script(script(NOT_SIGNED_IN));
+    let p = provider();
+    let first = p.fetch(&f.context(budget()), &account()).expect("rollout");
+    assert_eq!(first.health, Health::SignInRequired);
+
+    f.clock.set(now() + SignedDuration::from_mins(5));
+    let snap = p.fetch(&f.context(budget()), &account()).expect("rollout");
+    assert_eq!(snap.source, SourceKind::CodexRollout);
+    assert_eq!(snap.health, Health::SignInRequired, "as after the start");
+    assert_eq!(f.spawner.spawned().len(), 1);
+}
+
+#[test]
+fn a_failed_start_counts_toward_the_pace_but_a_missing_codex_exe_does_not() {
+    let mut f = Fakes::new(now());
+    f.env = f.env.clone().with_var("LOCALAPPDATA", LOCAL_APP_DATA);
+    f.fs.add_file(codex_home().join("config.toml"), "model = \"x\"\n", now());
+    let p = provider_without_fallback();
+    let err = p
+        .fetch(&f.context(budget()), &account())
+        .expect_err("no exe");
+    assert_eq!(err.detail(), "codex.exe not found");
+
+    // Codex is installed a minute later: nothing was started before, so it starts now.
+    f.fs.add_file(bundled_exe("a1b2c3d4e5f60718"), b"MZ".to_vec(), now());
+    f.spawner.script(vec![FakeLine::Timeout]);
+    f.clock.set(now() + SignedDuration::from_mins(1));
+    let failed = p
+        .fetch(&f.context(budget()), &account())
+        .expect_err("timeout");
+    assert_eq!(failed.detail(), "codex app-server timed out");
+    assert_eq!(f.spawner.spawned().len(), 1);
+
+    // The failed start counts: five minutes later its error stands in, nothing is started.
+    f.clock.set(now() + SignedDuration::from_mins(6));
+    let again = p
+        .fetch(&f.context(budget()), &account())
+        .expect_err("resting");
+    assert_eq!(again, failed);
+    assert_eq!(f.spawner.spawned().len(), 1);
+}
+
+#[test]
+fn a_clock_set_back_does_not_hold_the_app_server_back() {
+    let f = fakes();
+    f.spawner
+        .script(script(RATE_LIMITS))
+        .script(script(RATE_LIMITS));
+    let p = provider();
+    p.fetch(&f.context(budget()), &account()).expect("first");
+    f.clock.set(now() - SignedDuration::from_hours(1));
+    p.fetch(&f.context(budget()), &account()).expect("second");
+    assert_eq!(f.spawner.spawned().len(), 2);
 }
 
 // ---- Provider odds and ends ---------------------------------------------------------------------

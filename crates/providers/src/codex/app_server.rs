@@ -573,14 +573,9 @@ fn converse(ctx: &FetchContext<'_>, child: &mut dyn ChildIo) -> Result<CodexUsag
     Ok(usage)
 }
 
-/// [`fetch`] with a known `codex.exe` (or `codex.cmd`): check the account folder → spawn →
-/// converse → kill (always, also on failure).
-pub fn fetch_with(
-    ctx: &FetchContext<'_>,
-    exe: &Path,
-    codex_home: &Path,
-) -> Result<CodexUsage, FetchError> {
-    // Codex exits at once when CODEX_HOME is not an existing folder.
+/// What must hold before a start: the account folder exists (Codex exits at once when
+/// `CODEX_HOME` is not an existing folder) and the fetch has time left. Nothing is started.
+pub fn preflight(ctx: &FetchContext<'_>, codex_home: &Path) -> Result<(), FetchError> {
     if !ctx.fs.metadata(codex_home).is_ok_and(|m| m.is_dir) {
         return Err(FetchError::Unavailable {
             detail: "Codex folder not found".to_owned(),
@@ -589,6 +584,17 @@ pub fn fetch_with(
     if ctx.remaining().is_zero() {
         return Err(transient("timed out"));
     }
+    Ok(())
+}
+
+/// [`fetch`] with a known `codex.exe` (or `codex.cmd`): [`preflight`] → spawn → converse → kill
+/// (always, also on failure).
+pub fn fetch_with(
+    ctx: &FetchContext<'_>,
+    exe: &Path,
+    codex_home: &Path,
+) -> Result<CodexUsage, FetchError> {
+    preflight(ctx, codex_home)?;
     let spec = launch_spec(ctx, exe, codex_home);
     log::debug!("codex app-server: starting {}", exe.display());
     let mut child = ctx.spawner.spawn(&spec).map_err(|e| {
