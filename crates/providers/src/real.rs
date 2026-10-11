@@ -5,8 +5,9 @@
 
 use std::ffi::OsString;
 use std::fmt;
-use std::fs::File;
+use std::fs::{File, OpenOptions};
 use std::io::{self, BufRead, BufReader, Read, Seek, SeekFrom};
+use std::os::windows::fs::{FileExt, OpenOptionsExt};
 use std::os::windows::io::OwnedHandle;
 use std::os::windows::process::CommandExt;
 use std::path::{Path, PathBuf};
@@ -18,7 +19,7 @@ use jiff::Timestamp;
 
 use crate::io::{
     ChildIo, Clock, DirEntry, Env, FileMeta, Fs, HeaderValue, Http, HttpError, HttpRequest,
-    HttpResponse, MAX_BODY_BYTES, Method, SpawnSpec, Spawner, wildcard_match,
+    HttpResponse, MAX_BODY_BYTES, Method, ReadAt, SpawnSpec, Spawner, wildcard_match,
 };
 
 /// The system clock.
@@ -50,6 +51,50 @@ impl Env for RealEnv {
 /// The real file system, read-only.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct RealFs;
+
+/// `FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE`: another process may read, write,
+/// rename and delete the file while [`Fs::open_at`]'s handle is open (std's default too, spelled
+/// out because Chromium's cache needs all three).
+const FILE_SHARE_ALL: u32 = 0x1 | 0x2 | 0x4;
+
+/// A file of [`Fs::open_at`]: positioned reads (`ReadFile` with an offset), no shared cursor.
+struct RealReadAt {
+    file: File,
+    size: u64,
+}
+
+impl ReadAt for RealReadAt {
+    fn size(&self) -> u64 {
+        self.size
+    }
+
+    fn read_exact_at(&mut self, mut offset: u64, mut buf: &mut [u8]) -> io::Result<()> {
+        while !buf.is_empty() {
+            match self.file.seek_read(buf, offset) {
+                Ok(0) => {
+                    return Err(io::Error::new(
+                        io::ErrorKind::UnexpectedEof,
+                        "file ended before the read",
+                    ));
+                }
+                Ok(n) => {
+                    buf = &mut buf[n..];
+                    offset += n as u64;
+                }
+                Err(e) if e.kind() == io::ErrorKind::Interrupted => {}
+                // ReadFile at or past the end of a file reports ERROR_HANDLE_EOF.
+                Err(e) if e.raw_os_error() == Some(38) => {
+                    return Err(io::Error::new(
+                        io::ErrorKind::UnexpectedEof,
+                        "file ended before the read",
+                    ));
+                }
+                Err(e) => return Err(e),
+            }
+        }
+        Ok(())
+    }
+}
 
 fn meta_of(m: &std::fs::Metadata) -> FileMeta {
     let modified = m.modified().ok().and_then(|t| Timestamp::try_from(t).ok());
@@ -94,6 +139,15 @@ impl Fs for RealFs {
         let mut buf = Vec::with_capacity(usize::try_from(len - start).unwrap_or(0));
         file.take(max_len).read_to_end(&mut buf)?;
         Ok(buf)
+    }
+
+    fn open_at(&self, path: &Path) -> io::Result<Box<dyn ReadAt>> {
+        let file = OpenOptions::new()
+            .read(true)
+            .share_mode(FILE_SHARE_ALL)
+            .open(path)?;
+        let size = file.metadata()?.len();
+        Ok(Box::new(RealReadAt { file, size }))
     }
 
     fn metadata(&self, path: &Path) -> io::Result<FileMeta> {

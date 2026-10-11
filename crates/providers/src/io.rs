@@ -1,6 +1,6 @@
-//! The injectable I/O traits of a fetch: [`Clock`], [`Http`], [`Fs`], [`Secrets`], [`Spawner`]
-//! (with [`ChildIo`]) and [`Env`]. Production implementations are in [`crate::real`], test
-//! implementations in [`crate::fakes`].
+//! The injectable I/O traits of a fetch: [`Clock`], [`Http`], [`Fs`] (with [`ReadAt`]),
+//! [`Secrets`], [`Spawner`] (with [`ChildIo`]) and [`Env`]. Production implementations are in
+//! [`crate::real`], test implementations in [`crate::fakes`].
 
 use std::ffi::OsString;
 use std::io;
@@ -179,6 +179,14 @@ pub trait Fs: Send + Sync {
     /// event is at the end (Codex rollouts).
     fn read_tail(&self, path: &Path, max_len: u64) -> io::Result<Vec<u8>>;
 
+    /// The file opened for reads at any offset, for formats that are walked rather than read
+    /// front to back (Chromium's block-file HTTP cache: an index of addresses into block files).
+    /// Opened read-only and sharing read, write **and delete** with every other process, so the
+    /// owner keeps writing, renaming and deleting its files while Lastdrop reads (Chromium opens
+    /// its cache files with `DELETE` access, which a handle without `FILE_SHARE_DELETE` would
+    /// refuse). Nothing is read until asked, so memory stays at what the caller reads.
+    fn open_at(&self, path: &Path) -> io::Result<Box<dyn ReadAt>>;
+
     /// Metadata of a file or directory.
     fn metadata(&self, path: &Path) -> io::Result<FileMeta>;
 
@@ -188,6 +196,16 @@ pub trait Fs: Send + Sync {
     /// The entries of `dir` whose file name matches `pattern` (`*` = any run of characters,
     /// `?` = one character, case-insensitive like Windows), sorted by path.
     fn glob(&self, dir: &Path, pattern: &str) -> io::Result<Vec<DirEntry>>;
+}
+
+/// A file opened by [`Fs::open_at`]: reads at any offset, never writes.
+pub trait ReadAt: Send {
+    /// The file's length when it was opened (another process may grow it meanwhile).
+    fn size(&self) -> u64;
+
+    /// Fills `buf` with the bytes at `offset`; `ErrorKind::UnexpectedEof` when the file ends
+    /// first.
+    fn read_exact_at(&mut self, offset: u64, buf: &mut [u8]) -> io::Result<()>;
 }
 
 /// `*`/`?` wildcard match of a file name, ASCII case-insensitive (used by [`Fs::glob`]

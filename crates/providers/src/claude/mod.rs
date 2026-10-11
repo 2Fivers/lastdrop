@@ -1,14 +1,24 @@
 //! Claude plans: 5-hour session, weekly all models, weekly per model (R§2 table).
 //!
 //! Sources, in order (ARCHITECTURE provider table):
-//! 1. [`desktop`]: Claude Desktop's `plan-usage-history.json` (no token).
-//! 2. [`oauth`]: the OAuth usage endpoint with Claude Code's token — read-only, never refreshed,
-//!    at most every 5 minutes per credential, `Retry-After` honoured, stop on 401 until the
-//!    token file changes.
-//! 3. [`cache`]: Claude Code's cached usage in `.claude.json`.
+//! 1. [`oauth`]: the OAuth usage endpoint with Claude Code's token, when the file holds a usable
+//!    one — read-only, never refreshed, at most every 5 minutes per credential, `Retry-After`
+//!    honoured, stop on 401 until the token file changes.
+//! 2. [`desktop_cache`]: Claude Desktop's own last usage response, from its Chromium HTTP cache
+//!    (no token; read with [`blockfile`] and [`response_info`]).
+//! 3. [`desktop`]: Claude Desktop's `plan-usage-history.json` (no token).
+//! 4. [`cache`]: Claude Code's cached usage in `.claude.json` (no token).
 //!
-//! The provider returns the freshest success (by `measured_at`). Each source parses into a
+//! The provider returns the most recently **measured** success (by `measured_at`). Readings less
+//! than [`SAME_READING`] apart count as one moment, and the earlier source in the order wins:
+//! Claude Desktop writes a history sample when it receives the response its cache keeps, and that
+//! response is the richer reading (reset times, per-model windows). Each source parses into a
 //! [`ClaudeUsage`]; [`to_snapshot`] turns it into meters with the R§2 definitions.
+//!
+//! **Logging.** Every source's outcome is logged at INFO, without secrets or ids: why it was
+//! skipped (file missing, no or expired or rejected token, resting, no usage response, a body that
+//! cannot be decoded, …) or how many windows it read and how old they are; then which reading is
+//! used.
 //!
 //! **Reset times.** Claude Desktop's history has no reset times. When the freshest reading lacks
 //! a window's `resets_at`, the provider takes it from an older reading of this fetch (the cache,
@@ -18,14 +28,14 @@
 //! within a window; one point of slack for the history's whole percentages). Otherwise the
 //! reset stays unknown (R§3.2 "no reset time").
 //!
-//! **401 from the OAuth source** stops only that source, not the account: the desktop history and
-//! the cache need no token and keep being read. The provider remembers, per account, the
-//! `.credentials.json` fingerprint that got the 401 (interior `Mutex`, the trait takes `&self`;
-//! locked only to read or update that map, never across file or HTTP I/O) and skips the OAuth
-//! source until the fingerprint changes. When another source answers, the
-//! snapshot carries `Health::SignInRequired` (the service shows STALE(SIGN_IN), R§3.8); when none
-//! does, the fetch fails with `FetchError::Auth` and the scheduler stops the whole source until
-//! [`Provider::credential_fingerprint`] changes.
+//! **401 from the OAuth source** stops only that source, not the account: Claude Desktop's cache
+//! and history and Claude Code's cached usage need no token and keep being read. The provider
+//! remembers, per account, the `.credentials.json` fingerprint that got the 401 (interior
+//! `Mutex`, the trait takes `&self`; locked only to read or update that map, never across file or
+//! HTTP I/O) and skips the OAuth source until the fingerprint changes. When another source
+//! answers, the snapshot carries `Health::SignInRequired` (the service shows STALE(SIGN_IN),
+//! R§3.8); when none does, the fetch fails with `FetchError::Auth` and the scheduler stops the
+//! whole source until [`Provider::credential_fingerprint`] changes.
 //!
 //! The same memory keeps the OAuth source's own pace: no request less than 5 minutes after the
 //! previous one (the scheduler's minimum covers whole fetches; this covers the source when
@@ -40,9 +50,12 @@
 
 mod json;
 
+pub mod blockfile;
 pub mod cache;
 pub mod desktop;
+pub mod desktop_cache;
 pub mod oauth;
+pub mod response_info;
 
 use std::collections::BTreeMap;
 use std::io;
@@ -112,6 +125,12 @@ pub const OAUTH_MIN_GAP_SLACK: Duration = Duration::from_secs(30);
 /// point, because the desktop history stores whole percentages (**not from the spec**).
 const RESET_FILL_TOLERANCE: f64 = 0.01;
 
+/// Readings of different sources less than this apart count as the same moment, and the earlier
+/// source in the order wins (**not from the spec**): Claude Desktop writes a history sample when
+/// it receives the usage response its HTTP cache keeps, moments apart, and the cached response
+/// has the reset times and per-model windows the sample lacks.
+pub const SAME_READING: SignedDuration = SignedDuration::from_mins(2);
+
 /// The OAuth source's memory for one account (see the module docs).
 #[derive(Clone, Debug, Default)]
 struct OAuthMemory {
@@ -163,6 +182,9 @@ struct OAuthOutcome {
     plan: Option<String>,
     /// The source's last successful answer, a donor of reset times when `result` is an error.
     last_good: Option<ClaudeUsage>,
+    /// What the log adds to the result: why no request was sent (expired token, a remembered
+    /// 401, resting) or that the endpoint rejected the token.
+    note: Option<String>,
 }
 
 /// A successful reading of one source.
@@ -233,6 +255,11 @@ impl ClaudeProvider {
             rejected,
             plan,
             last_good: None,
+            note: None,
+        };
+        let noted = |mut outcome: OAuthOutcome, note: String| {
+            outcome.note = Some(note);
+            outcome
         };
         let credentials = match oauth::read_credentials(ctx, config_dir) {
             Ok(credentials) => credentials,
@@ -240,16 +267,26 @@ impl ClaudeProvider {
         };
         let plan = credentials.plan.clone();
         if memory.rejected {
-            log::debug!("claude: OAuth usage skipped: token rejected, waiting for a new one");
-            return (outcome(Err(FetchError::Auth { from }), true, plan), memory);
+            let note = "the token was rejected (HTTP 401); waiting for Claude Code to renew it";
+            let rejected = outcome(Err(FetchError::Auth { from }), true, plan);
+            return (noted(rejected, note.to_owned()), memory);
         }
         let now = ctx.clock.now();
         let token = match credentials.usable_token(now) {
             Ok(token) => token,
+            Err(e @ FetchError::Auth { .. }) => {
+                let note = "Claude Code's token has expired; Claude Code renews it when it next \
+                            runs";
+                return (noted(outcome(Err(e), false, plan), note.to_owned()), memory);
+            }
             Err(e) => return (outcome(Err(e), false, plan), memory),
         };
         if let Some(until) = memory.rest_until.filter(|until| now < *until) {
-            log::debug!("claude: OAuth usage resting until {until}");
+            let note = if memory.throttled > 0 {
+                format!("backing off after HTTP 429/403 until {until}")
+            } else {
+                format!("resting until {until} (at most one request per 5 minutes)")
+            };
             let retry_after = Duration::try_from(until.duration_since(now)).ok();
             let result = memory.last.clone().unwrap_or(Err(if memory.throttled > 0 {
                 FetchError::RateLimited { from, retry_after }
@@ -260,7 +297,7 @@ impl ClaudeProvider {
                     retry_after,
                 }
             }));
-            return (outcome(result, false, plan), memory);
+            return (noted(outcome(result, false, plan), note), memory);
         }
 
         if ctx.remaining().is_zero() {
@@ -293,7 +330,12 @@ impl ClaudeProvider {
         }
         memory.last = Some(result.clone());
         let rejected = memory.rejected;
-        (outcome(result, rejected, plan), memory)
+        let sent = outcome(result, rejected, plan);
+        if rejected {
+            let note = "the endpoint rejected the token (HTTP 401)".to_owned();
+            return (noted(sent, note), memory);
+        }
+        (sent, memory)
     }
 }
 
@@ -319,32 +361,23 @@ impl Provider for ClaudeProvider {
             });
         };
         let options = &self.options;
-        if !(options.desktop_history || options.oauth_usage || options.cached_usage) {
+        if !(options.oauth_usage
+            || options.desktop_cache
+            || options.desktop_history
+            || options.cached_usage)
+        {
             return Err(FetchError::Unavailable {
                 detail: "every Claude source is turned off".to_owned(),
             });
         }
         let started = ctx.clock.now();
-        let mut readings = Vec::new();
-        let mut failures = Vec::new();
+        let mut found = Readings::default();
         let mut rejected = false;
         let mut plan = None;
+        let no_desktop = || FetchError::Unavailable {
+            detail: "Claude Desktop's data folder not found".to_owned(),
+        };
 
-        if options.desktop_history {
-            let result = match desktop_dir {
-                Some(dir) => desktop::read(ctx, dir),
-                None => Err(FetchError::Unavailable {
-                    detail: "Claude Desktop's data folder not found".to_owned(),
-                }),
-            };
-            collect(
-                ctx,
-                SourceKind::ClaudeDesktopHistory,
-                result,
-                &mut readings,
-                &mut failures,
-            );
-        }
         // Older answers that only lend reset times (module docs, "Reset times").
         let mut donors = Vec::new();
         if options.oauth_usage {
@@ -361,24 +394,41 @@ impl Provider for ClaudeProvider {
                     measured_at,
                 });
             }
-            collect(
+            found.collect(
                 ctx,
                 SourceKind::ClaudeOAuthUsage,
                 outcome.result,
-                &mut readings,
-                &mut failures,
+                outcome.note,
             );
+        }
+        if options.desktop_cache {
+            let (result, note) = match desktop_dir {
+                Some(dir) => match desktop_cache::read_detailed(ctx, dir) {
+                    Ok(cached) => {
+                        let note = cached.note();
+                        (Ok(cached.usage), Some(note))
+                    }
+                    Err(e) => (Err(e), None),
+                },
+                None => (Err(no_desktop()), None),
+            };
+            found.collect(ctx, SourceKind::ClaudeDesktopCache, result, note);
+        }
+        if options.desktop_history {
+            let result = match desktop_dir {
+                Some(dir) => desktop::read(ctx, dir),
+                None => Err(no_desktop()),
+            };
+            found.collect(ctx, SourceKind::ClaudeDesktopHistory, result, None);
         }
         if options.cached_usage {
             let result = cache::read(ctx, state_file);
-            collect(
-                ctx,
-                SourceKind::ClaudeCodeCache,
-                result,
-                &mut readings,
-                &mut failures,
-            );
+            found.collect(ctx, SourceKind::ClaudeCodeCache, result, None);
         }
+        let Readings {
+            mut readings,
+            failures,
+        } = found;
 
         let fetched_at = ctx.clock.now();
         let Some(best) = freshest(&readings) else {
@@ -402,10 +452,11 @@ impl Provider for ClaudeProvider {
         } else {
             Health::Ok
         };
-        log::debug!(
-            "claude: using {:?}, measured {} ({} meters, health {:?})",
+        log::info!(
+            "claude: using {:?}, measured {} ({}), {} meters, health {:?}",
             snapshot.source,
             snapshot.measured_at,
+            age_text(age),
             snapshot.meters.len(),
             snapshot.health
         );
@@ -475,44 +526,100 @@ fn fingerprint_of(ctx: &FetchContext<'_>, config_dir: &Path) -> Option<Credentia
     }
 }
 
-/// Records one source's result: a success becomes a candidate (`measured_at` defaults to now),
-/// a failure is kept for [`most_telling`]. Every attempt is logged, without secrets.
-fn collect(
-    ctx: &FetchContext<'_>,
-    source: SourceKind,
-    result: Result<ClaudeUsage, FetchError>,
-    readings: &mut Vec<Candidate>,
-    failures: &mut Vec<FetchError>,
-) {
-    match result {
-        Ok(mut usage) => {
-            let measured_at = *usage.measured_at.get_or_insert_with(|| ctx.clock.now());
-            log::debug!(
-                "claude: {source:?} read {} windows measured {measured_at}",
-                usage.windows.len()
-            );
-            readings.push(Candidate {
-                source,
-                usage,
-                measured_at,
-            });
-        }
-        Err(e @ FetchError::Unavailable { .. }) => {
-            log::debug!("claude: {source:?} unavailable: {e}");
-            failures.push(e);
-        }
-        Err(e) => {
-            log::info!("claude: {source:?} failed: {e}");
-            failures.push(e);
+/// The sources' results of one fetch.
+#[derive(Default)]
+struct Readings {
+    /// Successes, in source order.
+    readings: Vec<Candidate>,
+    /// Failures, in source order, for [`most_telling`].
+    failures: Vec<FetchError>,
+}
+
+impl Readings {
+    /// Records one source's result: a success becomes a candidate (`measured_at` defaults to
+    /// now), a failure is kept for [`most_telling`]. Logged at INFO either way, without secrets
+    /// or ids (module docs, "Logging"); `note` says more than the result does (why the OAuth
+    /// source sent no request, the cache's content coding).
+    fn collect(
+        &mut self,
+        ctx: &FetchContext<'_>,
+        source: SourceKind,
+        result: Result<ClaudeUsage, FetchError>,
+        note: Option<String>,
+    ) {
+        let note = note.map(|n| format!("; {n}")).unwrap_or_default();
+        match result {
+            Ok(mut usage) => {
+                let now = ctx.clock.now();
+                let measured_at = *usage.measured_at.get_or_insert(now);
+                log::info!(
+                    "claude: {source:?}: read {} windows measured {measured_at} ({}){note}",
+                    usage.windows.len(),
+                    age_text(now.duration_since(measured_at))
+                );
+                self.readings.push(Candidate {
+                    source,
+                    usage,
+                    measured_at,
+                });
+            }
+            Err(e) => {
+                log::info!("claude: {source:?}: skipped: {}{note}", reason(&e));
+                self.failures.push(e);
+            }
         }
     }
 }
 
-/// The index of the reading with the latest `measured_at`; on a tie the earlier source wins.
+/// Why a source gave nothing, for the log: the error's own detail, without the source's name
+/// (the log line has it).
+fn reason(error: &FetchError) -> String {
+    match error {
+        FetchError::Auth { .. } => "sign-in expired or rejected".to_owned(),
+        FetchError::RateLimited {
+            retry_after: Some(wait),
+            ..
+        } => format!("rate limited, retry after {} s", wait.as_secs()),
+        FetchError::RateLimited { .. } => "rate limited".to_owned(),
+        FetchError::Offline { .. } => "offline".to_owned(),
+        FetchError::Transient { detail, .. } => format!("failed for now: {detail}"),
+        FetchError::Parse { detail, .. } => format!("unreadable: {detail}"),
+        FetchError::Unavailable { detail } => detail.clone(),
+    }
+}
+
+/// A reading's age for the log: `40 s old`, `12 min old`, `3 h 5 min old`, `2 d 4 h old`.
+fn age_text(age: SignedDuration) -> String {
+    let secs = age.as_secs();
+    if secs < 0 {
+        return "dated in the future".to_owned();
+    }
+    let (mins, hours, days) = (secs / 60, secs / 3600, secs / 86_400);
+    if secs < 60 {
+        format!("{secs} s old")
+    } else if mins < 120 {
+        format!("{mins} min old")
+    } else if hours < 48 {
+        format!("{hours} h {} min old", mins % 60)
+    } else {
+        format!("{days} d {} h old", hours % 24)
+    }
+}
+
+/// The index of the most recently measured reading. A reading counts as newer only when it is
+/// [`SAME_READING`] or more after the best so far, so of readings of one moment the earlier
+/// source in the order wins.
 fn freshest(readings: &[Candidate]) -> Option<usize> {
     let mut best: Option<usize> = None;
     for (i, reading) in readings.iter().enumerate() {
-        if best.is_none_or(|b| reading.measured_at > readings[b].measured_at) {
+        let newer = |b: usize| {
+            let same_until = readings[b]
+                .measured_at
+                .checked_add(SAME_READING)
+                .unwrap_or(Timestamp::MAX);
+            reading.measured_at >= same_until
+        };
+        if best.is_none_or(newer) {
             best = Some(i);
         }
     }

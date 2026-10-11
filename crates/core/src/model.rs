@@ -453,6 +453,8 @@ pub enum Unit {
 pub enum SourceKind {
     /// Claude Desktop's `plan-usage-history.json` (no token needed).
     ClaudeDesktopHistory,
+    /// Claude Desktop's own usage response in its Chromium HTTP cache (no token needed).
+    ClaudeDesktopCache,
     /// The OAuth usage endpoint with Claude Code's token (read-only, never refreshed).
     ClaudeOAuthUsage,
     /// Claude Code's cached usage in `.claude.json`.

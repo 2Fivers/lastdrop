@@ -3,7 +3,10 @@
 //! [`FakeSecrets`], [`FakeSpawner`] (scripted child output, records input) and [`FakeEnv`].
 //!
 //! All data given to these fakes in tests is invented (`tests/fixtures/<provider>/README.md`):
-//! never a real token, log or usage file.
+//! never a real token, log or usage file. [`chromium_cache`] builds invented Chromium HTTP caches
+//! into a [`FakeFs`].
+
+pub mod chromium_cache;
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::ffi::OsString;
@@ -18,7 +21,7 @@ use lastdrop_core::secret::SecretString;
 use crate::FetchContext;
 use crate::io::{
     ChildIo, Clock, CredentialName, DirEntry, Env, FileMeta, Fs, Http, HttpError, HttpRequest,
-    HttpResponse, Method, Secrets, SecretsError, SpawnSpec, Spawner, wildcard_match,
+    HttpResponse, Method, ReadAt, Secrets, SecretsError, SpawnSpec, Spawner, wildcard_match,
 };
 
 fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -178,6 +181,26 @@ impl FakeFs {
     }
 }
 
+/// A file of [`FakeFs::open_at`].
+struct FakeReadAt(Vec<u8>);
+
+impl ReadAt for FakeReadAt {
+    fn size(&self) -> u64 {
+        self.0.len() as u64
+    }
+
+    fn read_exact_at(&mut self, offset: u64, buf: &mut [u8]) -> io::Result<()> {
+        let bytes = usize::try_from(offset)
+            .ok()
+            .and_then(|start| self.0.get(start..)?.get(..buf.len()))
+            .ok_or_else(|| {
+                io::Error::new(io::ErrorKind::UnexpectedEof, "FakeFs: read past the end")
+            })?;
+        buf.copy_from_slice(bytes);
+        Ok(())
+    }
+}
+
 const DIR_META: FileMeta = FileMeta {
     len: 0,
     modified: None,
@@ -209,6 +232,13 @@ impl Fs for FakeFs {
             .unwrap_or(usize::MAX)
             .min(file.data.len());
         Ok(file.data[file.data.len() - keep..].to_vec())
+    }
+
+    /// A snapshot of the file: later changes to the fake file system are not seen through it.
+    fn open_at(&self, path: &Path) -> io::Result<Box<dyn ReadAt>> {
+        let files = lock(&self.files);
+        let file = files.get(path).ok_or_else(|| FakeFs::not_found(path))?;
+        Ok(Box::new(FakeReadAt(file.data.clone())))
     }
 
     fn metadata(&self, path: &Path) -> io::Result<FileMeta> {

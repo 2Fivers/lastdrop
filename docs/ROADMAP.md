@@ -24,7 +24,7 @@ _researching_ are being verified against primary sources before anything is buil
 
 | Service | What Lastdrop shows | Where the data comes from | Status |
 |---|---|---|---|
-| **Claude Code / Claude plans** | 5-hour session, weekly, per-model weekly, extra usage; tokens and estimated cost per day/model/project | Claude Desktop's plan-usage history (no token) → OAuth usage endpoint with Claude Code's token (read-only) → Claude Code's cached usage; local transcripts for statistics | Researched |
+| **Claude Code / Claude plans** | 5-hour session, weekly, per-model weekly, extra usage; tokens and estimated cost per day/model/project | OAuth usage endpoint with Claude Code's token (read-only) → Claude Desktop's last usage response in its HTTP cache (no token) → Claude Desktop's plan-usage history (no token) → Claude Code's cached usage; local transcripts for statistics | Researched |
 | **Codex** | 5-hour / weekly windows (whichever the plan has), credits; tokens per day/model | `codex app-server` `account/rateLimits/read` (official) → session logs offline | Researched |
 | **GitHub Copilot** | Premium requests or AI Credits used vs allowance, reset date; usage per day/model | `copilot_internal/user` with the `gh auth token`; official billing usage API for statistics. Monthly plans since 2026-06-01: the user enters the allowance once | Researched |
 | **Meshy** | Credit balance, burn rate, days left | Official `GET /openapi/v1/balance` with an API key | Researched |

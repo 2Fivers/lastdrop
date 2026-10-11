@@ -1,17 +1,18 @@
 //! The production I/O through its public traits, without network access: `RealSpawner` with
-//! `cmd.exe` children (no window, killed by the tests) and the parts of `UreqHttp` that need no
-//! server. Loopback HTTP, job objects and line reading are unit-tested in `src/real.rs`.
+//! `cmd.exe` children (no window, killed by the tests), `RealFs::open_at` on a file of its own in
+//! the temp folder, and the parts of `UreqHttp` that need no server. Loopback HTTP, job objects
+//! and line reading are unit-tested in `src/real.rs`.
 
 use std::ffi::OsString;
-use std::io::ErrorKind;
+use std::io::{ErrorKind, Write};
 use std::path::PathBuf;
 use std::time::Duration;
 
 use lastdrop_core::secret::SecretString;
 use lastdrop_providers::io::{
-    HeaderValue, Http, HttpError, HttpRequest, Method, SpawnSpec, Spawner,
+    Fs, HeaderValue, Http, HttpError, HttpRequest, Method, SpawnSpec, Spawner,
 };
-use lastdrop_providers::real::{RealSpawner, UreqHttp};
+use lastdrop_providers::real::{RealFs, RealSpawner, UreqHttp};
 
 fn cmd_exe() -> PathBuf {
     let root = std::env::var_os("SystemRoot").unwrap_or_else(|| OsString::from(r"C:\Windows"));
@@ -103,6 +104,54 @@ fn kill_is_idempotent_and_a_killed_child_reads_as_ended() {
         child.write_line("late").expect_err("killed").kind(),
         ErrorKind::BrokenPipe
     );
+}
+
+#[test]
+fn files_open_for_reads_at_any_offset_and_never_block_the_owner() {
+    let dir = std::env::temp_dir().join(format!("lastdrop-open-at-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).expect("temp folder");
+    let path = dir.join("data_1");
+    let data: Vec<u8> = (0..=255u8).cycle().take(10_000).collect();
+    std::fs::write(&path, &data).expect("write");
+
+    let mut file = RealFs.open_at(&path).expect("open");
+    assert_eq!(file.size(), 10_000);
+    let mut buf = [0u8; 300];
+    file.read_exact_at(8192, &mut buf).expect("read");
+    assert_eq!(&buf[..], &data[8192..8492]);
+    file.read_exact_at(0, &mut buf[..4]).expect("read");
+    assert_eq!(&buf[..4], &[0, 1, 2, 3]);
+    assert_eq!(
+        file.read_exact_at(9_900, &mut buf)
+            .expect_err("past the end")
+            .kind(),
+        ErrorKind::UnexpectedEof
+    );
+    assert_eq!(
+        file.read_exact_at(1 << 40, &mut buf)
+            .expect_err("far past the end")
+            .kind(),
+        ErrorKind::UnexpectedEof
+    );
+
+    // While Lastdrop's handle is open the owner writes, renames and deletes (Chromium opens its
+    // cache files with DELETE access).
+    std::fs::OpenOptions::new()
+        .write(true)
+        .open(&path)
+        .expect("another writer")
+        .write_all(b"owner")
+        .expect("write");
+    let moved = dir.join("data_1.old");
+    std::fs::rename(&path, &moved).expect("rename while open");
+    std::fs::remove_file(&moved).expect("delete while open");
+    drop(file);
+
+    assert_eq!(
+        RealFs.open_at(&path).err().expect("gone").kind(),
+        ErrorKind::NotFound
+    );
+    std::fs::remove_dir(&dir).expect("clean up");
 }
 
 #[test]

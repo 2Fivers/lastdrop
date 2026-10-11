@@ -53,6 +53,13 @@ jiff = { version = "=0.2.38", default-features = false, features = ["std", "serd
 # HTTP: blocking, no async runtime, TLS through SChannel (native-tls) with the system roots.
 ureq = { version = "=3.4.2", default-features = false, features = ["native-tls-no-default"] }
 
+# Decoders for bodies in Claude Desktop's Chromium HTTP cache (content codings and the cache's own
+# zstd), all pure Rust: no C toolchain, nothing that runs outside safe code we can audit.
+# ruzstd's default `hash` feature verifies zstd content checksums.
+ruzstd = { version = "=0.9.0" }
+brotli-decompressor = { version = "=6.0.1", default-features = false, features = ["std"] }
+flate2 = { version = "=1.1.10", default-features = false, features = ["rust_backend"] }
+
 # Errors and logging (our own tiny file logger lives in crates/app/src/logger.rs).
 thiserror = "=2.0.21"
 log = { version = "=0.4.34", features = ["std"] }

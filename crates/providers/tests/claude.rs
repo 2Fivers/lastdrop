@@ -1,5 +1,6 @@
-//! The Claude provider and its three sources against invented fixtures
-//! (tests/fixtures/claude/README.md). No test touches the real file system or network.
+//! The Claude provider and its OAuth, Desktop-history and `.claude.json` sources against invented
+//! fixtures (tests/fixtures/claude/README.md); the Desktop cache source is in `desktop_cache.rs`.
+//! No test touches the real file system or network.
 
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};

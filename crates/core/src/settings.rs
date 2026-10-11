@@ -269,6 +269,8 @@ pub struct ProviderOptions {
 pub struct ClaudeOptions {
     /// Read Claude Desktop's `plan-usage-history.json` (no token).
     pub desktop_history: bool,
+    /// Read Claude Desktop's last usage response from its HTTP cache (no token).
+    pub desktop_cache: bool,
     /// Call the OAuth usage endpoint with Claude Code's token (read-only, ≥ 5 min apart).
     pub oauth_usage: bool,
     /// Fall back to Claude Code's cached usage in `.claude.json`.
@@ -282,6 +284,7 @@ impl Default for ClaudeOptions {
     fn default() -> ClaudeOptions {
         ClaudeOptions {
             desktop_history: true,
+            desktop_cache: true,
             oauth_usage: true,
             cached_usage: true,
             extra: Extra::new(),

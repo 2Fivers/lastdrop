@@ -16,9 +16,8 @@
 //! (extra usage) have no R§2 meter and are ignored. Samples are about 15 minutes apart, ascending,
 //! kept 30 days. **Samples carry utilization only, no reset times**: the readings this source gives
 //! have `resets_at: None` (the provider fills them in from another source's reading of the same
-//! window instance when it has one). Desktop keeps the full usage response with `resets_at` only in
-//! Chromium's HTTP cache (`Cache\Cache_Data`, block-file format, zstd-compressed bodies), which
-//! Lastdrop does not read.
+//! window instance when it has one). Desktop keeps the full usage response with `resets_at` in
+//! Chromium's HTTP cache (`Cache\Cache_Data`), which [`super::desktop_cache`] reads.
 //!
 //! The organisation id is skipped while parsing: never kept or logged.
 //! Fixtures are written by hand from that shape with invented values

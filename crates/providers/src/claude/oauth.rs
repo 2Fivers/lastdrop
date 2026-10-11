@@ -246,14 +246,20 @@ fn retry_after(response: &HttpResponse, now: Timestamp) -> Option<Duration> {
 /// skipped. A body with no R§2 window at all is a Parse error (a changed format must not read as
 /// "no limits"). `measured_at` is `None`: the body carries no time.
 pub fn parse(body: &[u8]) -> Result<ClaudeUsage, FetchError> {
+    parse_from(body, FROM)
+}
+
+/// [`parse`] for another source that holds the same body (Claude Desktop's cached copy): errors
+/// name `from`.
+pub(crate) fn parse_from(body: &[u8], from: SourceKind) -> Result<ClaudeUsage, FetchError> {
     let body: UsageBody = serde_json::from_slice(body).map_err(|e| FetchError::Parse {
-        from: FROM,
+        from,
         detail: json_detail("usage response", &e),
     })?;
     let windows = body.windows();
     if windows.is_empty() {
         return Err(FetchError::Parse {
-            from: FROM,
+            from,
             detail: "no usage windows in the response".to_owned(),
         });
     }
