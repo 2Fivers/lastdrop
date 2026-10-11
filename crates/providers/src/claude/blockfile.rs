@@ -31,11 +31,22 @@
 //! [`super::response_info`]) in stream 0 and the body as stored in stream 1.
 //!
 //! **Read-only and bounded.** Every file is opened with [`Fs::open_at`] (read-only, sharing
-//! read, write and delete), so Chromium keeps working; nothing is copied. The hash table is read
-//! in chunks of [`TABLE_CHUNK`] buckets, entries one at a time (≤ 1 KiB), streams only up to the
-//! caller's cap, and at most [`MAX_VISITS`] entries are visited, so a damaged chain cannot loop.
-//! Chromium may be writing while Lastdrop reads: every address, size and offset is checked
-//! against the file it points into, and an entry that does not check out is skipped.
+//! read, write and delete), so Chromium keeps working on its files; nothing is copied. One thing
+//! the sharing cannot allow: Windows does not rename or delete a folder while a file in it is open,
+//! so while a read runs Chromium cannot move `Cache_Data` away (it does when it resets a damaged
+//! or outdated cache). Reads take milliseconds, and [`BlockfileCache::release_files`] closes the
+//! files as soon as the walk is done. The hash table is read in chunks of [`TABLE_CHUNK`]
+//! buckets, entries one at a time (≤ 1 KiB), streams only up to the caller's cap, and at most
+//! [`MAX_VISITS`] entries are visited, so a damaged chain cannot loop.
+//!
+//! **Chromium writes while Lastdrop reads.** Every address, size and offset is checked against
+//! the file it points into, and an entry that does not check out is skipped. A matching entry
+//! must also pass the checks Chromium makes before it trusts one (`EntryImpl::SanityCheck`): its
+//! block hash (`self_hash`, [`persistent_hash`] of the first 92 bytes, when set), its key's hash
+//! and NUL, and the number of blocks its key takes. After its streams are read the entry is read
+//! again ([`BlockfileCache::still_current`]): when Chromium rewrote, freed or reused it meanwhile,
+//! what was read is not used. Not checked: the rankings node's `dirty` flag (an entry left open by
+//! a crash), whose meaning while Chromium holds an entry open is not settled here.
 //!
 //! The **simple** backend (`index-dir\the-real-index` with `<hash>_0` files; Chromium's default
 //! on other platforms) is recognised and reported as [`CacheError::SimpleBackend`]; it is not
@@ -63,6 +74,10 @@ pub const DEFAULT_TABLE_LEN: u32 = 0x10000;
 pub const ENTRY_BLOCK: usize = 256;
 /// `offsetof(EntryStore, key)`.
 pub const KEY_OFFSET: usize = 96;
+/// `offsetof(EntryStore, self_hash)`: the hash covers the bytes before it.
+pub const SELF_HASH_OFFSET: usize = 92;
+/// `kMaxInternalKeyLength`: longer keys are stored apart (`long_key`).
+pub const MAX_INLINE_KEY: usize = 927;
 /// The first 8 bytes of the simple backend's `index` file (`kSimpleInitialMagicNumber`).
 pub const SIMPLE_INITIAL_MAGIC: u64 = 0xfcfb_6d1b_a772_5c30;
 
@@ -193,6 +208,10 @@ pub fn chromium_time(micros: i64) -> Option<Timestamp> {
 pub struct Entry {
     /// `EntryStore::creation_time`.
     pub created: Option<Timestamp>,
+    /// Where the entry itself is (its `EntryStore` blocks).
+    addr: Addr,
+    /// `EntryStore::hash`, the key's hash.
+    key_hash: u32,
     /// `EntryStore::data_size`.
     data_size: [i32; 4],
     /// `EntryStore::data_addr`.
@@ -211,10 +230,75 @@ impl Entry {
 pub struct Found {
     /// The matching entries, newest-created last kept when more than the limit matched.
     pub entries: Vec<Entry>,
+    /// Entries whose key matched and that checked out, kept or not (more than `entries` when the
+    /// limit was reached).
+    pub matched: u32,
     /// Entries read.
     pub visited: u32,
-    /// Addresses that did not check out (damaged, or being rewritten while read).
+    /// Addresses that did not check out, and matching entries that failed Chromium's own checks
+    /// (damaged, or being rewritten while read).
     pub skipped: u32,
+}
+
+/// `base::PersistentHash` (`base/hash/hash.cc`): Paul Hsieh's SuperFastHash
+/// (`third_party/superfasthash`), the hash of the blockfile format's keys (`EntryStore::hash`)
+/// and of its blocks (`self_hash`). Little-endian 16-bit reads, as on x86; 0 for no data.
+pub fn persistent_hash(data: &[u8]) -> u32 {
+    let Ok(len) = u32::try_from(data.len()) else {
+        return 0;
+    };
+    if len == 0 {
+        return 0;
+    }
+    let get16 = |b: &[u8]| u32::from(u16::from_le_bytes([b[0], b[1]]));
+    let mut hash = len;
+    let (words, rest) = data.as_chunks::<4>();
+    for word in words {
+        hash = hash.wrapping_add(get16(&word[..2]));
+        let tmp = (get16(&word[2..]) << 11) ^ hash;
+        hash = (hash << 16) ^ tmp;
+        hash = hash.wrapping_add(hash >> 11);
+    }
+    // The tail's last byte is a `signed char` in the reference code.
+    let signed = |b: u8| i32::from(b as i8) as u32;
+    match rest {
+        [a, b, c] => {
+            hash = hash.wrapping_add(get16(&[*a, *b]));
+            hash ^= hash << 16;
+            hash ^= signed(*c) << 18;
+            hash = hash.wrapping_add(hash >> 11);
+        }
+        [a, b] => {
+            hash = hash.wrapping_add(get16(&[*a, *b]));
+            hash ^= hash << 11;
+            hash = hash.wrapping_add(hash >> 17);
+        }
+        [a] => {
+            hash = hash.wrapping_add(signed(*a));
+            hash ^= hash << 10;
+            hash = hash.wrapping_add(hash >> 1);
+        }
+        _ => {}
+    }
+    hash ^= hash << 3;
+    hash = hash.wrapping_add(hash >> 5);
+    hash ^= hash << 4;
+    hash = hash.wrapping_add(hash >> 17);
+    hash ^= hash << 25;
+    hash = hash.wrapping_add(hash >> 6);
+    hash
+}
+
+/// `NumBlocksForEntry` (`entry_impl.cc`): the `EntryStore` blocks an entry with an inline key of
+/// `key_len` bytes takes (the key and its NUL after the first 96 bytes, 256 bytes a block).
+fn blocks_for_key(key_len: usize) -> u32 {
+    const KEY1_LEN: usize = ENTRY_BLOCK - KEY_OFFSET;
+    if (KEY1_LEN..=MAX_INLINE_KEY).contains(&key_len) {
+        // At most (927 − 160) / 256 + 2 = 4.
+        ((key_len - KEY1_LEN) / ENTRY_BLOCK + 2) as u32
+    } else {
+        1
+    }
 }
 
 /// One open block file and the part of its header the reader trusts.
@@ -228,7 +312,8 @@ struct BlockFile {
 pub struct BlockfileCache<'a> {
     fs: &'a dyn Fs,
     dir: PathBuf,
-    index: Box<dyn ReadAt>,
+    /// The `index` file; `None` after [`BlockfileCache::release_files`].
+    index: Option<Box<dyn ReadAt>>,
     table_len: u32,
     num_entries: u32,
     /// Block files opened so far by selector; `None` for one that is missing or not valid.
@@ -327,7 +412,7 @@ impl<'a> BlockfileCache<'a> {
         Ok(BlockfileCache {
             fs,
             dir: dir.to_path_buf(),
-            index,
+            index: Some(index),
             table_len,
             num_entries: u32::try_from(i32_at(&head, 8)).unwrap_or(0),
             files: BTreeMap::new(),
@@ -426,8 +511,11 @@ impl<'a> BlockfileCache<'a> {
         while start < self.table_len {
             let n = TABLE_CHUNK.min(self.table_len - start) as usize;
             let chunk = &mut table[..n * 4];
-            self.index
-                .read_exact_at(INDEX_HEADER_SIZE + u64::from(start) * 4, chunk)?;
+            let index = self
+                .index
+                .as_mut()
+                .ok_or(CacheError::Corrupt("the index was closed"))?;
+            index.read_exact_at(INDEX_HEADER_SIZE + u64::from(start) * 4, chunk)?;
             for bucket in chunk.as_chunks::<4>().0 {
                 let mut addr = Addr(u32::from_le_bytes(*bucket));
                 while addr.0 != 0 {
@@ -445,8 +533,16 @@ impl<'a> BlockfileCache<'a> {
                         found.skipped += 1;
                         break;
                     }
-                    if let Some(hit) = Self::matching(store, matches) {
-                        keep(&mut found.entries, hit, limit);
+                    if let Some(key) = Self::inline_key(store)
+                        && matches(key)
+                    {
+                        match Self::checked(addr, store) {
+                            Some(hit) => {
+                                found.matched += 1;
+                                keep(&mut found.entries, hit, limit);
+                            }
+                            None => found.skipped += 1,
+                        }
                     }
                     addr = Addr(u32_at(store, 4));
                 }
@@ -456,9 +552,10 @@ impl<'a> BlockfileCache<'a> {
         Ok(found)
     }
 
-    /// The entry in `store` (one to four `EntryStore` blocks) when it is live and its inline key
-    /// matches.
-    fn matching(store: &[u8], matches: &mut dyn FnMut(&[u8]) -> bool) -> Option<Entry> {
+    /// The inline key of the entry in `store` (one to four `EntryStore` blocks) when the entry is
+    /// live (`ENTRY_NORMAL`), not a sparse child, and its key is inline (at most
+    /// [`MAX_INLINE_KEY`] bytes) and NUL-terminated within the blocks.
+    fn inline_key(store: &[u8]) -> Option<&[u8]> {
         let state = i32_at(store, 20);
         let flags = u32_at(store, 72);
         let long_key = Addr(u32_at(store, 36));
@@ -466,11 +563,24 @@ impl<'a> BlockfileCache<'a> {
             return None;
         }
         let key_len = usize::try_from(i32_at(store, 32)).ok()?;
-        // NUL-terminated within the entry's blocks.
-        if key_len == 0 || KEY_OFFSET + key_len >= store.len() {
+        if key_len == 0 || key_len > MAX_INLINE_KEY || KEY_OFFSET + key_len >= store.len() {
             return None;
         }
-        if !matches(&store[KEY_OFFSET..KEY_OFFSET + key_len]) {
+        (store[KEY_OFFSET + key_len] == 0).then(|| &store[KEY_OFFSET..KEY_OFFSET + key_len])
+    }
+
+    /// The entry in `store`, read from `addr`, when it passes the checks Chromium makes before it
+    /// trusts an entry (`EntryImpl::SanityCheck`): the block hash (`self_hash`, when set), the
+    /// key's hash, and the number of blocks its key takes. An entry that fails was damaged, or
+    /// Chromium was rewriting it (or had reused its blocks) while it was read.
+    fn checked(addr: Addr, store: &[u8]) -> Option<Entry> {
+        let key = Self::inline_key(store)?;
+        let key_hash = u32_at(store, 0);
+        let self_hash = u32_at(store, SELF_HASH_OFFSET);
+        if (self_hash != 0 && self_hash != persistent_hash(&store[..SELF_HASH_OFFSET]))
+            || key_hash != persistent_hash(key)
+            || addr.num_blocks() != blocks_for_key(key.len())
+        {
             return None;
         }
         let mut data_size = [0i32; 4];
@@ -481,9 +591,33 @@ impl<'a> BlockfileCache<'a> {
         }
         Some(Entry {
             created: chromium_time(i64_at(store, 24)),
+            addr,
+            key_hash,
             data_size,
             data_addr,
         })
+    }
+
+    /// Whether `entry` is still on disk as it was found: its blocks read again pass the same
+    /// checks and hold the same key hash, creation time and streams. `false` when Chromium
+    /// rewrote the entry, freed it or reused its blocks since: what was read of its streams may
+    /// belong to another entry or another answer, and is not used.
+    pub fn still_current(&mut self, entry: &Entry) -> Result<bool, CacheError> {
+        let mut store = [0u8; 4 * ENTRY_BLOCK];
+        let store = &mut store[..entry.addr.num_blocks() as usize * ENTRY_BLOCK];
+        if self.read_blocks(entry.addr, store)?.is_none() {
+            return Ok(false);
+        }
+        Ok(Self::checked(entry.addr, store).as_ref() == Some(entry))
+    }
+
+    /// Closes every file the cache holds open (the index and the block files). Chromium can then
+    /// move or delete the whole cache folder (`DelayedCacheCleanup` renames `Cache_Data`), which
+    /// Windows refuses while a file in it is open, however it is shared. Later reads open what
+    /// they need again; a walk needs [`BlockfileCache::open`] again.
+    pub fn release_files(&mut self) {
+        self.files.clear();
+        self.index = None;
     }
 
     /// Reads stream `index` (0–3) of `entry`, at most `max_len` bytes: from its blocks in a block

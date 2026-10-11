@@ -154,6 +154,31 @@ pub(crate) fn read_credentials(
     })
 }
 
+/// The credentials file's top-level `organizationUuid` alone; everything else is skipped while
+/// parsing.
+#[derive(Deserialize)]
+struct OrganisationOnly {
+    #[serde(rename = "organizationUuid", default)]
+    organisation: Lenient<String>,
+}
+
+/// The organisation Claude Code is signed in to, from the credentials file's `organizationUuid`
+/// (read-only; the file's bytes are overwritten once parsed). Only compared in place with the
+/// organisation of Claude Desktop's cached usage (`super::desktop_cache`), never logged or kept
+/// past the fetch. `None` when the file, the field or a usable value is missing.
+pub(crate) fn read_organisation(ctx: &FetchContext<'_>, config_dir: &Path) -> Option<SecretString> {
+    let mut bytes = ctx
+        .fs
+        .read(&credentials_path(config_dir), MAX_CREDENTIALS_BYTES)
+        .ok()?;
+    let parsed = serde_json::from_slice::<OrganisationOnly>(&bytes);
+    bytes.fill(0);
+    std::hint::black_box(&bytes);
+    let organisation = parsed.ok()?.organisation.0?;
+    let organisation = SecretString::new(organisation);
+    (!organisation.expose().trim().is_empty()).then_some(organisation)
+}
+
 /// The plan badge text of a `subscriptionType` (`max` → `Max`); `None` for values Lastdrop does
 /// not know, so no internal name reaches the UI.
 pub(crate) fn plan_name(subscription_type: &str) -> Option<String> {

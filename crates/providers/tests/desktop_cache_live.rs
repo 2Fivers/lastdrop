@@ -2,11 +2,12 @@
 //! Ignored by default; run by hand with
 //! `cargo test -p lastdrop-providers --test desktop_cache_live -- --ignored --nocapture`.
 //!
-//! It prints only whether a usage response was found, its content coding, its age, how long the
-//! read took, and per meter id the used percentage and reset time — plus, for comparison, the
-//! time and percentages of Desktop's newest history sample and which source the provider (without
-//! the OAuth source) picks. Never a path, cache key, header, organisation id or any other cache
-//! content: the cache holds the owner's conversations.
+//! It prints only whether Claude Code names its organisation (yes or no), how many usage responses
+//! there are of any organisation and of that one, whether one was found, its content coding, its
+//! age, how long the read took, and per meter id the used percentage and reset time — plus, for
+//! comparison, the time and percentages of Desktop's newest history sample and which source the
+//! provider (without the OAuth source) picks. Never a path, cache key, header, organisation id or
+//! any other cache content: the cache holds the owner's conversations.
 #![cfg(windows)]
 #![expect(
     clippy::print_stdout,
@@ -64,6 +65,8 @@ fn live_desktop_cache_smoke() {
     let account = AccountSource::resolve(ProviderId::Claude, &AccountSettings::primary(), &env)
         .expect("a Claude account source");
     let AccountSource::Claude {
+        config_dir,
+        state_file,
         desktop_dir: Some(desktop_dir),
         ..
     } = &account
@@ -71,8 +74,20 @@ fn live_desktop_cache_smoke() {
         panic!("no Claude Desktop folder on this machine");
     };
 
+    // Whether Claude Code names its organisation: yes or no only, never the id.
+    let organisation = claude::organisation(&ctx, config_dir, state_file);
+    println!(
+        "Claude Code's organisation known: {}",
+        if organisation.is_some() { "yes" } else { "no" }
+    );
+    let any = desktop_cache::read_detailed(&ctx, desktop_dir, None);
+    match &any {
+        Ok(c) => println!("usage responses of any organisation: {}", c.responses),
+        Err(e) => println!("usage responses of any organisation: none ({})", e.detail()),
+    }
+
     let started = Instant::now();
-    let cached = desktop_cache::read_detailed(&ctx, desktop_dir);
+    let cached = desktop_cache::read_detailed(&ctx, desktop_dir, organisation.as_ref());
     let took = started.elapsed();
     match &cached {
         Ok(c) => {

@@ -16,17 +16,20 @@ use lastdrop_providers::claude::blockfile::{
 use lastdrop_providers::claude::desktop_cache::{self, CachedUsage};
 use lastdrop_providers::claude::response_info::{self, DecodeError, InfoError, ResponseInfo};
 use lastdrop_providers::claude::{
-    ClaudeProvider, ClaudeUsage, ClaudeWindow, WindowReading, desktop, oauth,
+    self, ClaudeProvider, ClaudeUsage, ClaudeWindow, WindowReading, desktop, oauth,
 };
 use lastdrop_providers::fakes::Fakes;
 use lastdrop_providers::fakes::chromium_cache::{
-    FakeChromiumCache, FakeEntry, FakeResponse, chromium_micros, write_files,
+    FakeChromiumCache, FakeEntry, FakeResponse, chromium_micros, super_fast_hash, write_files,
 };
 use lastdrop_providers::io::{HttpResponse, Method};
 use lastdrop_providers::{AccountSource, FetchError, Provider};
 
-/// An invented organisation id; it must never leave the source.
-const ORG: &str = "00000000-0000-4000-8000-000000000007";
+/// An invented organisation id, the one the credentials and state fixtures name; it must never
+/// leave the source.
+const ORG: &str = "00000000-0000-4000-8000-000000000001";
+/// Another invented organisation (a Team beside the personal plan, say).
+const OTHER_ORG: &str = "00000000-0000-4000-8000-000000000007";
 
 fn ts(s: &str) -> Timestamp {
     s.parse().expect("timestamp")
@@ -134,7 +137,11 @@ fn with_cache(f: &Fakes, dir: &Path, cache: &FakeChromiumCache) {
 }
 
 fn read(f: &Fakes) -> Result<CachedUsage, FetchError> {
-    desktop_cache::read_detailed(&f.context(SignedDuration::from_secs(30)), &desktop_dir())
+    desktop_cache::read_detailed(
+        &f.context(SignedDuration::from_secs(30)),
+        &desktop_dir(),
+        None,
+    )
 }
 
 fn reading(usage: &ClaudeUsage, w: &ClaudeWindow) -> WindowReading {
@@ -936,7 +943,7 @@ fn a_fetch_out_of_time_reads_nothing() {
     let f = Fakes::new(now());
     with_cache(&f, &cache_dir(), &realistic_cache());
     assert!(matches!(
-        desktop_cache::read(&f.context(SignedDuration::ZERO), &desktop_dir()),
+        desktop_cache::read(&f.context(SignedDuration::ZERO), &desktop_dir(), None),
         Err(FetchError::Transient { .. })
     ));
 }
@@ -1088,4 +1095,276 @@ fn an_old_cached_response_is_stale() {
     let snap = fetch(&ClaudeProvider::new(ClaudeOptions::default()), &f).expect("fetch");
     assert_eq!(snap.source, SourceKind::ClaudeDesktopCache);
     assert_eq!(snap.health, Health::Stale);
+}
+
+#[test]
+fn of_readings_of_one_moment_the_earliest_source_wins_measured_from_the_newest() {
+    // Cache 12:37, history 12:38, `.claude.json` 12:39:30: the history and `.claude.json` are of
+    // one moment (90 s apart), the cache is not (2:30 before the newest), so the history, the
+    // earlier source of that moment, wins; measured against the cache alone, `.claude.json`
+    // would have.
+    let f = Fakes::new(now());
+    with_cached_response(&f, now() - mins(5), &body(30.0, 55.0));
+    with_history(&f, now() - mins(4), 33, 56);
+    let fetched = (now() - SignedDuration::from_secs(150)).as_millisecond();
+    f.fs.add_file(
+        state_file(),
+        format!(
+            r#"{{"cachedUsageUtilization": {{"fetchedAtMs": {fetched}, "utilization": {}}}}}"#,
+            body(34.0, 57.0)
+        ),
+        now(),
+    );
+    let snap = fetch(&ClaudeProvider::new(ClaudeOptions::default()), &f).expect("fetch");
+    assert_eq!(snap.source, SourceKind::ClaudeDesktopHistory);
+    assert_eq!(snap.measured_at, now() - mins(4));
+}
+
+// ---- Organisations ------------------------------------------------------------------------------
+
+/// A usage entry of `org` received at `at`.
+fn org_entry(org: &str, at: Timestamp, json: &str) -> FakeEntry {
+    FakeEntry::new(
+        &format!("1/0/https://claude.ai/api/organizations/{org}/usage"),
+        FakeResponse::ok(at, "identity").pickle(),
+        json.as_bytes().to_vec(),
+        at,
+    )
+}
+
+fn config_dir() -> PathBuf {
+    PathBuf::from(r"C:\Users\tester\.claude")
+}
+
+fn state_file() -> PathBuf {
+    PathBuf::from(r"C:\Users\tester\.claude.json")
+}
+
+/// The source with the organisation Claude Code names on `f`, found as the provider finds it.
+fn read_for_claude_code(f: &Fakes) -> Result<CachedUsage, FetchError> {
+    let ctx = f.context(SignedDuration::from_secs(30));
+    let organisation = claude::organisation(&ctx, &config_dir(), &state_file());
+    desktop_cache::read_detailed(&ctx, &desktop_dir(), organisation.as_ref())
+}
+
+#[test]
+fn only_the_usage_of_claude_codes_organisation_counts() {
+    // Desktop shows two organisations; the other one was fetched last.
+    let two_orgs = FakeChromiumCache::new()
+        .with(org_entry(ORG, now() - mins(6), &body(5.0, 91.0)))
+        .with(org_entry(OTHER_ORG, now() - mins(1), &body(77.0, 12.0)));
+    let five = |cached: &CachedUsage| reading(&cached.usage, &ClaudeWindow::FiveHour).used;
+
+    // Claude Code names no organisation: every organisation counts, the newest wins.
+    let f = Fakes::new(now());
+    with_cache(&f, &cache_dir(), &two_orgs);
+    let any = read_for_claude_code(&f).expect("any organisation");
+    assert!(close(five(&any), 0.77));
+    assert_eq!(any.responses, 2);
+
+    // `.credentials.json` names it: its own, older answer, never the other organisation's.
+    f.fs.add_file(
+        oauth::credentials_path(&config_dir()),
+        include_str!("fixtures/claude/credentials-valid.json"),
+        now() - mins(60),
+    );
+    let ours = read_for_claude_code(&f).expect("Claude Code's organisation");
+    assert!(close(five(&ours), 0.05));
+    assert_eq!(ours.usage.measured_at, Some(now() - mins(6)));
+    assert_eq!(ours.responses, 1);
+    let no_oauth = ClaudeProvider::new(ClaudeOptions {
+        oauth_usage: false,
+        ..ClaudeOptions::default()
+    });
+    let snap = fetch(&no_oauth, &f).expect("fetch");
+    assert_eq!(snap.source, SourceKind::ClaudeDesktopCache);
+    assert!(close(snap.meters[0].used, 0.05));
+
+    // Without credentials, `.claude.json`'s `oauthAccount` names it (a Claude Code that keeps
+    // its token in Credential Manager).
+    let f = Fakes::new(now());
+    with_cache(&f, &cache_dir(), &two_orgs);
+    f.fs.add_file(
+        state_file(),
+        include_str!("fixtures/claude/claude-state.json"),
+        now() - mins(60),
+    );
+    let ours = read_for_claude_code(&f).expect("from .claude.json");
+    assert!(close(five(&ours), 0.05));
+
+    // Compared without regard to case.
+    let f = Fakes::new(now());
+    with_cache(&f, &cache_dir(), &two_orgs);
+    let upper = include_str!("fixtures/claude/credentials-valid.json")
+        .replace(ORG, &ORG.to_ascii_uppercase());
+    f.fs.add_file(oauth::credentials_path(&config_dir()), upper, now());
+    assert!(close(five(&read_for_claude_code(&f).expect("upper")), 0.05));
+}
+
+#[test]
+fn only_other_organisations_answers_give_no_reading_and_name_no_id() {
+    let f = Fakes::new(now());
+    let other = FakeChromiumCache::new().with(org_entry(OTHER_ORG, now(), &body(77.0, 12.0)));
+    with_cache(&f, &cache_dir(), &other);
+    f.fs.add_file(
+        oauth::credentials_path(&config_dir()),
+        include_str!("fixtures/claude/credentials-valid.json"),
+        now(),
+    );
+    let err = read_for_claude_code(&f).expect_err("another organisation");
+    assert_eq!(
+        err,
+        FetchError::Unavailable {
+            detail: "Claude Desktop's cached usage is for another organisation than Claude \
+                     Code's (1 response(s))"
+                .to_owned()
+        }
+    );
+    let ctx = f.context(SignedDuration::from_secs(30));
+    let organisation = claude::organisation(&ctx, &config_dir(), &state_file());
+    let shown = format!("{err:?} {err} {organisation:?}");
+    assert!(organisation.is_some());
+    assert!(
+        !shown.contains(ORG) && !shown.contains(OTHER_ORG),
+        "{shown}"
+    );
+}
+
+// ---- Chromium's own entry checks ----------------------------------------------------------------
+
+/// Where the only entry of a one-entry cache's `files` is: its offset in `data_1`, and the offset
+/// of its address in `index`.
+fn only_entry(files: &BTreeMap<String, Vec<u8>>) -> (usize, usize) {
+    let index = &files["index"];
+    let bucket = index[368..]
+        .chunks(4)
+        .position(|b| b.iter().any(|x| *x != 0))
+        .expect("one entry");
+    let index_at = 368 + 4 * bucket;
+    let addr = u32::from_le_bytes(index[index_at..index_at + 4].try_into().expect("4 bytes"));
+    (8192 + (addr & 0xFFFF) as usize * 256, index_at)
+}
+
+#[test]
+fn the_reader_hashes_as_chromium_does() {
+    // Two implementations of SuperFastHash written apart agree at every tail length.
+    let data: Vec<u8> = (0..300u32).map(|i| (i * 167 + 13) as u8).collect();
+    for len in 0..data.len() {
+        assert_eq!(
+            blockfile::persistent_hash(&data[..len]),
+            super_fast_hash(&data[..len]),
+            "{len} bytes"
+        );
+    }
+    assert_eq!(blockfile::persistent_hash(b""), 0);
+}
+
+#[test]
+fn entries_that_fail_chromiums_own_checks_are_skipped() {
+    let sound = usage_entry("", now() - mins(2), "identity", &body(5.0, 91.0));
+    let files = FakeChromiumCache::new().with(sound.clone()).files();
+    let (at, index_at) = only_entry(&files);
+    let f = Fakes::new(now());
+    write_files(&f.fs, &cache_dir(), &files, now());
+    read(&f).expect("a sound entry");
+
+    type Files = BTreeMap<String, Vec<u8>>;
+    let damaged = |name: &str, change: &dyn Fn(&mut Files)| {
+        let mut files = files.clone();
+        change(&mut files);
+        let f = Fakes::new(now());
+        write_files(&f.fs, &cache_dir(), &files, now());
+        let err = read(&f).expect_err(name);
+        assert!(
+            err.detail().contains("no usage response"),
+            "{name}: {err:?}"
+        );
+    };
+    // A stream size changed after the entry was stored (a torn write): `self_hash` differs.
+    damaged("torn", &|files| {
+        files.get_mut("data_1").expect("data_1")[at + 44] ^= 0x01;
+    });
+    // Another key's hash, stored with a matching `self_hash`.
+    damaged("key hash", &|files| {
+        let data = files.get_mut("data_1").expect("data_1");
+        data[at] ^= 0x01;
+        let self_hash = super_fast_hash(&data[at..at + 92]);
+        data[at + 92..at + 96].copy_from_slice(&self_hash.to_le_bytes());
+    });
+    // The key's NUL overwritten.
+    damaged("no NUL", &|files| {
+        let key_len = usage_key("").len();
+        files.get_mut("data_1").expect("data_1")[at + 96 + key_len] = b'x';
+    });
+    // The address claims two blocks for a key that fits in one.
+    damaged("blocks", &|files| {
+        files.get_mut("index").expect("index")[index_at + 3] |= 0x01;
+    });
+
+    // An entry stored without a hash (0) is taken as it is.
+    let unhashed = FakeEntry {
+        self_hash: false,
+        ..sound
+    };
+    let f = Fakes::new(now());
+    with_cache(&f, &cache_dir(), &FakeChromiumCache::new().with(unhashed));
+    read(&f).expect("no self_hash");
+}
+
+#[test]
+fn an_entry_chromium_rewrote_while_its_streams_were_read_is_not_current() {
+    let f = Fakes::new(now());
+    let before = FakeChromiumCache::new().with(usage_entry(
+        "",
+        now() - mins(2),
+        "identity",
+        &body(5.0, 91.0),
+    ));
+    with_cache(&f, &cache_dir(), &before);
+    let mut cache = BlockfileCache::open(&f.fs, &cache_dir()).expect("open");
+    let found = cache
+        .find(&mut |key| desktop_cache::is_usage_key(key), 64)
+        .expect("walk");
+    cache.release_files();
+    assert_eq!(found.matched, 1);
+    let entry = &found.entries[0];
+    cache.read_stream(entry, 1, 1 << 20).expect("body");
+    // A real handle reads what is on disk now; FakeFs handles are snapshots, so each check below
+    // opens the files again.
+    let mut current = |entry| {
+        cache.release_files();
+        cache.still_current(entry)
+    };
+    assert_eq!(current(entry), Ok(true));
+
+    // Chromium frees the entry and reuses its blocks for another one (a conversation).
+    let after = FakeChromiumCache::new().with(other_entry(
+        &format!("1/0/https://claude.ai/api/organizations/{ORG}/chat_conversations/x"),
+        now(),
+        r#"{"name": "invented conversation"}"#,
+    ));
+    with_cache(&f, &cache_dir(), &after);
+    assert_eq!(current(entry), Ok(false));
+
+    // Or stores a new answer in it.
+    let newer = FakeChromiumCache::new().with(usage_entry("", now(), "identity", &body(6.0, 92.0)));
+    with_cache(&f, &cache_dir(), &newer);
+    assert_eq!(current(entry), Ok(false));
+    with_cache(&f, &cache_dir(), &before);
+    assert_eq!(current(entry), Ok(true));
+}
+
+#[test]
+fn a_zlib_body_past_the_cap_is_too_large_not_invalid() {
+    let info = info_with(&["deflate"], None);
+    let zeros = zlib(&vec![0u8; 3 << 20]);
+    assert_eq!(
+        response_info::decode_body(&zeros, &info, 1 << 20),
+        Err(DecodeError::TooLarge(1 << 20)),
+        "not decoded a second time as raw deflate"
+    );
+    assert_eq!(
+        response_info::decode_body(b"neither zlib nor deflate", &info, 1 << 20),
+        Err(DecodeError::Corrupt("deflate"))
+    );
 }

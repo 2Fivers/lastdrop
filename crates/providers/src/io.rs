@@ -184,7 +184,9 @@ pub trait Fs: Send + Sync {
     /// Opened read-only and sharing read, write **and delete** with every other process, so the
     /// owner keeps writing, renaming and deleting its files while Lastdrop reads (Chromium opens
     /// its cache files with `DELETE` access, which a handle without `FILE_SHARE_DELETE` would
-    /// refuse). Nothing is read until asked, so memory stays at what the caller reads.
+    /// refuse). Not the folder: Windows refuses to rename or delete a folder while a file in it
+    /// is open, whatever the sharing, so callers keep such handles only as long as they read.
+    /// Nothing is read until asked, so memory stays at what the caller reads.
     fn open_at(&self, path: &Path) -> io::Result<Box<dyn ReadAt>>;
 
     /// Metadata of a file or directory.

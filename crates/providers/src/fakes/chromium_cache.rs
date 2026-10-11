@@ -8,8 +8,8 @@
 //! pickle) and `net/http/http_cache.cc` (`GenerateCacheKey`). Streams go where Chromium puts them
 //! (`Addr::RequiredFileType`): under 1 KiB in `data_1` (256-byte blocks), under 4 KiB in `data_2`,
 //! up to 16 KiB in `data_3`, larger in an `f_xxxxxx` file. Entries are hashed into buckets with
-//! FNV-1a (Chromium uses `base::PersistentHash`; the reader never checks the hash) and chained
-//! through `EntryStore::next`.
+//! `base::PersistentHash` ([`super_fast_hash`]), which also gives `EntryStore::hash` and
+//! `self_hash`, and chained through `EntryStore::next`.
 
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -180,6 +180,11 @@ pub struct FakeEntry {
     pub body_not_written: bool,
     /// `EntryStore::creation_time`.
     pub created: Timestamp,
+    /// `EntryStore::flags` (`PARENT_ENTRY` 1, `CHILD_ENTRY` 2).
+    pub flags: u32,
+    /// Write `EntryStore::self_hash`, as Chromium does on every store (an entry without one, 0,
+    /// is accepted unchecked).
+    pub self_hash: bool,
 }
 
 impl FakeEntry {
@@ -193,6 +198,8 @@ impl FakeEntry {
             external_body: false,
             body_not_written: false,
             created,
+            flags: 0,
+            self_hash: true,
         }
     }
 }
@@ -253,10 +260,49 @@ fn block_addr(file_type: u32, blocks: u32, selector: u32, start: u32) -> u32 {
     0x8000_0000 | file_type << 28 | (blocks - 1) << 24 | selector << 16 | start
 }
 
-fn fnv1a(key: &[u8]) -> u32 {
-    key.iter().fold(0x811c_9dc5u32, |h, b| {
-        (h ^ u32::from(*b)).wrapping_mul(0x0100_0193)
-    })
+/// `base::PersistentHash`, Paul Hsieh's SuperFastHash as `third_party/superfasthash` writes it
+/// (written out here apart from the reader's): `uint32_t hash = len`, two 16-bit little-endian
+/// halves per 4 bytes, the tail by its length (a lone byte as `signed char`), then the avalanche.
+pub fn super_fast_hash(data: &[u8]) -> u32 {
+    if data.is_empty() {
+        return 0;
+    }
+    let half = |i: usize| u32::from(data[i]) | u32::from(data[i + 1]) << 8;
+    let mut hash = data.len() as u32;
+    let mut i = 0;
+    while i + 4 <= data.len() {
+        hash = hash.wrapping_add(half(i));
+        let tmp = (half(i + 2) << 11) ^ hash;
+        hash = (hash << 16) ^ tmp;
+        hash = hash.wrapping_add(hash >> 11);
+        i += 4;
+    }
+    match data.len() - i {
+        3 => {
+            hash = hash.wrapping_add(half(i));
+            hash ^= hash << 16;
+            hash ^= ((data[i + 2] as i8 as i32) << 18) as u32;
+            hash = hash.wrapping_add(hash >> 11);
+        }
+        2 => {
+            hash = hash.wrapping_add(half(i));
+            hash ^= hash << 11;
+            hash = hash.wrapping_add(hash >> 17);
+        }
+        1 => {
+            hash = hash.wrapping_add(data[i] as i8 as i32 as u32);
+            hash ^= hash << 10;
+            hash = hash.wrapping_add(hash >> 1);
+        }
+        _ => {}
+    }
+    hash ^= hash << 3;
+    hash = hash.wrapping_add(hash >> 5);
+    hash ^= hash << 4;
+    hash = hash.wrapping_add(hash >> 17);
+    hash ^= hash << 25;
+    hash = hash.wrapping_add(hash >> 6);
+    hash
 }
 
 /// An invented block-file cache (module docs).
@@ -300,6 +346,8 @@ impl FakeChromiumCache {
         let mut table = vec![0u32; self.table_len as usize];
         // The last entry of each bucket's chain.
         let mut tails: BTreeMap<usize, u32> = BTreeMap::new();
+        // Entries that get a `self_hash` once every `next` is in place.
+        let mut hashed: Vec<u32> = Vec::new();
 
         for entry in &self.entries {
             let mut stream = |data: &[u8], force_external: bool, entries: &mut BlockFileWriter| {
@@ -325,7 +373,7 @@ impl FakeChromiumCache {
                 stream(&entry.body, entry.external_body, &mut entries)
             };
 
-            let hash = fnv1a(&entry.key);
+            let hash = super_fast_hash(&entry.key);
             let mut store = vec![0u8; 96];
             store[0..4].copy_from_slice(&hash.to_le_bytes());
             store[20..24].copy_from_slice(&entry.state.to_le_bytes());
@@ -335,15 +383,26 @@ impl FakeChromiumCache {
             store[44..48].copy_from_slice(&(entry.body.len() as i32).to_le_bytes());
             store[56..60].copy_from_slice(&info_addr.to_le_bytes());
             store[60..64].copy_from_slice(&body_addr.to_le_bytes());
+            store[72..76].copy_from_slice(&entry.flags.to_le_bytes());
             store.extend_from_slice(&entry.key);
             store.push(0);
             let addr = entries.add(&store);
+            if entry.self_hash {
+                hashed.push(addr);
+            }
             let bucket = (hash & (self.table_len - 1)) as usize;
             match tails.insert(bucket, addr) {
                 // `EntryStore::next` of the bucket's last entry.
                 Some(previous) => entries.overwrite(previous, 4, &addr.to_le_bytes()),
                 None => table[bucket] = addr,
             }
+        }
+        // `StorageBlock::Store` writes the hash of the bytes before `self_hash` (offset 92) with
+        // every store, also when `next` changes.
+        for addr in hashed {
+            let at = (addr & 0xFFFF) as usize * entries.block_size;
+            let self_hash = super_fast_hash(&entries.blocks[at..at + 92]);
+            entries.overwrite(addr, 92, &self_hash.to_le_bytes());
         }
 
         let mut index = vec![0u8; INDEX_HEADER];

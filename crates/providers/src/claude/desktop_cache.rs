@@ -10,26 +10,39 @@
 //! reset times and the per-model windows, and it is as fresh as Desktop's last look.
 //!
 //! Steps: open the block-file cache ([`super::blockfile`]); walk its index for live entries whose
-//! key ends in a usage URL ([`is_usage_key`]); read each one's response info
-//! ([`super::response_info`]) and keep complete 2xx answers; take the newest by response time;
-//! read its body (≤ [`MAX_STORED_BODY`]), undo the cache's and the server's compression
-//! ([`super::response_info::decode_body`], ≤ [`MAX_DECODED_BODY`]) and parse it. When that
-//! answer cannot be read, the next newest is tried. `measured_at` is the cached **response time**
-//! (when Desktop received the answer), so a reading is exactly as old as Desktop's last fetch.
+//! key ends in a usage URL of the account's organisation ([`is_usage_key`], "Organisations"
+//! below); close the cache's files; read each one's response info ([`super::response_info`])
+//! and keep complete 2xx answers; take the newest by response time; read its body
+//! (≤ [`MAX_STORED_BODY`]), undo the cache's and the server's compression
+//! ([`super::response_info::decode_body`], ≤ [`MAX_DECODED_BODY`]), check that the entry is still
+//! the one the walk found ([`super::blockfile::BlockfileCache::still_current`]) and parse it. When
+//! that answer cannot be read, the next newest is tried. `measured_at` is the cached **response
+//! time** (when Desktop received the answer), so a reading is exactly as old as Desktop's last
+//! fetch.
 //! With several cache folders, the newest reading wins; folders that are the same files seen
 //! through two paths (the Store build's redirected `%APPDATA%`) are read once.
 //!
+//! **Organisations.** Desktop caches one usage answer per organisation it shows (a personal plan
+//! and a Team, say) and per query. The account Lastdrop reads is Claude Code's, so only the
+//! answers of Claude Code's organisation count (`organizationUuid` in `.credentials.json`, else
+//! `oauthAccount.organizationUuid` in `.claude.json`): another organisation's numbers never show
+//! under this account, and readings do not alternate between organisations. When neither file
+//! names one (Desktop used without Claude Code), every organisation's answers count and the newest
+//! wins; the log says how many organisations were seen (a count only).
+//!
 //! **Privacy.** The cache holds the owner's conversations and the key holds the organisation id.
 //! Only usage entries' response info and body are read; keys are compared in place and never
-//! kept, logged or returned; the response info's buffer (its headers may hold cookies) is wiped
-//! after parsing; nothing but the usage windows and the content coding leaves this module.
+//! kept, logged or returned (an organisation is compared in place, and only counted); the response
+//! info's buffer (its headers may hold cookies) and the body's buffers are wiped after parsing;
+//! nothing but the usage windows and the content coding leaves this module.
 
 use std::path::{Path, PathBuf};
 
 use jiff::Timestamp;
 use lastdrop_core::model::SourceKind;
+use lastdrop_core::secret::SecretString;
 
-use super::blockfile::{BlockfileCache, CacheError, Entry};
+use super::blockfile::{BlockfileCache, CacheError, Entry, persistent_hash};
 use super::response_info::{self, ResponseInfo};
 use super::{ClaudeUsage, desktop, most_telling, oauth};
 use crate::FetchContext;
@@ -45,8 +58,11 @@ pub const MAX_INFO_BYTES: u64 = 256 << 10;
 pub const MAX_STORED_BODY: u64 = MAX_BODY_BYTES;
 /// Largest decoded body.
 pub const MAX_DECODED_BODY: usize = 1 << 20;
-/// Most usage entries considered (one per organisation and query; more is not expected).
-pub const MAX_CANDIDATES: usize = 16;
+/// Most usage entries considered (one per query of the organisation; a handful is usual). Only
+/// addresses are kept during the walk, and the walk keeps those created last, which is not always
+/// the newest answer (a revalidated entry keeps its creation time), so the cap is far above the
+/// usual count; reaching it is logged.
+pub const MAX_CANDIDATES: usize = 64;
 
 const FROM: SourceKind = SourceKind::ClaudeDesktopCache;
 
@@ -76,21 +92,24 @@ pub fn key_url(key: &[u8]) -> &[u8] {
 /// `https://claude.ai/api/organizations/<id>/usage` with any query (Desktop asks with and
 /// without `skip_spend`, `source` and other parameters, each its own entry).
 pub fn is_usage_key(key: &[u8]) -> bool {
+    usage_key_organisation(key).is_some()
+}
+
+/// The organisation id of a usage endpoint key ([`is_usage_key`]), in place in the key; `None`
+/// for any other key. Callers compare it and drop it; it is never kept or logged.
+pub fn usage_key_organisation(key: &[u8]) -> Option<&[u8]> {
     let url = key_url(key);
-    let Some(rest) = url.strip_prefix(USAGE_URL_PREFIX.as_bytes()) else {
-        return false;
-    };
+    let rest = url.strip_prefix(USAGE_URL_PREFIX.as_bytes())?;
     let path = rest
         .split(|b| *b == b'?' || *b == b'#')
         .next()
         .unwrap_or(rest);
-    let Some(slash) = path.iter().position(|b| *b == b'/') else {
-        return false;
-    };
+    let slash = path.iter().position(|b| *b == b'/')?;
     let (org, tail) = path.split_at(slash);
-    tail == b"/usage"
+    let usage = tail == b"/usage"
         && !org.is_empty()
-        && org.iter().all(|b| b.is_ascii_alphanumeric() || *b == b'-')
+        && org.iter().all(|b| b.is_ascii_alphanumeric() || *b == b'-');
+    usage.then_some(org)
 }
 
 /// What the source read, with the details the logs and the live smoke test show.
@@ -126,21 +145,30 @@ impl CachedUsage {
 }
 
 /// The source: [`read_detailed`] without the details.
-pub fn read(ctx: &FetchContext<'_>, desktop_dir: &Path) -> Result<ClaudeUsage, FetchError> {
-    read_detailed(ctx, desktop_dir).map(|cached| cached.usage)
+pub fn read(
+    ctx: &FetchContext<'_>,
+    desktop_dir: &Path,
+    organisation: Option<&SecretString>,
+) -> Result<ClaudeUsage, FetchError> {
+    read_detailed(ctx, desktop_dir, organisation).map(|cached| cached.usage)
 }
 
 /// Reads the newest cached usage response of every cache folder of `desktop_dir` (module docs).
 ///
+/// `organisation` is the organisation of the account being read (Claude Code's, when known):
+/// only its usage responses count. Without it, every organisation's do, and the newest wins
+/// (module docs, "Organisations").
+///
 /// - `FetchError::Unavailable`: no cache folder, a cache in Chromium's simple format, no usage
-///   response in it (Desktop has not opened its usage view, or the entry was evicted), or only
-///   incomplete or failed responses.
+///   response in it (Desktop has not opened its usage view, or the entry was evicted), only
+///   other organisations' responses, or only incomplete or failed responses.
 /// - `FetchError::Transient`: a file that cannot be read now, or a cache Chromium is rewriting.
 /// - `FetchError::Parse`: an unknown cache format, a body that cannot be decoded, or JSON that is
 ///   not a usage body.
 pub fn read_detailed(
     ctx: &FetchContext<'_>,
     desktop_dir: &Path,
+    organisation: Option<&SecretString>,
 ) -> Result<CachedUsage, FetchError> {
     if ctx.remaining().is_zero() {
         return Err(FetchError::Transient {
@@ -158,7 +186,7 @@ pub fn read_detailed(
     let mut best: Option<CachedUsage> = None;
     let mut failures = Vec::new();
     for dir in &dirs {
-        match read_dir(ctx, dir) {
+        match read_dir(ctx, dir, organisation) {
             Ok(cached) => {
                 if best
                     .as_ref()
@@ -197,26 +225,76 @@ fn cache_dirs(ctx: &FetchContext<'_>, desktop_dir: &Path) -> Vec<PathBuf> {
 }
 
 /// One cache folder (module docs, "Steps").
-fn read_dir(ctx: &FetchContext<'_>, dir: &Path) -> Result<CachedUsage, FetchError> {
+fn read_dir(
+    ctx: &FetchContext<'_>,
+    dir: &Path,
+    organisation: Option<&SecretString>,
+) -> Result<CachedUsage, FetchError> {
     let mut cache = BlockfileCache::open(ctx.fs, dir).map_err(cache_error)?;
-    let found = cache
-        .find(&mut |key| is_usage_key(key), MAX_CANDIDATES)
-        .map_err(cache_error)?;
+    // Organisations are compared in place in each key; only counts are kept (of the other
+    // organisations' responses, or of the distinct organisations by hash when none is known).
+    let mut others = 0u32;
+    let mut organisations: Vec<u32> = Vec::new();
+    let found = cache.find(
+        &mut |key| {
+            let Some(org) = usage_key_organisation(key) else {
+                return false;
+            };
+            match organisation {
+                Some(wanted) => {
+                    let ours = org.eq_ignore_ascii_case(wanted.expose().trim().as_bytes());
+                    others += u32::from(!ours);
+                    ours
+                }
+                None => {
+                    let hash = persistent_hash(org);
+                    if !organisations.contains(&hash) {
+                        organisations.push(hash);
+                    }
+                    true
+                }
+            }
+        },
+        MAX_CANDIDATES,
+    );
+    // The walk is done: Chromium may move the folder again (blockfile docs).
+    cache.release_files();
+    let found = found.map_err(cache_error)?;
     log::debug!(
         "claude: Desktop cache: visited {} entries (the index lists {}), skipped {}, {} usage \
-         responses",
+         responses, {others} of other organisations",
         found.visited,
         cache.num_entries(),
         found.skipped,
-        found.entries.len()
+        found.matched
     );
+    if organisations.len() > 1 {
+        log::info!(
+            "claude: Desktop cache: usage responses of {} organisations and Claude Code's \
+             organisation is not known: the newest is used",
+            organisations.len()
+        );
+    }
+    if found.matched as usize > found.entries.len() {
+        log::info!(
+            "claude: Desktop cache: {} usage responses, the {} created last are considered",
+            found.matched,
+            found.entries.len()
+        );
+    }
     if found.entries.is_empty() {
-        return Err(FetchError::Unavailable {
-            detail: format!(
+        let detail = if others > 0 {
+            format!(
+                "Claude Desktop's cached usage is for another organisation than Claude Code's \
+                 ({others} response(s))"
+            )
+        } else {
+            format!(
                 "no usage response among the {} entries of Claude Desktop's HTTP cache",
                 found.visited
-            ),
-        });
+            )
+        };
+        return Err(FetchError::Unavailable { detail });
     }
     let responses = found.entries.len();
     let mut failures = Vec::new();
@@ -229,7 +307,19 @@ fn read_dir(ctx: &FetchContext<'_>, dir: &Path) -> Result<CachedUsage, FetchErro
     }
     answers.sort_by_key(|(at, ..)| std::cmp::Reverse(*at));
     for (at, info, entry) in answers {
-        match usage_of(&mut cache, &entry, &info) {
+        let usage = usage_of(&mut cache, &entry, &info).and_then(|usage| {
+            // Both streams were read from the addresses the walk found: still this entry's?
+            match cache.still_current(&entry) {
+                Ok(true) => Ok(usage),
+                Ok(false) => Err(FetchError::Transient {
+                    from: FROM,
+                    detail: "Claude Desktop's cached usage changed while it was read".to_owned(),
+                    retry_after: None,
+                }),
+                Err(e) => Err(cache_error(e)),
+            }
+        });
+        match usage {
             Ok(mut usage) => {
                 usage.measured_at = Some(at);
                 return Ok(CachedUsage {
@@ -259,8 +349,7 @@ fn response_of(
         .map_err(cache_error)?;
     let info = response_info::parse(&bytes);
     // Best effort, like the credentials file's buffer: the headers may hold cookies.
-    bytes.fill(0);
-    std::hint::black_box(&bytes);
+    wipe(&mut bytes);
     let info = info.map_err(|e| FetchError::Parse {
         from: FROM,
         detail: format!("Claude Desktop's cached usage: {e}"),
@@ -288,16 +377,26 @@ fn usage_of(
     entry: &Entry,
     info: &ResponseInfo,
 ) -> Result<ClaudeUsage, FetchError> {
-    let stored = cache
+    let mut stored = cache
         .read_stream(entry, 1, MAX_STORED_BODY)
         .map_err(cache_error)?;
-    let body = response_info::decode_body(&stored, info, MAX_DECODED_BODY).map_err(|e| {
-        FetchError::Parse {
-            from: FROM,
-            detail: format!("Claude Desktop's cached usage: {e}"),
-        }
+    let decoded = response_info::decode_body(&stored, info, MAX_DECODED_BODY);
+    // Best effort, like stream 0's buffer: should Chromium have reused the blocks meanwhile, the
+    // bytes read may be another entry's (a conversation).
+    wipe(&mut stored);
+    let mut body = decoded.map_err(|e| FetchError::Parse {
+        from: FROM,
+        detail: format!("Claude Desktop's cached usage: {e}"),
     })?;
-    oauth::parse_from(&body, FROM)
+    let usage = oauth::parse_from(&body, FROM);
+    wipe(&mut body);
+    usage
+}
+
+/// Overwrites a buffer before it is dropped (best effort).
+fn wipe(bytes: &mut [u8]) {
+    bytes.fill(0);
+    std::hint::black_box(&bytes);
 }
 
 /// A cache failure as a fetch failure (texts name no path).

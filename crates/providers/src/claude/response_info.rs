@@ -251,7 +251,8 @@ fn token(name: &str) -> String {
 
 /// The stored body `stored` decoded to the bytes the page received (module docs): the cache's
 /// own zstd first, then each content coding of `info` in reverse order; at most `max` bytes at
-/// every step.
+/// every step. Each step's input is overwritten before it is dropped (best effort: should the
+/// blocks read belong to another entry by then, they could hold a conversation).
 pub fn decode_body(stored: &[u8], info: &ResponseInfo, max: usize) -> Result<Vec<u8>, DecodeError> {
     let mut body = match info.disk_zstd_size {
         Some(size) if size > max as u64 => return Err(DecodeError::TooLarge(max)),
@@ -259,37 +260,38 @@ pub fn decode_body(stored: &[u8], info: &ResponseInfo, max: usize) -> Result<Vec
         None => stored.to_vec(),
     };
     for coding in info.content_encoding.iter().rev() {
-        body = match coding.as_str() {
-            "identity" => continue,
-            "br" => capped(
-                brotli_decompressor::Decompressor::new(body.as_slice(), 4096),
-                max,
-                "br",
-            )?,
-            "zstd" => zstd(&body, max, "zstd")?,
-            "gzip" | "x-gzip" => capped(
-                flate2::read::MultiGzDecoder::new(body.as_slice()),
-                max,
-                "gzip",
-            )?,
-            // `deflate` is zlib-wrapped (RFC 9110 §8.4.1.2); some servers send it raw, which
-            // Chromium accepts too.
-            "deflate" => capped(
-                flate2::read::ZlibDecoder::new(body.as_slice()),
-                max,
-                "deflate",
-            )
-            .or_else(|_| {
-                capped(
-                    flate2::read::DeflateDecoder::new(body.as_slice()),
-                    max,
-                    "deflate",
-                )
-            })?,
-            other => return Err(DecodeError::Unsupported(token(other))),
-        };
+        if coding == "identity" {
+            continue;
+        }
+        let next = decode_one(&body, coding, max);
+        body.fill(0);
+        std::hint::black_box(&body);
+        body = next?;
     }
     Ok(body)
+}
+
+/// `body` decoded from one content coding, at most `max` bytes.
+fn decode_one(body: &[u8], coding: &str, max: usize) -> Result<Vec<u8>, DecodeError> {
+    match coding {
+        "br" => capped(
+            brotli_decompressor::Decompressor::new(body, 4096),
+            max,
+            "br",
+        ),
+        "zstd" => zstd(body, max, "zstd"),
+        "gzip" | "x-gzip" => capped(flate2::read::MultiGzDecoder::new(body), max, "gzip"),
+        // `deflate` is zlib-wrapped (RFC 9110 §8.4.1.2); some servers send it raw, which Chromium
+        // accepts too. Only data that is not zlib is tried raw: a body that decodes past the cap
+        // stays "too large" and is not decoded a second time.
+        "deflate" => match capped(flate2::read::ZlibDecoder::new(body), max, "deflate") {
+            Err(DecodeError::Corrupt(_)) => {
+                capped(flate2::read::DeflateDecoder::new(body), max, "deflate")
+            }
+            zlib => zlib,
+        },
+        other => Err(DecodeError::Unsupported(token(other))),
+    }
 }
 
 /// Everything `reader` gives, at most `max` bytes.

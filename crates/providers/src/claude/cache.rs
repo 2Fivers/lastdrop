@@ -11,10 +11,11 @@ use std::path::Path;
 
 use jiff::Timestamp;
 use lastdrop_core::model::SourceKind;
+use lastdrop_core::secret::SecretString;
 use serde::Deserialize;
 use serde_json::Value;
 
-use super::json::{UsageBody, instant_of, json_detail};
+use super::json::{Lenient, UsageBody, instant_of, json_detail};
 use super::{ClaudeUsage, file_error};
 use crate::FetchContext;
 use crate::error::FetchError;
@@ -103,4 +104,31 @@ pub fn parse(reader: impl Read, modified: Option<Timestamp>) -> Result<ClaudeUsa
 struct StateFile {
     #[serde(rename = "cachedUsageUtilization", default)]
     cached: Option<Value>,
+}
+
+/// The top level of `.claude.json` for [`read_organisation`]: everything but
+/// `oauthAccount.organizationUuid` is skipped while streaming (the account's e-mail address and
+/// names too).
+#[derive(Deserialize)]
+struct AccountFile {
+    #[serde(rename = "oauthAccount", default)]
+    account: Option<AccountEntry>,
+}
+
+#[derive(Deserialize)]
+struct AccountEntry {
+    #[serde(rename = "organizationUuid", default)]
+    organisation: Lenient<String>,
+}
+
+/// The organisation Claude Code is signed in to, from `.claude.json`'s
+/// `oauthAccount.organizationUuid` (streamed like [`read`]; Claude Code builds that keep their
+/// token in Credential Manager write no `.credentials.json`). Only compared in place with the
+/// organisation of Claude Desktop's cached usage, never logged or kept past the fetch. `None` when
+/// the file or the field is missing or unreadable.
+pub(crate) fn read_organisation(ctx: &FetchContext<'_>, state_file: &Path) -> Option<SecretString> {
+    let reader = ctx.fs.open(state_file, MAX_BYTES).ok()?;
+    let file: AccountFile = serde_json::from_reader(reader).ok()?;
+    let organisation = SecretString::new(file.account?.organisation.0?);
+    (!organisation.expose().trim().is_empty()).then_some(organisation)
 }

@@ -5,7 +5,8 @@
 //!    one — read-only, never refreshed, at most every 5 minutes per credential, `Retry-After`
 //!    honoured, stop on 401 until the token file changes.
 //! 2. [`desktop_cache`]: Claude Desktop's own last usage response, from its Chromium HTTP cache
-//!    (no token; read with [`blockfile`] and [`response_info`]).
+//!    (no token; read with [`blockfile`] and [`response_info`]), of Claude Code's organisation when
+//!    Claude Code names one.
 //! 3. [`desktop`]: Claude Desktop's `plan-usage-history.json` (no token).
 //! 4. [`cache`]: Claude Code's cached usage in `.claude.json` (no token).
 //!
@@ -70,6 +71,7 @@ use lastdrop_core::model::{
     SourceKind, WindowLen, catalog,
 };
 use lastdrop_core::refresh::{CredentialFingerprint, backoff};
+use lastdrop_core::secret::SecretString;
 use lastdrop_core::settings::ClaudeOptions;
 
 use crate::account::AccountSource;
@@ -403,7 +405,11 @@ impl Provider for ClaudeProvider {
         }
         if options.desktop_cache {
             let (result, note) = match desktop_dir {
-                Some(dir) => match desktop_cache::read_detailed(ctx, dir) {
+                Some(dir) => match desktop_cache::read_detailed(
+                    ctx,
+                    dir,
+                    organisation(ctx, config_dir, state_file).as_ref(),
+                ) {
                     Ok(cached) => {
                         let note = cached.note();
                         (Ok(cached.usage), Some(note))
@@ -511,6 +517,18 @@ impl Provider for ClaudeProvider {
     }
 }
 
+/// The organisation Claude Code is signed in to: `.credentials.json`'s `organizationUuid`, else
+/// `.claude.json`'s `oauthAccount.organizationUuid` (`desktop_cache` docs, "Organisations").
+/// Held for the fetch only, compared in place, never logged (`SecretString`: no `Debug` or
+/// `Display` of the value).
+pub fn organisation(
+    ctx: &FetchContext<'_>,
+    config_dir: &Path,
+    state_file: &Path,
+) -> Option<SecretString> {
+    oauth::read_organisation(ctx, config_dir).or_else(|| cache::read_organisation(ctx, state_file))
+}
+
 /// Size + mtime of the credentials file (module docs of [`Provider::credential_fingerprint`]).
 fn fingerprint_of(ctx: &FetchContext<'_>, config_dir: &Path) -> Option<CredentialFingerprint> {
     match ctx.fs.metadata(&oauth::credentials_path(config_dir)) {
@@ -606,24 +624,14 @@ fn age_text(age: SignedDuration) -> String {
     }
 }
 
-/// The index of the most recently measured reading. A reading counts as newer only when it is
-/// [`SAME_READING`] or more after the best so far, so of readings of one moment the earlier
-/// source in the order wins.
+/// The index of the most recently measured reading: of the readings less than [`SAME_READING`]
+/// before the newest one (the newest moment), the earliest source in the order. Each reading is
+/// measured against the newest, not against the best so far, so a reading between two others
+/// does not let a later source win over an earlier one of the same moment.
 fn freshest(readings: &[Candidate]) -> Option<usize> {
-    let mut best: Option<usize> = None;
-    for (i, reading) in readings.iter().enumerate() {
-        let newer = |b: usize| {
-            let same_until = readings[b]
-                .measured_at
-                .checked_add(SAME_READING)
-                .unwrap_or(Timestamp::MAX);
-            reading.measured_at >= same_until
-        };
-        if best.is_none_or(newer) {
-            best = Some(i);
-        }
-    }
-    best
+    let newest = readings.iter().map(|r| r.measured_at).max()?;
+    let moment_from = newest.checked_sub(SAME_READING).unwrap_or(Timestamp::MIN);
+    readings.iter().position(|r| r.measured_at > moment_from)
 }
 
 /// Fills the chosen reading's unknown reset times from older readings of the same window
