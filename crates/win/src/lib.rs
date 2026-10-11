@@ -24,10 +24,14 @@
 //!
 //! | Thread | Owns | Never does |
 //! |---|---|---|
-//! | **main** | Slint event loop: flyout, hover card, settings and about windows; the tray icon ([`tray`]); the app state | blocking I/O |
+//! | **main** | Slint event loop: flyout and hover card; the tray icon ([`tray`]); the app state | blocking I/O |
 //! | **readout** | the taskbar readout: a hidden top-level window that receives `TaskbarCreated`, the layered readout window, the WinEvent hooks on the taskbar, its own message loop and drawing | I/O, waiting on locks held by other threads, synchronous cross-process calls while holding a lock |
 //! | **occupancy** | a UI Automation client (MTA) that measures where the taskbar's app buttons are, with connection and transaction timeouts | anything else |
 //! | **refresh workers** | provider fetches (files, HTTP, `codex app-server`), one job per credential source at a time | touching UI objects |
+//!
+//! The table is the tray process's. The dialog process (settings and about windows, its own
+//! single-instance mutex, [`single_instance`]) runs only a main thread with the Slint event loop
+//! and the log's writer thread.
 //!
 //! Why a separate readout thread: a window attached to Explorer's taskbar can tie its thread's
 //! input queue to Explorer's; a slow frame or a blocked lock there could freeze the taskbar's

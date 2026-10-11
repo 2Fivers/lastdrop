@@ -8,7 +8,8 @@ trade-offs live in [`docs/adr/`](adr); the visual and behavioural spec lives in
 
 1. **Memory.** Under 10 MB private working set (Task Manager's "Memory") with the readout
    visible and the flyout built, flat after the flyout hides. Checked with
-   [`tools/measure`](../tools/measure) before every release.
+   [`tools/measure`](../tools/measure) before every release. Settings and About run in a
+   process of their own so they never add to it ("Processes").
 2. **Never disturb the shell or other tools.** Nothing we do may hang Explorer, steal focus,
    cover taskbar buttons, or sign the user out of Claude Code, Codex or anything else.
 3. **Honest data.** Every number carries its source and age. Unknown is shown as unknown,
@@ -30,7 +31,8 @@ crates/
                                    flyout placement, backdrop and theme, autostart,
                                    Credential Manager, single instance
   app/        lastdrop (binary)    Slint UI (flyout, hover card, settings, about), wiring,
-                                   refresh scheduler, settings and history persistence
+                                   refresh scheduler, settings and history persistence, the
+                                   dialog process
 spikes/                     the stack spikes (reference only, not built by the workspace)
 tools/measure/              memory and latency measurement
 docs/
@@ -39,11 +41,46 @@ docs/
 Dependency direction: `app → win, providers → core`. `core` depends on nothing
 Windows-specific and has no I/O.
 
+## Processes
+
+Two processes run the same `lastdrop.exe`:
+
+- **The tray process** runs all the time: tray icon, readout, flyout, hover card, refreshes,
+  history. Everything below ("Threads") is about it.
+- **The dialog process** (`lastdrop.exe --settings`, `--settings-pins` or `--about`) shows the
+  settings window or the about window and ends when its last window closes. The tray process
+  starts it for "Settings…", "Taskbar readout ▸ Pinned meters…", "About Lastdrop", the flyout's
+  gear and a card's "Settings" link. It does not wait for it and keeps no handle to it; it passes
+  its foreground right on (`AllowSetForegroundWindow`) so the dialog comes to the front.
+
+Why: the tray process measured 10.1–10.3 MB fresh and 11.9–12.25 MB once Settings had been
+opened. Slint's own caches kept only about 0.2 MB of that. The rest, about 1.4 MB, is what
+Windows sets up once per thread for a real decorated window with text fields (text services and
+IME, DWM, theme, UI Automation), and it stays as long as the process lives. In the dialog process
+it goes away with the dialog. Theme Studio (M4) will run there too.
+
+Single instance and messages, all per session ("Single instance" below):
+
+- The dialog process has its own mutex (`Local\Lastdrop.Dialog`). A second launch posts the
+  dialog it wants (the message's `WPARAM`) to the running dialog process, which opens it or brings
+  it to the front, and exits.
+- After Apply the dialog process writes `settings.json` itself (atomic) and posts
+  `Lastdrop.SettingsChanged` to the tray process. The tray process re-reads the file and applies
+  it (hotkey, services, readout, refresh plan); a missing or broken file is ignored. It does not
+  write the file again. It keeps its own pause: the tray menu owns the pause, and the dialog keeps
+  the pause the file has when Apply re-reads it.
+- Saving or removing the Meshy key happens in the dialog process (Credential Manager); the same
+  message, with another flag, makes the tray process lift Meshy's sign-in stop and read again.
+- Autostart is set by the dialog process. A changed hotkey is tested there (registered and
+  released at once) before it is saved; the tray process registers it for real.
+
+The dialog process logs to `settings.log`, the tray process to `lastdrop.log`.
+
 ## Threads
 
 | Thread | Owns | Never does |
 |---|---|---|
-| **main** | Slint event loop: flyout, hover card, settings and about windows; the tray icon (our own `Shell_NotifyIcon`, version 4); the app state | blocking I/O |
+| **main** | Slint event loop: flyout and hover card; the tray icon (our own `Shell_NotifyIcon`, version 4); the app state | blocking I/O |
 | **readout** | the taskbar readout: a hidden top-level window that receives `TaskbarCreated`, the layered readout window (a topmost `WS_POPUP` over the taskbar, never parented into it; readout-spec §6.1), the WinEvent hooks on the taskbar, its own message loop and drawing | I/O, waiting on locks held by other threads, synchronous cross-process calls while holding a lock |
 | **occupancy** | a UI Automation client (MTA) that measures where the taskbar's app buttons are, with connection and transaction timeouts | anything else |
 | **refresh workers** | provider fetches (files, HTTP, `codex app-server`), one job per credential source at a time | touching UI objects |
@@ -56,6 +93,10 @@ blocks the flyout. The readout is never parented into the taskbar: a cross-proce
 attaches its thread's input queue to Explorer's, which in the reference tool froze the taskbar's
 input (its issues #22 and #92). The readout thread does nothing but draw a small model and handle
 a handful of messages.
+
+The dialog process has only its main thread (Slint event loop, settings and about windows) and
+the log's writer thread. As a dialog it may wait on the disk: it reads and writes `settings.json`
+on its main thread.
 
 Messages between threads: workers send results to the main thread with
 `slint::invoke_from_event_loop`; the main thread hands the readout a new immutable
@@ -137,7 +178,10 @@ Rules for every provider:
   high contrast; change notifications re-render.
 - **Autostart:** `HKCU\…\Run\Lastdrop`. **Secrets:** Credential Manager, generic credentials
   named `Lastdrop:<provider>:<account>:<name>`. **Single instance:** `Local\Lastdrop` mutex; a
-  second launch asks the first to open the flyout.
+  second launch asks the first to open the flyout. The dialog process has its own mutex,
+  `Local\Lastdrop.Dialog`. Each of the three channels (open the flyout, open a dialog, settings
+  changed) is a message-only listener window of its own class with a registered message, found
+  with `FindWindowExW(HWND_MESSAGE, …)`.
 
 ## App (`lastdrop`)
 
@@ -155,8 +199,11 @@ Rules for every provider:
   5 minutes, 90 days); `%LOCALAPPDATA%\Lastdrop\state.json` (what the app remembers that is
   not a setting: the meters a source has reported, so their room in the readout survives a
   restart; meter keys and names only, no secrets); logs in `%LOCALAPPDATA%\Lastdrop\logs`
-  (rotated, local only). Start-up reads them on the main thread before the event loop; every
-  later write is queued for the writer thread, so the UI thread never waits on the disk.
+  (rotated, local only; `lastdrop.log` for the tray process, `settings.log` for the dialog
+  process). Start-up reads them on the main thread before the event loop; every later write is
+  queued for the writer thread, so the UI thread never waits on the disk. The one later read is
+  `settings.json` when the dialog process says it changed (a few kilobytes). The dialog process
+  writes `settings.json` itself; it never writes the state file or history.
 - **No telemetry.** The only network traffic is to the services whose usage is being read.
 
 ## Quality bar

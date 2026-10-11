@@ -130,7 +130,7 @@ pub enum Due {
     /// are read on workers because the main thread does no I/O (ARCHITECTURE "Threads"); without
     /// probes an auth stop could never lift by itself ("stop on 401 until the credential file
     /// changes"). Sources whose provider has no fingerprint (Meshy) get [`Due::Never`] instead and
-    /// are lifted by the settings window storing a new key.
+    /// are lifted when the settings window stores a new key (the dialog process tells the app).
     ProbeCredential(Timestamp),
     /// Not automatically: manual mode after the run's first read, paused, or auth-stopped
     /// without a fingerprint.

@@ -8,7 +8,8 @@
 //! [`SecretString`]'s own drop). Error texts carry the Win32 message only — never the secret and
 //! never the target name (it contains the account label).
 //!
-//! Threading: any thread (refresh workers read, the settings window writes).
+//! Threading: any thread (the tray process's refresh workers read; the settings window, in the
+//! dialog process, writes).
 
 use lastdrop_core::secret::SecretString;
 use windows::Win32::Foundation::{ERROR_NOT_FOUND, FILETIME, WIN32_ERROR};
