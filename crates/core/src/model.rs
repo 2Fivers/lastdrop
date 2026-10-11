@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::glyph::ProviderGlyph;
 
-/// A service Lastdrop reads (R§2 "Service"). M2 adds Copilot, Cursor, Antigravity, … .
+/// A service Lastdrop reads (R§2 "Service"). M2 adds Cursor, Antigravity, … .
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ProviderId {
@@ -18,20 +18,28 @@ pub enum ProviderId {
     Claude,
     /// OpenAI Codex: 5-hour and weekly windows.
     Codex,
+    /// GitHub Copilot: monthly quotas (premium requests; chat and completions on Copilot Free).
+    Copilot,
     /// Meshy: a credit balance.
     Meshy,
 }
 
 impl ProviderId {
     /// Every provider, in the default service order (settings default, F§2.2).
-    pub const ALL: [ProviderId; 3] = [ProviderId::Claude, ProviderId::Codex, ProviderId::Meshy];
+    pub const ALL: [ProviderId; 4] = [
+        ProviderId::Claude,
+        ProviderId::Codex,
+        ProviderId::Copilot,
+        ProviderId::Meshy,
+    ];
 
     /// Stable lower-case id used in settings, history file names and credential names
-    /// (`claude`, `codex`, `meshy`). Never changes once shipped.
+    /// (`claude`, `codex`, `copilot`, `meshy`). Never changes once shipped.
     pub const fn as_str(self) -> &'static str {
         match self {
             ProviderId::Claude => "claude",
             ProviderId::Codex => "codex",
+            ProviderId::Copilot => "copilot",
             ProviderId::Meshy => "meshy",
         }
     }
@@ -47,6 +55,7 @@ impl ProviderId {
         match self {
             ProviderId::Claude => "Claude",
             ProviderId::Codex => "Codex",
+            ProviderId::Copilot => "Copilot",
             ProviderId::Meshy => "Meshy",
         }
     }
@@ -64,6 +73,7 @@ impl ProviderId {
         match self {
             ProviderId::Claude => Some("Claude Code"),
             ProviderId::Codex => Some("Codex"),
+            ProviderId::Copilot => Some("GitHub CLI"),
             ProviderId::Meshy => None,
         }
     }
@@ -319,11 +329,16 @@ const MESHY_METERS: [MeterDef; 1] = [MeterDef {
 /// The R§2 definitions of a service's always-present meters, in meter order (English names;
 /// R§5.9 localizes them with the other strings when a second language arrives). Claude's
 /// per-model weekly windows come from readings (order 2, 3, … in the service's order). A Codex
-/// plan with other window lengths reports meters outside the catalogue (`codex::meter`).
+/// plan with other window lengths reports meters outside the catalogue (`codex::meter`). Copilot
+/// has no always-present meter.
 pub const fn catalog(provider: ProviderId) -> &'static [MeterDef] {
     match provider {
         ProviderId::Claude => &CLAUDE_METERS,
         ProviderId::Codex => &CODEX_METERS,
+        // Which monthly quotas exist depends on the plan (premium requests on paid plans, chat
+        // and completions on Copilot Free), so none is always present: they come from readings
+        // (`lastdrop_providers::copilot::meter_names`).
+        ProviderId::Copilot => &[],
         ProviderId::Meshy => &MESHY_METERS,
     }
 }
@@ -463,6 +478,8 @@ pub enum SourceKind {
     CodexAppServer,
     /// The newest Codex rollout file's `token_count.rate_limits`.
     CodexRollout,
+    /// `GET https://api.github.com/copilot_internal/user` with the GitHub CLI's sign-in.
+    CopilotApi,
     /// `GET https://api.meshy.ai/openapi/v1/balance`.
     MeshyApi,
 }

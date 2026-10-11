@@ -140,7 +140,7 @@ pub fn reuse_providers(
                     before.provider_options.claude == after.provider_options.claude
                 }
                 ProviderId::Codex => before.provider_options.codex == after.provider_options.codex,
-                ProviderId::Meshy => true,
+                ProviderId::Copilot | ProviderId::Meshy => true,
             };
             match existing.iter().find(|e| e.id() == p.id()) {
                 Some(kept) if unchanged => kept.clone(),
@@ -574,6 +574,10 @@ pub(crate) mod tests {
             ProviderId::Codex => AccountSource::Codex {
                 account: AccountKey::primary(),
                 codex_home: home.join(".codex"),
+            },
+            ProviderId::Copilot => AccountSource::Copilot {
+                account: AccountKey::primary(),
+                config_dir: home.join(r"AppData\Roaming\GitHub CLI"),
             },
             ProviderId::Meshy => AccountSource::Meshy {
                 account: AccountKey::primary(),

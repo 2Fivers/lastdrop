@@ -1,0 +1,18 @@
+{
+  "access_type_sku": "free_limited_copilot",
+  "quota_snapshots": {
+    "chat": {
+      "entitlement": 200,
+      "quota_remaining": 0.0,
+      "overage_count": 0,
+      "overage_permitted": false,
+      "unlimited": false
+    },
+    "completions": {
+      "entitlement": 2000,
+      "percent_remaining": null,
+      "unlimited": false
+    }
+  },
+  "quota_reset_date": "2026-10-20"
+}

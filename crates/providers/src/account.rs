@@ -50,6 +50,14 @@ pub enum AccountSource {
         /// `CODEX_HOME`, else `~\.codex`: `auth.json`, `sessions\…\rollout-*.jsonl`.
         codex_home: PathBuf,
     },
+    /// A GitHub Copilot account, read with the GitHub CLI's sign-in.
+    Copilot {
+        /// The account key from settings.
+        account: AccountKey,
+        /// The GitHub CLI's config folder (`hosts.yml`): `GH_CONFIG_DIR`, else
+        /// `%XDG_CONFIG_HOME%\gh`, else `%APPDATA%\GitHub CLI`, as gh looks for it.
+        config_dir: PathBuf,
+    },
     /// A Meshy account.
     Meshy {
         /// The account key from settings.
@@ -71,6 +79,8 @@ impl AccountSource {
     ///   belongs to the default account.
     /// - **Codex**: `CODEX_HOME` (when set and not empty), else `~\.codex`; or the
     ///   `CodexHome` folder.
+    /// - **Copilot**: gh's config folder: `GH_CONFIG_DIR`, else `%XDG_CONFIG_HOME%\gh`, else
+    ///   `%APPDATA%\GitHub CLI` (else `~\AppData\Roaming\GitHub CLI`).
     /// - **Meshy**: the credential `Lastdrop:meshy:<account>:api_key`, or the `ApiKey` name.
     ///
     /// A source kind that does not belong to the provider (a Codex home for Claude) or a missing
@@ -125,6 +135,24 @@ impl AccountSource {
                 account: key,
                 codex_home: path.clone(),
             }),
+            (ProviderId::Copilot, SourceSettings::Default) => {
+                let config_dir = match non_empty_var(env, crate::copilot::GH_CONFIG_DIR_VAR) {
+                    Some(dir) => dir,
+                    None => match non_empty_var(env, "XDG_CONFIG_HOME") {
+                        Some(xdg) => xdg.join("gh"),
+                        None => non_empty_var(env, "APPDATA")
+                            .or_else(|| env.home_dir().map(|h| h.join("AppData").join("Roaming")))
+                            .ok_or_else(|| FetchError::Unavailable {
+                                detail: "no user profile folder".to_owned(),
+                            })?
+                            .join("GitHub CLI"),
+                    },
+                };
+                Ok(AccountSource::Copilot {
+                    account: key,
+                    config_dir,
+                })
+            }
             (ProviderId::Meshy, SourceSettings::Default) => Ok(AccountSource::Meshy {
                 credential: CredentialName {
                     provider: ProviderId::Meshy,
@@ -158,6 +186,7 @@ impl AccountSource {
         match self {
             AccountSource::Claude { .. } => ProviderId::Claude,
             AccountSource::Codex { .. } => ProviderId::Codex,
+            AccountSource::Copilot { .. } => ProviderId::Copilot,
             AccountSource::Meshy { .. } => ProviderId::Meshy,
         }
     }
@@ -167,6 +196,7 @@ impl AccountSource {
         match self {
             AccountSource::Claude { account, .. }
             | AccountSource::Codex { account, .. }
+            | AccountSource::Copilot { account, .. }
             | AccountSource::Meshy { account, .. } => account,
         }
     }

@@ -1,0 +1,17 @@
+{
+  "access_type_sku": "invented_paid_sku",
+  "copilot_plan": "individual",
+  "quota_snapshots": {
+    "chat": { "entitlement": 0, "remaining": 0, "percent_remaining": 100.0, "unlimited": true },
+    "completions": { "entitlement": 0, "remaining": 0, "percent_remaining": 100.0, "unlimited": true },
+    "premium_interactions": {
+      "entitlement": 300,
+      "remaining": 120,
+      "percent_remaining": 40.0,
+      "overage_count": 0,
+      "overage_permitted": true,
+      "unlimited": false
+    }
+  },
+  "quota_reset_date_utc": "2026-11-01T00:00:00.000Z"
+}

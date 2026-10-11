@@ -108,7 +108,7 @@ Messages between threads: workers send results to the main thread with
 - **Snapshot** — one reading of one account of one service: provider, account (label, plan),
   `measured_at` (when the service computed it), `fetched_at`, `source` (for example
   `ClaudeOAuthUsage`, `ClaudeDesktopCache`, `ClaudeDesktopHistory`, `CodexAppServer`,
-  `CodexRollout`, `MeshyApi`),
+  `CodexRollout`, `CopilotApi`, `MeshyApi`),
   `meters`, `balances`, and `health` (`Ok`, `Stale`, `SignInRequired`, `Error`).
 - **Meter** — a usage window: stable id (`five_hour`, `weekly`, `weekly:fable`, …), label,
   `used` as a share (1.0 = the limit; may exceed 1 when the service says so), whether the limit
@@ -145,6 +145,7 @@ fixed order and returns the freshest success; every attempt is logged (without s
 |---|---|
 | Claude | OAuth usage endpoint with Claude Code's token when the file holds a usable one, read-only, never refreshed, at most every 5 min, `Retry-After` honoured → Claude Desktop's own last usage response in its Chromium HTTP cache (`Cache\Cache_Data`, block-file format, read-only and shared, no token; only the answers of Claude Code's organisation when Claude Code names one) → Claude Desktop's `plan-usage-history.json` (no token) → Claude Code's cached usage in `.claude.json`; the most recently measured reading wins, readings under 2 min apart count as one and the earlier source wins |
 | Codex | newest rollout `token_count.rate_limits` while younger than 10 min (nothing started) → `codex app-server -c features.plugins=false` (`account/rateLimits/read`, newest bundled or PATH `codex.exe`, no window, 8 s init / 3 s per call; plugins off so no marketplace sync starts; started at most every 15 min per `CODEX_HOME`, its last answer standing in between, earlier for a manual refresh or once a window of that answer has reset; so the service counts as fresh for 15 min plus the poll interval, not from the spec) → newest rollout `token_count.rate_limits` (session files read again only when they changed) |
+| Copilot | `GET https://api.github.com/copilot_internal/user` (undocumented; what Copilot's editor clients read) with the GitHub CLI's token from `gh auth token --hostname github.com`, run without a window per fetch (`gh.exe` on `PATH`, else the installer's `GitHub CLI` folder), held in memory for the one request; at most every 5 min; `hosts.yml` in gh's config folder is the credential fingerprint. Each limited `quota_snapshots` entry becomes a calendar-month meter: `premium` (paid plans), `chat` and `completions` (Copilot Free); unlimited and zero-entitlement quotas are left out, so the catalogue has none |
 | Meshy | `GET https://api.meshy.ai/openapi/v1/balance` with the key from Credential Manager |
 
 Rules for every provider:

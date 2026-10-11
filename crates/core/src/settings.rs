@@ -80,14 +80,18 @@ pub struct Hotkey {
 
 impl Default for Settings {
     /// First-run settings: Claude and Codex enabled (they read local files and need no secret),
-    /// Meshy present but disabled until the user stores a key; refresh every 5 minutes; readout
-    /// on, auto rows, clock times (R§4.3, R§5.2).
+    /// Copilot present but disabled until the user turns it on (it needs the GitHub CLI signed
+    /// in), Meshy present but disabled until the user stores a key; refresh every 5 minutes;
+    /// readout on, auto rows, clock times (R§4.3, R§5.2).
     fn default() -> Settings {
         Settings {
             version: SETTINGS_VERSION,
             providers: ProviderId::ALL
                 .into_iter()
-                .map(|id| ProviderEntry::Known(ProviderSettings::new(id, id != ProviderId::Meshy)))
+                .map(|id| {
+                    let on = matches!(id, ProviderId::Claude | ProviderId::Codex);
+                    ProviderEntry::Known(ProviderSettings::new(id, on))
+                })
                 .collect(),
             provider_options: ProviderOptions::default(),
             refresh: RefreshSettings::default(),
@@ -115,6 +119,21 @@ impl Settings {
             ProviderEntry::Known(p) if p.id == id => Some(p),
             _ => None,
         })
+    }
+
+    /// Adds an entry, turned off, for every provider this build knows that the settings lack (a
+    /// service added since the file was written), after the existing ones, so it shows in the
+    /// settings window without starting to read by itself. Returns whether it added any.
+    pub fn add_new_providers(&mut self) -> bool {
+        let missing: Vec<ProviderId> = ProviderId::ALL
+            .into_iter()
+            .filter(|id| self.provider(*id).is_none())
+            .collect();
+        for id in &missing {
+            self.providers
+                .push(ProviderEntry::Known(ProviderSettings::new(*id, false)));
+        }
+        !missing.is_empty()
     }
 
     /// Enabled known providers in service order; the index is the service order used for
@@ -417,13 +436,49 @@ mod tests {
     }
 
     #[test]
+    fn new_providers_are_added_turned_off() {
+        let mut s = Settings {
+            providers: vec![
+                ProviderEntry::Known(ProviderSettings::new(ProviderId::Meshy, true)),
+                ProviderEntry::Known(ProviderSettings::new(ProviderId::Claude, true)),
+            ],
+            ..Settings::default()
+        };
+        assert!(s.add_new_providers());
+        let ids: Vec<(ProviderId, bool)> = s
+            .providers
+            .iter()
+            .filter_map(ProviderEntry::known)
+            .map(|p| (p.id, p.enabled))
+            .collect();
+        assert_eq!(
+            ids,
+            vec![
+                (ProviderId::Meshy, true),
+                (ProviderId::Claude, true),
+                (ProviderId::Codex, false),
+                (ProviderId::Copilot, false),
+            ]
+        );
+        assert!(!s.add_new_providers());
+        assert!(!Settings::default().clone().add_new_providers());
+    }
+
+    #[test]
+    fn copilot_starts_off() {
+        let s = Settings::default();
+        assert!(!s.provider(ProviderId::Copilot).expect("copilot").enabled);
+        assert!(s.provider(ProviderId::Codex).expect("codex").enabled);
+    }
+
+    #[test]
     fn unknown_fields_and_unknown_providers_survive_a_round_trip() {
         let json = r#"{
             "version": 1,
             "future_field": { "a": 1 },
             "providers": [
                 { "id": "claude", "enabled": true, "new_knob": 3 },
-                { "id": "copilot", "enabled": true }
+                { "id": "someday", "enabled": true }
             ],
             "readout": { "enabled": false, "density": "tight" }
         }"#;
@@ -434,7 +489,7 @@ mod tests {
         assert!(!s.readout.enabled);
         let out = serde_json::to_value(&s).expect("serialize");
         assert_eq!(out["future_field"]["a"], 1);
-        assert_eq!(out["providers"][1]["id"], "copilot");
+        assert_eq!(out["providers"][1]["id"], "someday");
         assert_eq!(out["readout"]["density"], "tight");
     }
 }

@@ -145,6 +145,7 @@ fn snapshot(provider: ProviderId, meters: Vec<Meter>, t: Timestamp) -> Snapshot 
         source: match provider {
             ProviderId::Claude => SourceKind::ClaudeOAuthUsage,
             ProviderId::Codex => SourceKind::CodexAppServer,
+            ProviderId::Copilot => SourceKind::CopilotApi,
             ProviderId::Meshy => SourceKind::MeshyApi,
         },
         measured_at: t,

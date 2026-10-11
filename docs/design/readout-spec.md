@@ -61,7 +61,9 @@ hover card and flyout), and its order within the service.
 | Claude | weekly, all models | `Wk` | weekly | Weekly · all models | 7 d | no |
 | Claude | weekly, per model (e.g. Fable) | model name, e.g. `Fable` | Fable weekly | Weekly · Fable | 7 d | no |
 | Codex | 5-hour / weekly | `5h` / `Wk` | 5-hour / weekly | 5-hour session / Weekly | 5 h / 7 d | yes / no |
-| Copilot | monthly premium requests | `Mo` | monthly | Premium requests | calendar month | no |
+| Copilot | monthly premium requests (paid plans) | `Prem` | premium | Premium requests | calendar month | no |
+| Copilot | monthly chat messages (Copilot Free) | `Chat` | chat | Chat messages | calendar month | no |
+| Copilot | monthly code completions (Copilot Free) | `Code` | completions | Code completions | calendar month | no |
 | Meshy | credits (balance) | `Cr` | credits | Credits | — | — |
 
 For a calendar-month window `L` is the actual length of that month (`resets_at − start of month`).
@@ -925,6 +927,9 @@ STALE(SIGN_IN) at once.
 | Copilot | `<rect x="0.9" y="2.6" width="10.2" height="7.9" rx="3" stroke-width="1.05"/><circle cx="4.3" cy="6.55" r="1.15" fill/><circle cx="7.7" cy="6.55" r="1.15" fill/><path d="M6 2.6V1.2" stroke-width="1.05" stroke-linecap="round"/>` |
 | Meshy | `<path d="M6 1.3 11.1 10.4H0.9z" stroke-width="1.05" stroke-linejoin="round"/><path d="M3.45 5.85h5.1L6 10.4z" stroke-width="1" stroke-linejoin="round"/>` |
 | Others | monogram, §6.4 |
+
+Copilot's filled eyes are drawn as r 0.62 circles stroked at 1.05, which covers the same disc with the stroke alone
+(the Slint glyph strokes every path with one width and never fills).
 
 At 16 px (hover card, flyout) the same paths are scaled by 16/12, strokes included.
 
