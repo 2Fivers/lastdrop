@@ -2195,9 +2195,10 @@ mod review {
         let locale = gb();
         let cx = build_cx(now(), &locale, &settings);
         let readout = build_readout(&eval, &cx);
+        // The 5-hour reading is older than 5 hours: its window has ended (R§3.9 ENDED).
         assert_eq!(
             cell_texts(&readout, 0),
-            ["10%", "23h ago"],
+            ["–", "23h ago"],
             "AGE, not No data"
         );
         assert_eq!(cell_texts(&readout, 1), ["55%", "23h ago"]);
@@ -2216,5 +2217,135 @@ mod review {
                 .tooltip
                 .contains("has no new reading")
         );
+    }
+
+    #[test]
+    fn a_five_hour_reading_older_than_five_hours_shows_the_window_ended() {
+        // Claude Desktop's history (no reset times) last wrote at 07:41: the 5-hour window it
+        // was read in is over by 12:41 at the latest, whatever came after (R§3.9 ENDED).
+        let settings = settings_with(&[ProviderId::Claude]);
+        let read = at(10, 10, 7, 41);
+        let snap = snapshot(
+            ProviderId::Claude,
+            vec![five_hour(0.42, None), weekly(0.61, None)],
+            read,
+        );
+        let svc = |snap: &Snapshot| Svc::new(snap.clone()).status(fresh(read));
+        let five_key = key(ProviderId::Claude, MeterId::FIVE_HOUR);
+        let locale = gb();
+
+        // One minute before: still the stale reading, frozen.
+        let before = at(10, 10, 12, 40);
+        let eval = eval_once(&[svc(&snap)], &settings, &History::new(), before);
+        let (_, five) = eval.assessment(&five_key).expect("5h");
+        assert_eq!(five.state, RowState::Stale(StaleReason::OldReading));
+        let model = build_readout(&eval, &build_cx(before, &locale, &settings));
+        assert_eq!(cell_texts(&model, 0), ["42%", "4h ago"]);
+
+        // From 12:41 on: ended, value unknown.
+        let mut memory = EvalMemory::default();
+        let eval = evaluate(
+            &[svc(&snap)],
+            &settings,
+            &History::new(),
+            now(),
+            &mut memory,
+        );
+        let (service, five) = eval.assessment(&five_key).expect("5h");
+        assert_eq!(
+            service.freshness,
+            stats::Freshness::Stale(StaleReason::OldReading)
+        );
+        assert_eq!(five.state, RowState::Ended);
+        assert_eq!(five.class, DisplayClass::Loading);
+        assert_eq!((five.severity, five.pressure), (None, 0.0));
+        match &five.meter {
+            AssessedMeter::Window(w) => {
+                assert_eq!(
+                    w.reset,
+                    ResetView::Ended {
+                        by: at(10, 10, 12, 41)
+                    }
+                );
+                assert_eq!((w.resets_at, w.elapsed, w.forecast), (None, None, None));
+            }
+            other => panic!("expected a window, got {other:?}"),
+        }
+        // The weekly, which says something about now, is the winner.
+        assert_eq!(eval.winner, Some(key(ProviderId::Claude, MeterId::WEEKLY)));
+
+        let cx = build_cx(now(), &locale, &settings);
+        let model = build_readout(&eval, &cx);
+        assert_eq!(model.rows[0].key, five_key);
+        assert_eq!(cell_texts(&model, 0), ["–", "5h ago"]);
+        assert_eq!(
+            model.rows[0].right.value.as_ref().map(|v| v.role),
+            Some(ColorRole::TextSecondary)
+        );
+        assert_eq!(cell_texts(&model, 1), ["61%", "5h ago"]);
+        assert_eq!(compact_texts(&model, 0), ["–"]);
+        let bar = &model.rows[0].bar;
+        assert_eq!(
+            (bar.mode, bar.elapsed, bar.dashed),
+            (BarMode::Loading, None, false)
+        );
+        let geom = bar_geometry(bar, 40.0, 16.0, 1.0);
+        assert_eq!((geom.fill_end, geom.tick), (0, None), "track only, no tick");
+        assert_eq!(model.rows[0].uia_value, None);
+        assert_eq!(
+            model.uia.root_name,
+            concat!(
+                "Lastdrop. Claude 5-hour session: ended by 12:41, no newer reading. ",
+                "Claude: no new reading, last reading 5 hours ago. ",
+                "Then: weekly, all models 61 percent used."
+            )
+        );
+
+        let card = build_hover_card(&eval, HoverAnchor::Readout, &eval.readout_rows, &cx);
+        match &card.services[0].meters[0] {
+            CardMeter::Window(w) => {
+                assert_eq!(w.value, "–");
+                assert_eq!(w.reset_line, "Ended by 12:41");
+                assert_eq!((w.forecast.as_deref(), w.reset_in.as_deref()), (None, None));
+            }
+            CardMeter::Balance(_) => panic!("window expected"),
+        }
+        let flyout = build_flyout(&eval, &History::new(), false, &cx);
+        let CardBody::Meters(rows) = &flyout.cards[0].body else {
+            panic!("meters expected");
+        };
+        assert_eq!((rows[0].value.as_str(), rows[0].pct), ("–", None));
+        assert_eq!(rows[0].right.text, "Ended by 12:41");
+        assert_eq!(rows[0].tone, Tone::Stale);
+        assert_eq!(rows[0].line, None);
+        assert!(matches!(
+            build_tray(&eval, &cx).icon,
+            TrayIcon::Digits { .. }
+        ));
+
+        // A service that reports fresh with that old reading (a scheduler that counts the fetch)
+        // still shows the window ended, with the reading's age.
+        let fresh_status = Svc::new(snap.clone()).status(fresh(now()));
+        let eval = eval_once(&[fresh_status], &settings, &History::new(), now());
+        let model = build_readout(&eval, &cx);
+        assert_eq!(cell_texts(&model, 0), ["–", "5h ago"]);
+        assert_eq!(
+            model.rows[0].right.time.first().map(|r| match r {
+                lastdrop_core::readout::Run::Text(t) => t.role,
+                lastdrop_core::readout::Run::Glyph(g) => g.role,
+            }),
+            Some(ColorRole::TextSecondary)
+        );
+
+        // A reading that was not using the window (`0%`) has nothing that ended: still IDLE-like
+        // (stale `0%`).
+        let idle = snapshot(
+            ProviderId::Claude,
+            vec![five_hour(0.0, None), weekly(0.61, None)],
+            read,
+        );
+        let eval = eval_once(&[svc(&idle)], &settings, &History::new(), now());
+        let (_, five) = eval.assessment(&five_key).expect("5h");
+        assert_eq!(five.state, RowState::Stale(StaleReason::OldReading));
     }
 }

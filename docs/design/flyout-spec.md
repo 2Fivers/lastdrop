@@ -193,6 +193,7 @@ Trouble line  margin-top 4, 12/16 TextSecondary, one line, ellipsis (only in the
 | EXHAUSTED | ● + 4 + `Back 16:30` (no reset time: `Empty`) | `Used up since 14:58. Back in 1 h 32 min.` (`since` omitted if unknown) |
 | STALE | `Resets 14:56` (TextSecondary) | — (the card's message line explains) |
 | LOADING | — ; value `–`; bar track only | — |
+| ENDED (R§3.9) | `Ended by 17:42` (TextSecondary, no glyph); value `–`; bar track only, no tick | — |
 
 - The trouble line is one line with an ellipsis; the templates above fit 310 px in en-US with AM/PM (widest
   measured: `Nearly used up…` 308 px, `Empty ≈ 3:02 PM, 1 h 28 min before the 4:30 PM reset.` 296 px).

@@ -9,7 +9,9 @@ use crate::consts::CARD_FORECAST_MAX_PCT;
 use crate::consts::layout::{RESET_GLYPH, RESET_GLYPH_GAP, SEVERITY_GLYPH, SEVERITY_GLYPH_GAP};
 use crate::glyph::{Icon, SeverityGlyph};
 use crate::readout::{CompactCell, GlyphKind, GlyphRun, RightCell, Run, TextRun, TextStyle};
-use crate::stats::{AssessedMeter, Assessment, ServiceEval, StaleReason, runway_minutes};
+use crate::stats::{
+    AssessedMeter, Assessment, Freshness, ServiceEval, StaleReason, runway_minutes,
+};
 use jiff::Timestamp;
 
 /// A text run.
@@ -162,6 +164,31 @@ pub(crate) fn stale_status(
     }
 }
 
+/// The time column of an ENDED row (R§5.7): the status a STALE row in its place would show
+/// (REASON or AGE) when the service is stale, else the reading's AGE (TextSecondary).
+fn ended_status(
+    a: &Assessment,
+    service: &ServiceEval,
+    pos: RowPosition,
+    cx: &TextContext<'_>,
+) -> TextRun {
+    match service.freshness {
+        Freshness::Stale(reason) => stale_status(reason, service, pos, cx),
+        Freshness::Fresh => {
+            let read = match &a.meter {
+                AssessedMeter::Window(w) => Some(w.reading_at),
+                AssessedMeter::Balance(b) => Some(b.reading_at),
+                AssessedMeter::Loading => None,
+            };
+            let age = read.or(service.reading_at).map_or_else(
+                || cx.strings.template(Msg::NoReset).to_owned(),
+                |t| age_token(t, cx),
+            );
+            run(age, TextStyle::ROW, ColorRole::TextSecondary)
+        }
+    }
+}
+
 /// Where a row sits among the readout rows of its service. A stale service's rows take, in
 /// order, REASON then AGE (R§5.7 "STALE status, per service"), so the cell depends on it.
 ///
@@ -192,6 +219,7 @@ pub struct RowPosition {
 /// | EXHAUSTED        | ● + `Back 16:30` (no reset time, or balance: ● + `Empty`)                  |
 /// | JUST_RESET       | `0%` + `↺7d` (the new `R'`)                                                |
 /// | STALE            | `42%` (stale colour) + REASON or AGE                                       |
+/// | ENDED            | `–` in the VALUE box + AGE (stale service: REASON or AGE as STALE)         |
 ///
 /// STALE details: a one-row service shows `Sign in` (SIGN_IN) or `Paused` (PAUSED), otherwise
 /// AGE; a row whose frozen reading was EXHAUSTED shows `Back 16:30` from x = 0, regular weight,
@@ -231,6 +259,11 @@ pub fn right_cell(
         ]
     };
     match a.state {
+        S::Ended => RightCell {
+            value: Some(dash()),
+            time: vec![Run::Text(ended_status(a, service, pos, cx))],
+            say: Vec::new(),
+        },
         S::Loading => {
             if pos.index_in_service == 0 {
                 RightCell {
@@ -321,7 +354,7 @@ pub fn right_cell(
 /// The compact cell (R§5.8), left-aligned: OK `61%` · IDLE `0%` · STALE `61%` (stale colour) ·
 /// WARNING ▲ `78%` semibold · any row that shows a countdown in the two-row form ▲/● + COUNTDOWN
 /// without "left" (`12 min`, `6 h`) semibold · CRITICAL_LEVEL ● `92%` semibold · EXHAUSTED
-/// ● `Empty` semibold · LOADING `–`.
+/// ● `Empty` semibold · LOADING and ENDED `–`.
 pub fn compact_cell(a: &Assessment, cx: &TextContext<'_>) -> CompactCell {
     use crate::stats::RowState as S;
     let plain = |role: ColorRole| CompactCell {
@@ -345,7 +378,7 @@ pub fn compact_cell(a: &Assessment, cx: &TextContext<'_>) -> CompactCell {
             .map(|n| countdown(n, CountdownForm::Compact, cx.strings))
     };
     match a.state {
-        S::Loading => CompactCell {
+        S::Loading | S::Ended => CompactCell {
             runs: vec![Run::Text(run(
                 cx.strings.template(Msg::NoReset).to_owned(),
                 TextStyle::ROW,

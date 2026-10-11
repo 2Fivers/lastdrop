@@ -56,6 +56,11 @@ pub enum RowState {
     Exhausted,
     /// A fixed-schedule window whose `R` passed with no newer reading: `0%` + `↺7d` (R§3.9).
     JustReset,
+    /// A `starts_on_use` window without a reset time whose reading is at least `L` old: that
+    /// window has certainly ended and nothing says what came after ([`ResetView::Ended`], R§3.9).
+    /// No value, no severity: `–` + the reading's AGE (a stale service: REASON or AGE as for
+    /// STALE), track only; ranks with LOADING.
+    Ended,
     /// The service is stale: the last reading frozen at `t_r`, dashed, stale colour (R§3.8).
     Stale(StaleReason),
 }
@@ -698,8 +703,9 @@ fn assess_window(
         },
         Some(_) => meter,
     };
-    let eff = effective_window(meter, cx.now);
+    let eff = effective_window(meter, cx.reading_at, cx.now);
     let live = eff.view == ResetView::Live;
+    let ended = matches!(eff.view, ResetView::Ended { .. });
     let used = sane_share(eff.used);
     let exhausted = is_exhausted(used, meter.limited && live);
     let pct = display_pct(used, exhausted);
@@ -749,7 +755,13 @@ fn assess_window(
         }
     }
 
-    let outcome = if cx.stale.is_none() {
+    if ended {
+        // Nothing is known about the window now: no severity, and no hysteresis carried into
+        // the next reading's window.
+        memory.severity.remove(&key);
+        memory.last_severity.remove(&key);
+    }
+    let outcome = if cx.stale.is_none() && !ended {
         let input = WindowSeverityInput {
             pct,
             exhausted,
@@ -767,6 +779,7 @@ fn assess_window(
     };
 
     let state = match (cx.stale, eff.view, outcome) {
+        (_, ResetView::Ended { .. }, _) => RowState::Ended,
         (Some(reason), _, _) => RowState::Stale(reason),
         (None, ResetView::JustReset { .. }, _) => RowState::JustReset,
         (None, ResetView::IdleAfterReset { .. }, _) => RowState::Idle,
@@ -782,11 +795,13 @@ fn assess_window(
         (None, ResetView::Live, None) => RowState::OkNoReset,
     };
     let class = match (cx.stale, outcome) {
+        // An ended window says nothing about now: it never takes a place from a meter that does.
+        _ if ended => DisplayClass::Loading,
         (Some(_), _) => DisplayClass::Stale,
         (None, Some(o)) => class_of(o.severity),
         (None, None) => DisplayClass::Ok,
     };
-    let pressure = if state == RowState::Idle {
+    let pressure = if matches!(state, RowState::Idle | RowState::Ended) {
         0.0
     } else {
         let p = forecast.filter(|f| f.valid).map_or(used, |f| f.projected);

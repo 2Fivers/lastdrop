@@ -20,8 +20,8 @@ use super::time::{
 use crate::consts::TRAY_TIP_MAX_CHARS;
 use crate::model::Unit;
 use crate::stats::{
-    AssessedMeter, Assessment, Evaluation, Freshness, RowState, ServiceEval, StaleReason,
-    runway_minutes,
+    AssessedMeter, Assessment, Evaluation, Freshness, ResetView, RowState, ServiceEval,
+    StaleReason, runway_minutes,
 };
 use crate::util::duration_from_hours;
 
@@ -131,6 +131,15 @@ fn row_core(a: &Assessment, service: &ServiceEval, cx: &TextContext<'_>) -> Stri
     let no_reset = || with(Msg::A11yRowNoReset, &[]);
     match a.state {
         RowState::Loading => with(Msg::A11yRowLoading, &[]),
+        RowState::Ended => match &a.meter {
+            AssessedMeter::Window(w) => match w.reset {
+                ResetView::Ended { by } => {
+                    with(Msg::A11yRowEnded, &[("time", &spoken_point(by, cx))])
+                }
+                _ => no_reset(),
+            },
+            _ => no_reset(),
+        },
         RowState::Stale(_) => text(
             cx.strings,
             Msg::A11yStaleRow,
@@ -183,9 +192,11 @@ fn row_core(a: &Assessment, service: &ServiceEval, cx: &TextContext<'_>) -> Stri
 /// - `Claude weekly, all models: critical, runs out in about 6 hours; 91 percent used; resets Monday 9:00 AM.`
 /// - `Claude 5-hour session: empty, back at 4:30 PM.`
 /// - `Claude 5-hour session: not started, 0 percent used, starts with your next message.`
+/// - `Claude 5-hour session: ended by 5:42 PM, no newer reading.`
 /// - `Meshy: 1,240 credits left, about 9 days at the current rate.`
 ///
-/// A stale meter is described by its service's sentence ([`service_sentence`]).
+/// A stale meter is described by its service's sentence ([`service_sentence`]); an ENDED one
+/// has no percentage to list there and keeps its own sentence.
 pub fn row_sentence(a: &Assessment, service: &ServiceEval, cx: &TextContext<'_>) -> String {
     match a.state {
         RowState::Stale(_) => service_sentence(service, &[a], cx),
@@ -217,8 +228,10 @@ pub fn service_sentence(
         || cx.strings.template(Msg::NoReset).to_owned(),
         |t| spoken_duration(shown_age(cx.now, t), cx.strings),
     );
+    // ENDED rows have no percentage to recall; they keep their own sentence.
     let list = rows
         .iter()
+        .filter(|a| a.state != RowState::Ended)
         .map(|a| {
             let n = pct(a).to_string();
             text(
@@ -299,8 +312,15 @@ pub fn tray_tooltip(eval: &Evaluation, cx: &TextContext<'_>) -> String {
         text(cx.strings, msg, &refs)
     };
     let reset = resets_at(a);
-    let tip = match a.state {
+    // An ENDED winner (every candidate tells nothing now) is described by its service's
+    // staleness, as a STALE row would be; fresh, there is nothing to say.
+    let state = match (a.state, service.freshness) {
+        (RowState::Ended, Freshness::Stale(reason)) => RowState::Stale(reason),
+        (state, _) => state,
+    };
+    let tip = match state {
         RowState::Loading => cx.strings.template(Msg::TrayLoading).to_owned(),
+        RowState::Ended => cx.strings.template(Msg::TrayNothing).to_owned(),
         RowState::Stale(StaleReason::SignIn) if service.source.provider.client_name().is_none() => {
             say(Msg::TrayApiKey, &[])
         }

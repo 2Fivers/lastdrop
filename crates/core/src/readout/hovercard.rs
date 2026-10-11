@@ -186,7 +186,7 @@ fn card_window(
         }
     };
     let (forecast, forecast_semibold) = match a.state {
-        RowState::Stale(_) | RowState::Idle | RowState::Loading => (None, false),
+        RowState::Stale(_) | RowState::Idle | RowState::Loading | RowState::Ended => (None, false),
         RowState::Exhausted => (Some(s.template(Msg::CardForecastUsedUp).to_owned()), false),
         RowState::Warning | RowState::CriticalRunway => {
             // A held WARNING without a run-out before the reset states its projection.
@@ -226,6 +226,9 @@ fn card_window(
         }
     };
     let reset_line = match (w.reset, w.resets_at) {
+        (ResetView::Ended { by }, _) => {
+            text(s, Msg::CardLineEnded, &[("time", &card_time(by, cx))])
+        }
         (ResetView::JustReset { previous } | ResetView::IdleAfterReset { previous }, _) => text(
             s,
             Msg::CardLineJustReset,
@@ -245,7 +248,11 @@ fn card_window(
     };
     CardWindowMeter {
         name: a.names.name.clone(),
-        value: text(s, Msg::CardValue, &[("pct", &percent(w.pct, cx.locale))]),
+        value: if a.state == RowState::Ended {
+            s.template(Msg::NoReset).to_owned()
+        } else {
+            text(s, Msg::CardValue, &[("pct", &percent(w.pct, cx.locale))])
+        },
         value_semibold: in_trouble(a),
         bar,
         elapsed_line,
@@ -341,6 +348,17 @@ fn also_time(a: &Assessment, service: &ServiceEval, cx: &TextContext<'_>) -> Als
             None => dash(),
         },
         RowState::OkNoReset | RowState::Idle | RowState::Loading => dash(),
+        // The time part of the two-row cell: the stale status, or the reading's age.
+        RowState::Ended => match service.freshness {
+            Freshness::Stale(reason) => stale_also_time(reason, service, cx),
+            Freshness::Fresh => AlsoTime {
+                glyph: None,
+                text: last_reading(service)
+                    .map_or_else(|| s.template(Msg::NoReset).to_owned(), |t| age_token(t, cx)),
+                semibold: false,
+                role: ColorRole::TextSecondary,
+            },
+        },
         RowState::OkBalance => match balance(a).and_then(|b| balance_duration_words(&b.stats, s)) {
             Some(words) => AlsoTime {
                 glyph: None,
@@ -360,26 +378,33 @@ fn also_time(a: &Assessment, service: &ServiceEval, cx: &TextContext<'_>) -> Als
             None => dash(),
         },
         RowState::Exhausted => say(SeverityGlyph::Critical, back_text(a, cx)),
-        RowState::Stale(reason) => match reason {
-            StaleReason::SignIn => AlsoTime {
-                glyph: None,
-                text: reason_text(reason, cx),
-                semibold: false,
-                role: ColorRole::AccentText,
-            },
-            StaleReason::Paused => AlsoTime {
-                glyph: None,
-                text: reason_text(reason, cx),
-                semibold: false,
-                role: ColorRole::Stale,
-            },
-            StaleReason::Offline | StaleReason::NoData | StaleReason::OldReading => AlsoTime {
-                glyph: None,
-                text: last_reading(service)
-                    .map_or_else(|| s.template(Msg::NoReset).to_owned(), |t| age_token(t, cx)),
-                semibold: false,
-                role: ColorRole::Stale,
-            },
+        RowState::Stale(reason) => stale_also_time(reason, service, cx),
+    }
+}
+
+/// The time column of a STALE "Also tracked" line: `Sign in` / `Paused`, else the age.
+fn stale_also_time(reason: StaleReason, service: &ServiceEval, cx: &TextContext<'_>) -> AlsoTime {
+    match reason {
+        StaleReason::SignIn => AlsoTime {
+            glyph: None,
+            text: reason_text(reason, cx),
+            semibold: false,
+            role: ColorRole::AccentText,
+        },
+        StaleReason::Paused => AlsoTime {
+            glyph: None,
+            text: reason_text(reason, cx),
+            semibold: false,
+            role: ColorRole::Stale,
+        },
+        StaleReason::Offline | StaleReason::NoData | StaleReason::OldReading => AlsoTime {
+            glyph: None,
+            text: last_reading(service).map_or_else(
+                || cx.strings.template(Msg::NoReset).to_owned(),
+                |t| age_token(t, cx),
+            ),
+            semibold: false,
+            role: ColorRole::Stale,
         },
     }
 }
@@ -420,6 +445,7 @@ fn also_tracked(
             ),
             value: match balance(a) {
                 Some(b) => amount(b.amount, cx.locale),
+                None if a.state == RowState::Ended => s.template(Msg::NoReset).to_owned(),
                 None => percent(pct(a), cx.locale),
             },
             value_semibold: in_trouble(a),
@@ -1051,6 +1077,17 @@ pub fn build_hover_card(
                 String::new(),
             ),
             RowState::Stale(reason) => stale_header(service, reason, cx),
+            // Every shown row is ENDED (or LOADING): the service's staleness, else nothing yet.
+            RowState::Ended => match service.freshness {
+                Freshness::Stale(reason) => stale_header(service, reason, cx),
+                Freshness::Fresh => (
+                    CardHeader {
+                        glyph: None,
+                        title: s.template(Msg::FlyoutVerdictLoading).to_owned(),
+                    },
+                    String::new(),
+                ),
+            },
             RowState::Exhausted
             | RowState::CriticalRunway
             | RowState::CriticalLevel
@@ -1060,17 +1097,21 @@ pub fn build_hover_card(
             | RowState::Idle
             | RowState::OkBalance
             | RowState::JustReset => {
-                let counted = shown
+                // LOADING and ENDED rows tell nothing about now: neither title nor sentence
+                // speaks of them.
+                let known: Vec<(&ServiceEval, &Assessment)> = shown
                     .iter()
-                    .filter(|(_, a)| a.state != RowState::Loading)
-                    .count();
+                    .filter(|(_, a)| !matches!(a.state, RowState::Loading | RowState::Ended))
+                    .copied()
+                    .collect();
+                let counted = known.len();
                 // "You'll make it to the reset" needs a reset: windows without any reset time
                 // (Claude Desktop's history alone) get a title that claims none.
                 let windows: Vec<&WindowAssessment> =
-                    shown.iter().filter_map(|(_, a)| window(a)).collect();
+                    known.iter().filter_map(|(_, a)| window(a)).collect();
                 let no_reset = !windows.is_empty()
                     && windows.iter().all(|w| w.resets_at.is_none())
-                    && shown.iter().all(|(_, a)| balance(a).is_none());
+                    && known.iter().all(|(_, a)| balance(a).is_none());
                 let msg = match counted {
                     _ if no_reset => Msg::CardTitleOkNoReset,
                     0 | 1 => Msg::CardTitleOkOne,
@@ -1082,7 +1123,7 @@ pub fn build_hover_card(
                         glyph: Some(SeverityGlyph::Success),
                         title: s.template(msg).to_owned(),
                     },
-                    ok_sentence(&shown, t),
+                    ok_sentence(&known, t),
                 )
             }
         },

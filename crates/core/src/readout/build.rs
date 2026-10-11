@@ -339,7 +339,8 @@ pub fn build_readout(eval: &Evaluation, cx: &BuildContext<'_>) -> ReadoutModel {
                 right: right_cell(a, service, pos, t),
                 compact: compact_cell(a, t),
                 uia_name: row_sentence(a, service, t),
-                uia_value: (a.state != RowState::Loading).then(|| pct(a)),
+                uia_value: (!matches!(a.state, RowState::Loading | RowState::Ended))
+                    .then(|| pct(a)),
             }
         })
         .collect();
