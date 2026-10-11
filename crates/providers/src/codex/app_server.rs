@@ -1,11 +1,28 @@
 //! Source 1: `codex app-server` (JSON-RPC 2.0, one JSON object per line over stdio).
 //!
-//! Sequence: spawn (no window, `CODEX_HOME` set) → `initialize` request (8 s) → `initialized`
-//! notification → `account/read` (3 s) → `account/rateLimits/read` (3 s) → end (stdin closed,
-//! up to `real::EXIT_GRACE` to exit by itself, then terminated). Lines that are not the awaited
-//! response (notifications, server requests, logs) are skipped. The app-server renews Codex's
-//! own sign-in, which is why it is never terminated before it had the chance to exit on its own;
-//! Lastdrop never touches `auth.json`.
+//! Sequence: spawn (no window, `CODEX_HOME` set, plugins off) → `initialize` request (8 s) →
+//! `initialized` notification → `account/read` (3 s) → `account/rateLimits/read` (3 s) → end
+//! (stdin closed, up to `real::EXIT_GRACE` to exit by itself, then terminated). Lines that are not
+//! the awaited response (notifications, server requests, logs) are skipped. The app-server renews
+//! Codex's own sign-in, which is why it is never terminated before it had the chance to exit on
+//! its own; Lastdrop never touches `auth.json`.
+//!
+//! **Plugins off** ([`PLUGINS_OFF`]). At start-up the app-server runs its plugin start-up tasks
+//! whenever the `plugins` feature is on (the default): `PluginsManager::
+//! maybe_start_plugin_startup_tasks_for_config` (codex-rs `core-plugins/src/manager.rs`, started
+//! from `MessageProcessor::new`) auto-upgrades every configured Git marketplace (`git ls-remote
+//! <source> HEAD`, then a clone when it moved), syncs the curated OpenAI plugin repo when the
+//! remote catalogue is not in use (`git ls-remote`/fetch, or GitHub over HTTP) and refreshes the
+//! remote plugin caches and featured plugins over HTTP. Every one of them is gated on
+//! `PluginsConfigInput::plugins_enabled` = `features.plugins`; there is no separate switch for
+//! the marketplace auto-upgrade and no environment variable (the only other off switch,
+//! `--disable-plugin-startup-tasks-for-tests`, exists in debug builds only). `-c
+//! features.plugins=false` is a per-process override (nothing is written to `config.toml`) and
+//! does not touch the account or rate-limit methods; Codex versions without the feature only log
+//! "unknown feature key". Measured on codex-cli 0.162.0-alpha.17.2 (Job Object accounting of the
+//! whole sequence): 7–12 processes per start without it (`git` ×3–6, `git-remote-https` ×1–2,
+//! `conhost` ×2–3 besides `codex` itself; up to 5 of them still running when `codex` had exited),
+//! 2 with it (`codex`, `conhost`; none left), `account/rateLimits/read` answering the same.
 //!
 //! Wire shapes (checked against `codex app-server generate-json-schema` of codex-cli 0.162):
 //! messages omit the `"jsonrpc"` field; `account/read` answers
@@ -57,6 +74,10 @@ pub const CLIENT_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 /// The environment variable that selects Codex's home folder (account).
 pub const CODEX_HOME_VAR: &str = "CODEX_HOME";
+
+/// The config override after `app-server` that turns Codex's plugin feature off for this process
+/// only, so it starts none of its plugin start-up tasks (module docs, "Plugins off").
+pub const PLUGINS_OFF: [&str; 2] = ["-c", "features.plugins=false"];
 
 /// JSON-RPC id of `initialize`.
 pub const ID_INITIALIZE: u64 = 1;
@@ -143,14 +164,22 @@ pub fn find_codex_exe(ctx: &FetchContext<'_>, override_path: Option<&Path>) -> O
 
 // ---- Spawning -----------------------------------------------------------------------------------
 
-/// `codex app-server` with `CODEX_HOME` = `codex_home`.
+/// The arguments: `app-server` and [`PLUGINS_OFF`].
+fn app_server_args() -> Vec<OsString> {
+    std::iter::once("app-server")
+        .chain(PLUGINS_OFF)
+        .map(OsString::from)
+        .collect()
+}
+
+/// `codex app-server -c features.plugins=false` with `CODEX_HOME` = `codex_home`.
 ///
 /// The working directory is `codex_home`, so the child never inherits (or holds open) whatever
 /// folder Lastdrop was started in.
 pub fn spawn_spec(exe: &Path, codex_home: &Path) -> SpawnSpec {
     SpawnSpec {
         program: exe.to_path_buf(),
-        args: vec!["app-server".into()],
+        args: app_server_args(),
         env: vec![(
             CODEX_HOME_VAR.into(),
             Some(codex_home.as_os_str().to_owned()),
@@ -159,17 +188,15 @@ pub fn spawn_spec(exe: &Path, codex_home: &Path) -> SpawnSpec {
     }
 }
 
-/// `cmd.exe /d /c <script> app-server` for an npm `codex.cmd`: like [`spawn_spec`] but through
-/// the command interpreter `comspec` (`/d`: no AutoRun commands that could print to stdout).
+/// `cmd.exe /d /c <script> app-server -c features.plugins=false` for an npm `codex.cmd`: like
+/// [`spawn_spec`] but through the command interpreter `comspec` (`/d`: no AutoRun commands that
+/// could print to stdout). npm's wrapper passes its arguments on with `%*`, which keeps the `=`.
 pub fn spawn_spec_via_cmd(comspec: &Path, script: &Path, codex_home: &Path) -> SpawnSpec {
+    let mut args: Vec<OsString> = vec!["/d".into(), "/c".into(), script.as_os_str().to_owned()];
+    args.extend(app_server_args());
     SpawnSpec {
         program: comspec.to_path_buf(),
-        args: vec![
-            "/d".into(),
-            "/c".into(),
-            script.as_os_str().to_owned(),
-            "app-server".into(),
-        ],
+        args,
         ..spawn_spec(script, codex_home)
     }
 }
@@ -546,14 +573,9 @@ fn converse(ctx: &FetchContext<'_>, child: &mut dyn ChildIo) -> Result<CodexUsag
     Ok(usage)
 }
 
-/// [`fetch`] with a known `codex.exe` (or `codex.cmd`): check the account folder → spawn →
-/// converse → kill (always, also on failure).
-pub fn fetch_with(
-    ctx: &FetchContext<'_>,
-    exe: &Path,
-    codex_home: &Path,
-) -> Result<CodexUsage, FetchError> {
-    // Codex exits at once when CODEX_HOME is not an existing folder.
+/// What must hold before a start: the account folder exists (Codex exits at once when
+/// `CODEX_HOME` is not an existing folder) and the fetch has time left. Nothing is started.
+pub fn preflight(ctx: &FetchContext<'_>, codex_home: &Path) -> Result<(), FetchError> {
     if !ctx.fs.metadata(codex_home).is_ok_and(|m| m.is_dir) {
         return Err(FetchError::Unavailable {
             detail: "Codex folder not found".to_owned(),
@@ -562,6 +584,17 @@ pub fn fetch_with(
     if ctx.remaining().is_zero() {
         return Err(transient("timed out"));
     }
+    Ok(())
+}
+
+/// [`fetch`] with a known `codex.exe` (or `codex.cmd`): [`preflight`] → spawn → converse → kill
+/// (always, also on failure).
+pub fn fetch_with(
+    ctx: &FetchContext<'_>,
+    exe: &Path,
+    codex_home: &Path,
+) -> Result<CodexUsage, FetchError> {
+    preflight(ctx, codex_home)?;
     let spec = launch_spec(ctx, exe, codex_home);
     log::debug!("codex app-server: starting {}", exe.display());
     let mut child = ctx.spawner.spawn(&spec).map_err(|e| {

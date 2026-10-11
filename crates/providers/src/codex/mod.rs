@@ -1,10 +1,44 @@
 //! Codex: 5-hour and weekly windows, whichever the plan has (R§2 table).
 //!
 //! Sources, in order (ARCHITECTURE provider table):
-//! 1. [`app_server`]: `codex app-server`, JSON-RPC over stdio, `account/rateLimits/read` (the
+//! 1. [`rollout`] while fresh: the newest rollout file's last `token_count.rate_limits` event,
+//!    used as it is when it is younger than [`ROLLOUT_FRESH`] (Codex is in use and wrote it a
+//!    moment ago, from the same rate-limit headers the app-server would ask for). No process is
+//!    started; health `Ok`.
+//! 2. [`app_server`]: `codex app-server`, JSON-RPC over stdio, `account/rateLimits/read` (the
 //!    official way; Codex renews its own sign-in). Newest bundled or `PATH` `codex.exe`, no
-//!    window, 8 s to initialize, 3 s per call.
-//! 2. [`rollout`]: the newest rollout file's last `token_count.rate_limits` event (offline).
+//!    window, plugins off, 8 s to initialize, 3 s per call; started at most every
+//!    [`APP_SERVER_PACE`] per `CODEX_HOME` (below).
+//! 3. [`rollout`] as the fallback: when the app-server fails, or rests and the rollout event is
+//!    newer than its last answer (health `Stale`, or `SignInRequired` after an app-server sign-in
+//!    error).
+//!
+//! Both rollout uses follow the `rollout_fallback` option: when it is off the rollout is never
+//! read.
+//!
+//! **The app-server's pace.** Each start is a process (two with its console host) and its own
+//! network calls, so the provider starts it at most every [`APP_SERVER_PACE`] per `CODEX_HOME`,
+//! counted from the start of the fetch that started it, with [`APP_SERVER_PACE_SLACK`] so a fetch
+//! the scheduler starts on the 15-minute grid is not pushed to the next one. In between, the last
+//! start's result stands in with its original `measured_at` (a reading is never re-dated), unless
+//! the rollout has a newer event. The memory (interior `Mutex`, shared by clones, locked only to
+//! read or update it, never across file or process I/O) is keyed by `CODEX_HOME`, so accounts
+//! sharing a folder share the pace. A start counts when a process was started, whatever it
+//! answered; a missing `codex.exe` or Codex folder starts nothing and does not count. A changed
+//! credential fingerprint ([`CREDENTIAL_FILES`]: a new sign-in, another account) lifts the pace and
+//! forgets the last answer. The app-server itself rewrites `auth.json` when it renews Codex's
+//! sign-in (codex-rs `login/src/auth/manager.rs`: shortly before the access token expires), so the
+//! fingerprint is taken again after every start that did not end in a sign-in error: its own
+//! renewal never lifts the pace, a sign-in after a sign-in error always does. A manual refresh
+//! does not lift it: the provider cannot tell one from a scheduled fetch. The memory lives as
+//! long as the provider, which the app rebuilds when the Codex options change.
+//!
+//! **Why not `min_interval`.** [`Provider::min_interval`] stays [`MIN_INTERVAL`] (1 minute), the
+//! lower bound between whole fetches in `lastdrop_core::refresh`: a fetch is now a few file reads
+//! unless the app-server is due. Raising it to 15 minutes would also hold "Refresh now" and the
+//! back-off floor at 15 minutes and read a fresh rollout only every 15 minutes while Codex is in
+//! use; and the scheduler counts it per account, not per `CODEX_HOME`. The Claude provider paces
+//! its OAuth source inside the provider the same way.
 //!
 //! Windows are told apart by their length (`window_minutes`), never by their position: a plan
 //! without a 5-hour limit reports its weekly window as `primary` ([`meter`]).
@@ -12,8 +46,9 @@
 pub mod app_server;
 pub mod rollout;
 
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::Duration;
 
 use jiff::{SignedDuration, Timestamp};
@@ -50,9 +85,61 @@ pub struct CodexUsage {
     pub secondary: Option<CodexWindow>,
     /// Plan name when the source says (`Plus`, `Pro`).
     pub plan: Option<String>,
-    /// When the values were computed (the rollout event's timestamp; `None` from the app-server,
-    /// which answers live).
+    /// When the values were computed (the rollout event's timestamp; `None` from
+    /// [`app_server::fetch`], which answers live: the provider dates the answer when it keeps it
+    /// to stand in between starts).
     pub measured_at: Option<Timestamp>,
+}
+
+/// What the provider remembers about the app-server of one `CODEX_HOME` (module docs, "The
+/// app-server's pace").
+#[derive(Clone, Debug, Default)]
+struct LiveMemory {
+    /// The credential fingerprint this memory belongs to.
+    fingerprint: Option<CredentialFingerprint>,
+    /// Start of the fetch that last started the app-server.
+    started: Option<Timestamp>,
+    /// What that start gave (an answer dated when it came), standing in until the next start;
+    /// `None` while it runs.
+    last: Option<Result<CodexUsage, FetchError>>,
+}
+
+impl LiveMemory {
+    /// Forgets everything when the credential changed (a new sign-in or another account).
+    fn follow_credential(&mut self, fingerprint: Option<CredentialFingerprint>) {
+        if self.fingerprint != fingerprint {
+            *self = LiveMemory {
+                fingerprint,
+                ..LiveMemory::default()
+            };
+        }
+    }
+
+    /// The end of the rest after the last start, when `now` is inside it. A start "after" `now`
+    /// (the clock went back) does not hold the app-server back.
+    fn rest_until(&self, now: Timestamp) -> Option<Timestamp> {
+        let started = self.started?;
+        let until = add(
+            started,
+            APP_SERVER_PACE.saturating_sub(APP_SERVER_PACE_SLACK),
+        );
+        (started <= now && now < until).then_some(until)
+    }
+}
+
+/// What the app-server source gave in one fetch.
+enum Live {
+    /// Started now; its result.
+    Started(Result<CodexUsage, FetchError>),
+    /// Not started: the last start (at `started`) rests until `until`; its result stands in
+    /// (`None`: that start has not finished yet).
+    Resting {
+        started: Timestamp,
+        until: Timestamp,
+        last: Option<Result<CodexUsage, FetchError>>,
+    },
+    /// Not started and nothing to stand in: no `codex.exe`, no Codex folder or no time left.
+    Unavailable(FetchError),
 }
 
 /// The Codex provider.
@@ -62,6 +149,9 @@ pub struct CodexProvider {
     /// The `codex.exe` the last fetch found, for [`Provider::sign_in_command`] (the bundled one
     /// is usually not on `PATH`). Shared by clones; locked only to read or replace the path.
     last_exe: Arc<Mutex<Option<PathBuf>>>,
+    /// Per `CODEX_HOME`: the app-server's pace and last result, shared by clones (it describes
+    /// the folder, not this value).
+    live: Arc<Mutex<BTreeMap<PathBuf, LiveMemory>>>,
 }
 
 impl CodexProvider {
@@ -70,6 +160,7 @@ impl CodexProvider {
         CodexProvider {
             options,
             last_exe: Arc::new(Mutex::new(None)),
+            live: Arc::default(),
         }
     }
 
@@ -92,25 +183,81 @@ impl CodexProvider {
             .clone()
     }
 
-    /// Source 1: find `codex.exe` (remembered for the sign-in command), then ask it.
-    fn fetch_live(
-        &self,
-        ctx: &FetchContext<'_>,
-        codex_home: &Path,
-    ) -> Result<CodexUsage, FetchError> {
-        let exe = app_server::find_codex_exe(ctx, self.options.codex_exe.as_deref()).ok_or_else(
-            || FetchError::Unavailable {
+    fn memories(&self) -> MutexGuard<'_, BTreeMap<PathBuf, LiveMemory>> {
+        self.live.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// The app-server source with its pace: find `codex.exe` (remembered for the sign-in
+    /// command), check the folder and the time left, then start it unless the last start of this
+    /// `CODEX_HOME` is less than [`APP_SERVER_PACE`] ago. `started` is when the fetch began.
+    fn live(&self, ctx: &FetchContext<'_>, codex_home: &Path, started: Timestamp) -> Live {
+        let Some(exe) = app_server::find_codex_exe(ctx, self.options.codex_exe.as_deref()) else {
+            return Live::Unavailable(FetchError::Unavailable {
                 detail: "codex.exe not found".to_owned(),
-            },
-        )?;
+            });
+        };
         self.remember_exe(&exe);
-        app_server::fetch_with(ctx, &exe, codex_home)
+        if let Err(error) = app_server::preflight(ctx, codex_home) {
+            return Live::Unavailable(error);
+        }
+        let fingerprint = fingerprint_of(ctx, codex_home);
+        {
+            let mut memories = self.memories();
+            let memory = memories.entry(codex_home.to_path_buf()).or_default();
+            memory.follow_credential(fingerprint);
+            if let (Some(until), Some(last_start)) = (memory.rest_until(started), memory.started) {
+                return Live::Resting {
+                    started: last_start,
+                    until,
+                    last: memory.last.clone(),
+                };
+            }
+            // Claims the start before the lock is released: a concurrent fetch of an account
+            // with the same folder rests instead of starting a second app-server.
+            memory.started = Some(started);
+            memory.last = None;
+        }
+        let result = app_server::fetch_with(ctx, &exe, codex_home).map(|mut usage| {
+            usage.measured_at.get_or_insert(ctx.clock.now());
+            usage
+        });
+        // The app-server may have renewed the sign-in and rewritten auth.json: that is not a new
+        // sign-in. After a sign-in error a changed file is one, so the old fingerprint stays.
+        let fingerprint_after = (!matches!(result, Err(FetchError::Auth { .. })))
+            .then(|| fingerprint_of(ctx, codex_home));
+        if let Some(memory) = self.memories().get_mut(codex_home)
+            && memory.started == Some(started)
+        {
+            if let Some(fingerprint) = fingerprint_after {
+                memory.fingerprint = fingerprint;
+            }
+            memory.last = Some(result.clone());
+        }
+        Live::Started(result)
     }
 }
 
-/// Lower bound between fetches: 1 minute (**not from the spec**: the app-server is official and
-/// local, but each fetch starts a process).
+/// Lower bound between fetches: 1 minute (**not from the spec**). A fetch is a few file reads;
+/// the app-server, which starts a process, has its own pace ([`APP_SERVER_PACE`], module docs
+/// "Why not `min_interval`").
 pub const MIN_INTERVAL: Duration = Duration::from_secs(60);
+
+/// A rollout event younger than this is used as it is, without starting the app-server
+/// (**not from the spec**).
+pub const ROLLOUT_FRESH: SignedDuration = SignedDuration::from_mins(10);
+
+/// How far after the clock a rollout event may be dated and still count as fresh (Codex and
+/// Lastdrop read the same clock; an event dated later than this is not trusted to be fresh).
+pub const ROLLOUT_FUTURE_TOLERANCE: SignedDuration = SignedDuration::from_mins(1);
+
+/// The app-server is started at most this often per `CODEX_HOME` (**not from the spec**), counted
+/// from the start of the fetch that started it.
+pub const APP_SERVER_PACE: Duration = Duration::from_secs(15 * 60);
+
+/// Slack on [`APP_SERVER_PACE`], so a fetch the scheduler starts exactly 15 minutes after the
+/// last start is not pushed to the next interval by the moments between the scheduler's start
+/// time and the provider's (the same 30 s as `claude::OAUTH_MIN_GAP_SLACK`).
+pub const APP_SERVER_PACE_SLACK: Duration = Duration::from_secs(30);
 
 /// Codex's own usage page (F§9 "Enter on a card"), the page Codex itself links to when a limit
 /// is reached.
@@ -127,8 +274,12 @@ impl Provider for CodexProvider {
         ProviderId::Codex
     }
 
-    /// App-server first; on failure (and when the fallback is on) the newest rollout event. An
-    /// app-server sign-in error with rollout values gives `Health::SignInRequired`.
+    /// A fresh rollout event (younger than [`ROLLOUT_FRESH`]) first, without starting anything;
+    /// else the app-server, started at most every [`APP_SERVER_PACE`] per `CODEX_HOME` (its last
+    /// result stands in between starts); then the rollout event when the app-server failed or
+    /// its stand-in is older. The rollout is read only when `rollout_fallback` is on. An
+    /// app-server sign-in error with rollout values gives `Health::SignInRequired`. Every choice
+    /// is logged at INFO with its reason (module docs).
     fn fetch(
         &self,
         ctx: &FetchContext<'_>,
@@ -147,14 +298,120 @@ impl Provider for CodexProvider {
             key: key.clone(),
             ..AccountRef::primary()
         };
+        let started = ctx.clock.now();
 
-        let live_error = match self.fetch_live(ctx, codex_home) {
-            Ok(usage) => {
+        // 1. A fresh rollout event: Codex is in use; nothing to start.
+        let rollout = self
+            .options
+            .rollout_fallback
+            .then(|| rollout::fetch(ctx, codex_home));
+        if let Some(Ok(usage)) = &rollout
+            && let Some(age) = fresh_age(usage, started)
+        {
+            log::info!(
+                "codex[{}]: using the rollout event from {} min ago ({} window(s)): younger than \
+                 {} min, so the app-server is not started",
+                key.0,
+                age.as_mins(),
+                window_count(usage),
+                ROLLOUT_FRESH.as_mins()
+            );
+            let mut snapshot = to_snapshot(
+                usage,
+                SourceKind::CodexRollout,
+                account_ref,
+                ctx.clock.now(),
+            );
+            snapshot.health = Health::Ok;
+            return Ok(snapshot);
+        }
+
+        // 2. The app-server, at its pace.
+        let live_result = match self.live(ctx, codex_home, started) {
+            Live::Started(result) => {
+                let reason = start_reason(rollout.as_ref(), started);
+                match &result {
+                    Ok(usage) => log::info!(
+                        "codex[{}]: using the app-server's answer ({} window(s)); started because \
+                         {reason}",
+                        key.0,
+                        window_count(usage),
+                    ),
+                    Err(error) => log::warn!(
+                        "codex[{}]: app-server failed: {error} (started because {reason})",
+                        key.0
+                    ),
+                }
+                result
+            }
+            Live::Resting {
+                started: last_start,
+                until,
+                last,
+            } => {
                 log::info!(
-                    "codex[{}]: app-server answered ({} window(s))",
+                    "codex[{}]: app-server not started: last started {} min ago, at most every \
+                     {} min per Codex folder (next from {until})",
                     key.0,
-                    window_count(&usage)
+                    started.duration_since(last_start).as_mins(),
+                    APP_SERVER_PACE.as_secs() / 60
                 );
+                let last = last.unwrap_or_else(|| {
+                    Err(FetchError::Transient {
+                        from: SourceKind::CodexAppServer,
+                        detail: "codex app-server is starting for another account".to_owned(),
+                        retry_after: None,
+                    })
+                });
+                match last {
+                    Ok(usage) => {
+                        let newer_rollout = match &rollout {
+                            Some(Ok(event)) if event.measured_at > usage.measured_at => Some(event),
+                            _ => None,
+                        };
+                        let Some(event) = newer_rollout else {
+                            log::info!(
+                                "codex[{}]: using the app-server's answer from {} min ago",
+                                key.0,
+                                age_mins(usage.measured_at, started)
+                            );
+                            return Ok(to_snapshot(
+                                &usage,
+                                SourceKind::CodexAppServer,
+                                account_ref,
+                                ctx.clock.now(),
+                            ));
+                        };
+                        log::info!(
+                            "codex[{}]: using the rollout event from {} min ago: newer than the \
+                             app-server's answer from {} min ago",
+                            key.0,
+                            age_mins(event.measured_at, started),
+                            age_mins(usage.measured_at, started)
+                        );
+                        return Ok(to_snapshot(
+                            event,
+                            SourceKind::CodexRollout,
+                            account_ref,
+                            ctx.clock.now(),
+                        ));
+                    }
+                    Err(error) => {
+                        log::info!(
+                            "codex[{}]: the app-server's last start gave no reading: {error}",
+                            key.0
+                        );
+                        Err(error)
+                    }
+                }
+            }
+            Live::Unavailable(error) => {
+                log::warn!("codex[{}]: app-server not started: {error}", key.0);
+                Err(error)
+            }
+        };
+        let live_error = match live_result {
+            Ok(usage) => {
                 return Ok(to_snapshot(
                     &usage,
                     SourceKind::CodexAppServer,
@@ -164,16 +421,16 @@ impl Provider for CodexProvider {
             }
             Err(error) => error,
         };
-        log::warn!("codex[{}]: app-server failed: {live_error}", key.0);
-        if !self.options.rollout_fallback {
-            return Err(live_error);
-        }
 
-        match rollout::fetch(ctx, codex_home) {
-            Ok(usage) => {
+        // 3. The rollout as the fallback.
+        match rollout {
+            None => Err(live_error),
+            Some(Ok(usage)) => {
                 log::info!(
-                    "codex[{}]: rollout answered ({} window(s))",
+                    "codex[{}]: using the rollout event from {} min ago ({} window(s)) because \
+                     the app-server gave no reading",
                     key.0,
+                    age_mins(usage.measured_at, started),
                     window_count(&usage)
                 );
                 let mut snapshot = to_snapshot(
@@ -187,7 +444,7 @@ impl Provider for CodexProvider {
                 }
                 Ok(snapshot)
             }
-            Err(rollout_error) => {
+            Some(Err(rollout_error)) => {
                 log::warn!("codex[{}]: rollout failed: {rollout_error}", key.0);
                 Err(most_telling(live_error, rollout_error))
             }
@@ -208,19 +465,7 @@ impl Provider for CodexProvider {
         let AccountSource::Codex { codex_home, .. } = account else {
             return None;
         };
-        CREDENTIAL_FILES.iter().find_map(|name| {
-            let meta = ctx.fs.metadata(&codex_home.join(name)).ok()?;
-            if meta.is_dir {
-                return None;
-            }
-            let modified = meta
-                .modified
-                .map_or_else(|| "-".to_owned(), |t| t.as_nanosecond().to_string());
-            Some(CredentialFingerprint(format!(
-                "{name}:{}:{modified}",
-                meta.len
-            )))
-        })
+        fingerprint_of(ctx, codex_home)
     }
 
     /// `codex login` in a terminal with `CODEX_HOME` set to the account's folder: the configured
@@ -253,6 +498,61 @@ impl Provider for CodexProvider {
 
 fn window_count(usage: &CodexUsage) -> usize {
     usize::from(usage.primary.is_some()) + usize::from(usage.secondary.is_some())
+}
+
+/// `t + d`, saturating at jiff's range.
+fn add(t: Timestamp, d: Duration) -> Timestamp {
+    SignedDuration::try_from(d)
+        .ok()
+        .and_then(|d| t.checked_add(d).ok())
+        .unwrap_or(Timestamp::MAX)
+}
+
+/// The age of a rollout reading at `now` when it is fresh: dated less than [`ROLLOUT_FRESH`]
+/// before `now` and at most [`ROLLOUT_FUTURE_TOLERANCE`] after it (then age 0). `None` when
+/// older, too far ahead or undated.
+pub fn fresh_age(usage: &CodexUsage, now: Timestamp) -> Option<SignedDuration> {
+    let age = now.duration_since(usage.measured_at?);
+    (age < ROLLOUT_FRESH && age >= -ROLLOUT_FUTURE_TOLERANCE).then(|| age.max(SignedDuration::ZERO))
+}
+
+/// Whole minutes between `at` and `now` (0 for an undated reading or one after `now`), for logs.
+fn age_mins(at: Option<Timestamp>, now: Timestamp) -> i64 {
+    at.map_or(0, |t| now.duration_since(t).as_mins().max(0))
+}
+
+/// Why the app-server is started, for the log: what the rollout had to offer.
+fn start_reason(rollout: Option<&Result<CodexUsage, FetchError>>, now: Timestamp) -> String {
+    match rollout {
+        None => "the rollout is turned off".to_owned(),
+        Some(Err(error)) => format!("the rollout has no reading ({error})"),
+        Some(Ok(usage)) => match usage.measured_at {
+            Some(t) if t > now => "the newest rollout event is dated ahead of the clock".to_owned(),
+            Some(t) => format!(
+                "the newest rollout event is {} min old",
+                now.duration_since(t).as_mins()
+            ),
+            None => "the newest rollout event is undated".to_owned(),
+        },
+    }
+}
+
+/// Size + mtime of the first of [`CREDENTIAL_FILES`] in `codex_home`; `None` when neither exists.
+/// Only metadata is read, never the contents.
+fn fingerprint_of(ctx: &FetchContext<'_>, codex_home: &Path) -> Option<CredentialFingerprint> {
+    CREDENTIAL_FILES.iter().find_map(|name| {
+        let meta = ctx.fs.metadata(&codex_home.join(name)).ok()?;
+        if meta.is_dir {
+            return None;
+        }
+        let modified = meta
+            .modified
+            .map_or_else(|| "-".to_owned(), |t| t.as_nanosecond().to_string());
+        Some(CredentialFingerprint(format!(
+            "{name}:{}:{modified}",
+            meta.len
+        )))
+    })
 }
 
 /// The more telling of two failures (`FetchError` docs: an auth error over a parse error over
