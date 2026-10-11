@@ -141,13 +141,22 @@ pub fn set_rect(hwnd: HWND, rect: Rect) {
 }
 
 /// Shows without activation: `ShowWindow(SW_SHOWNOACTIVATE)` + `SetWindowPos(HWND_TOPMOST, …,
-/// SWP_NOACTIVATE)` (the hover card; `GetForegroundWindow()` must be unchanged afterwards).
+/// SWP_NOACTIVATE)` + `RedrawWindow(RDW_INVALIDATE | RDW_INTERNALPAINT)` (the hover card;
+/// `GetForegroundWindow()` must be unchanged afterwards).
 pub fn show_no_activate(hwnd: HWND) {
     // SAFETY: a window of this thread. ShowWindow's return value is the previous visibility,
     // not an error.
     let _ = unsafe { ShowWindow(hwnd, SW_SHOWNOACTIVATE) };
     if let Err(e) = set_pos(hwnd, None, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE) {
         log::warn!("backdrop: raising the window failed: {e}");
+    }
+    // As in `show_and_activate`: a re-shown window does not always get a WM_PAINT (DWM keeps the
+    // old surface); ask for one so Slint renders right away.
+    // SAFETY: a window of this thread.
+    if !unsafe { RedrawWindow(Some(hwnd), None, None, RDW_INVALIDATE | RDW_INTERNALPAINT) }
+        .as_bool()
+    {
+        log::debug!("backdrop: RedrawWindow failed");
     }
 }
 
