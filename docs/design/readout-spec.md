@@ -470,8 +470,9 @@ present only when rows can come from more than one service (§6.4).
 
 Computed in device px with the actual fonts at the actual DPI, whenever the locale, DPI, pinned set or enabled
 services change — **never** when data changes, so the readout keeps one width in every state. A meter a source
-reported earlier in this run still *can appear* when a later reading lacks it (a per-model weekly that only the
-OAuth source reports while Claude Desktop's history answers).
+reported earlier still *can appear* when a later reading lacks it (a per-model weekly that only the OAuth source
+reports while Claude Desktop's history answers); "earlier" includes earlier runs (the app's state file keeps the list)
+as long as the history has a reading of the meter from the last 31 days.
 
 ```
 LW        = ceil(max width of short_label over every meter that can appear in the readout)     // 11 px font

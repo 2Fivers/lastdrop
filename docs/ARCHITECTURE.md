@@ -151,9 +151,11 @@ Rules for every provider:
   window's reset time; one job per credential source in flight.
 - **Persistence:** settings in `%APPDATA%\Lastdrop\settings.json` (atomic write, no
   secrets); history in `%LOCALAPPDATA%\Lastdrop\` (thinned to one sample per meter per
-  5 minutes, 90 days); logs in `%LOCALAPPDATA%\Lastdrop\logs` (rotated, local only). Start-up
-  reads them on the main thread before the event loop; every later write is queued for the
-  writer thread, so the UI thread never waits on the disk.
+  5 minutes, 90 days); `%LOCALAPPDATA%\Lastdrop\state.json` (what the app remembers that is
+  not a setting: the meters a source has reported, so their room in the readout survives a
+  restart; meter keys and names only, no secrets); logs in `%LOCALAPPDATA%\Lastdrop\logs`
+  (rotated, local only). Start-up reads them on the main thread before the event loop; every
+  later write is queued for the writer thread, so the UI thread never waits on the disk.
 - **No telemetry.** The only network traffic is to the services whose usage is being read.
 
 ## Quality bar

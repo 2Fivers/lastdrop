@@ -6,7 +6,7 @@
 //! - [`state`]: [`state::AppState`], the main thread's state.
 //! - [`scheduler`]: refresh worker threads driven by `lastdrop_core::refresh`.
 //! - [`history`]: the append-only JSONL history store.
-//! - [`persist`]: folders, settings load/save (atomic).
+//! - [`persist`]: folders, settings and state file load/save (atomic).
 //! - [`logger`]: the tiny file logger with redaction.
 //! - [`wiring`]: start-up, event handlers, model → Slint conversions.
 //! - [`bench`]: the `--bench` timeline and its JSON (compatible with `tools/measure`).

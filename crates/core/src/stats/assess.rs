@@ -165,10 +165,10 @@ pub struct ServiceEval {
     pub reading_at: Option<Timestamp>,
     /// Every meter of the service that is not hidden, in meter order.
     pub meters: Vec<Assessment>,
-    /// Meters this source reported earlier in this run that its latest reading lacks (not
-    /// hidden): a per-model weekly that only the OAuth source reports while Claude Desktop's
-    /// history answers. They *can* appear, so the readout's widths keep room for them (R§6.3:
-    /// widths never change with data). **Not from the spec.**
+    /// Meters this source reported earlier (in this run, or in an earlier one the app restored
+    /// into [`EvalMemory::seen`]) that its latest reading lacks (not hidden): a per-model weekly
+    /// that only the OAuth source reports while Claude Desktop's history answers. They *can*
+    /// appear, so the readout's widths keep room for them (R§6.3: widths never change with data).
     pub absent: Vec<AbsentMeter>,
 }
 
@@ -249,8 +249,9 @@ pub struct EvalMemory {
     /// previous evaluation (the reading's `resets_at`, `R'` after a fixed-schedule reset, `None`
     /// without a reset time). A change of instance is a window reset (R§3.9).
     pub instance: BTreeMap<MeterKey, Option<Timestamp>>,
-    /// Every meter a source has reported in this run, with its names and whether it is a
-    /// balance ([`ServiceEval::absent`]).
+    /// Every meter a source has reported, with its names and whether it is a balance
+    /// ([`ServiceEval::absent`]): in this run, plus what the app restored from its state file
+    /// (earlier runs, R§6.3).
     pub seen: BTreeMap<MeterKey, (MeterNames, bool)>,
 }
 

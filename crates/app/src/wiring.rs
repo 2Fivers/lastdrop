@@ -167,9 +167,9 @@ pub fn run(startup: Startup) -> Result<(), AppError> {
     let history = HistoryStore::open(&paths.history, now, writer.handle())?;
     let readout_enabled = settings.readout.enabled && !args.no_readout;
     let hotkey_setting = settings.hotkey.clone();
-    let state = Rc::new(RefCell::new(AppState::new(
-        settings, history, theme, locale,
-    )));
+    let mut state = AppState::new(settings, history, theme, locale);
+    state.restore_seen(&persist::load_state(&paths.state), now);
+    let state = Rc::new(RefCell::new(state));
 
     // The Slint backend: winit with the software renderer. Popups get the spike's attributes.
     slint::BackendSelector::new()
@@ -1622,6 +1622,12 @@ pub fn rebuild(app: &App, now: Timestamp) {
     let readout = {
         let mut st = app.state.borrow_mut();
         st.evaluate(now);
+        // A meter seen for the first time is remembered across restarts (state file).
+        if let Some(bytes) = st.state_to_save() {
+            app.writer
+                .handle()
+                .replace(app.paths.state.clone(), bytes, "state");
+        }
         let st = &*st;
         let Some(eval) = st.evaluation.as_ref() else {
             return;
