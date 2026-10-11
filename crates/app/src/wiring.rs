@@ -37,7 +37,7 @@ use jiff::{SignedDuration, Timestamp};
 use lastdrop_core::color::ColorRole;
 use lastdrop_core::consts::layout::{
     CARD_BAR_ROW_H, CARD_BAR_W, CARD_EDGE_MARGIN, CARD_TASKBAR_GAP, CARD_W, FLYOUT_BAR_ROW_H,
-    FLYOUT_BAR_W, FLYOUT_EDGE_MARGIN, FLYOUT_MAX_H, FLYOUT_W,
+    FLYOUT_BAR_W, FLYOUT_MAX_H, FLYOUT_W,
 };
 use lastdrop_core::consts::{FLYOUT_TOGGLE_DEBOUNCE, MINUTE_TICK_OFFSET};
 use lastdrop_core::flyout::{
@@ -618,6 +618,11 @@ pub struct Runtime {
     pub hover: Cell<Option<(HoverAnchor, Rect)>>,
     /// The readout's slot on screen (flyout anchor for readout clicks).
     pub readout_rect: Cell<Option<Rect>>,
+    /// The readout's slot while it floats over the work area (no room on the taskbar): the
+    /// flyout keeps clear of it (`flyout_pos::flyout_max_height`).
+    pub readout_floating: Cell<Option<Rect>>,
+    /// What the open flyout was placed at, for resizes.
+    pub flyout_anchor: Cell<Option<Anchor>>,
     /// The last readout model (its compact row, R§8.2 rows).
     pub last_readout: RefCell<Option<Arc<ReadoutModel>>>,
     /// The tray model, DPI and theme the current icon was drawn for.
@@ -896,6 +901,10 @@ pub fn on_readout_event(app: &App, event: ReadoutEvent) {
             app.rt.readout_rect.set(match placement {
                 Placement::Docked { rect, .. } | Placement::Floating { rect, .. } => Some(rect),
                 Placement::Hidden(_) => None,
+            });
+            app.rt.readout_floating.set(match placement {
+                Placement::Floating { rect, .. } => Some(rect),
+                Placement::Docked { .. } | Placement::Hidden(_) => None,
             });
             {
                 let mut st = app.state.borrow_mut();
@@ -1271,13 +1280,23 @@ fn refresh_flyout_content(app: &App, now: Timestamp) {
     app.rt.focus_card.set(model.focus_card);
 }
 
-/// The flyout's height (logical px, F§1.2): content, at most `min(560, work height − 24)`.
-fn flyout_height(content: f32, monitor: &MonitorInfo) -> f32 {
-    let scale = (f64::from(monitor.dpi) / 96.0).max(0.5);
-    let work = f64::from(monitor.work.height()) / scale;
-    let max = f64::from(FLYOUT_MAX_H).min(work - 2.0 * f64::from(FLYOUT_EDGE_MARGIN));
+/// The flyout's height (logical px, F§1.2): content, at most `min(560, space)`, where `space`
+/// (device px, `flyout_pos::flyout_max_height`) is the work area less the 12 px margins and less
+/// a floating readout the flyout would otherwise cover. Floored to whole logical px so the
+/// window, rounded to device px, never exceeds `space`.
+fn flyout_height(content: f32, space: i32, dpi: u32) -> f32 {
+    let scale = (f64::from(dpi) / 96.0).max(0.5);
+    let fits = (f64::from(space) / scale).floor();
+    let max = f64::from(FLYOUT_MAX_H).min(fits);
     // `max` is a few hundred logical px.
     content.min(max.max(100.0) as f32)
+}
+
+/// The space for the flyout at `anchor` (device px, `flyout_pos::flyout_max_height`), clear of
+/// the readout when it floats.
+fn flyout_space(app: &App, anchor: Anchor, monitor: &MonitorInfo, edge: TaskbarEdge) -> i32 {
+    let width = device(f64::from(FLYOUT_W), f64::from(monitor.dpi) / 96.0);
+    flyout_pos::flyout_max_height(anchor, width, monitor, edge, app.rt.readout_floating.get())
 }
 
 /// Makes Slint create the flyout's repeated items (the cards) for the current model, so that
@@ -1308,13 +1327,15 @@ fn place_flyout(app: &App, h: HWND, anchor: Anchor, monitor: &MonitorInfo, edge:
     let scale = f64::from(monitor.dpi) / 96.0;
     // No resize of the previous rectangle while the cards are laid out below.
     app.rt.flyout_rect.set(None);
-    let height = flyout_height(flyout_content_height(window), monitor);
+    app.rt.flyout_anchor.set(Some(anchor));
+    let space = flyout_space(app, anchor, monitor, edge);
+    let height = flyout_height(flyout_content_height(window), space, monitor.dpi);
     window.set_flyout_height(height);
     let size = Size {
         width: device(f64::from(FLYOUT_W), scale),
         height: device(f64::from(height), scale),
     };
-    let rect = flyout_pos::flyout_rect(anchor, size, monitor, edge);
+    let rect = flyout_pos::flyout_rect(anchor, size, monitor, edge, app.rt.readout_floating.get());
     backdrop::set_rect(h, rect);
     // Moving onto a monitor with another DPI makes winit resize the window synchronously
     // (WM_DPICHANGED): place it again with the size for that DPI.
@@ -1679,13 +1700,15 @@ fn resize_open_flyout(app: &App) {
     };
     let window = &app.windows.flyout;
     let scale = f64::from(monitor.dpi) / 96.0;
-    let height = flyout_height(window.get_content_height(), &monitor);
+    let edge = app.state.borrow().readout.edge;
+    let anchor = app.rt.flyout_anchor.get().unwrap_or(Anchor::Rect(rect));
+    let space = flyout_space(app, anchor, &monitor, edge);
+    let height = flyout_height(window.get_content_height(), space, monitor.dpi);
     let device_h = device(f64::from(height), scale);
     if device_h == rect.height() {
         return;
     }
     window.set_flyout_height(height);
-    let edge = app.state.borrow().readout.edge;
     let new = if edge == TaskbarEdge::Top {
         Rect {
             bottom: rect.top + device_h,
@@ -2412,7 +2435,7 @@ mod tests {
     }
 
     #[test]
-    fn flyout_height_is_capped_by_the_work_area() {
+    fn flyout_height_is_capped_by_the_space() {
         let monitor = |h: i32, dpi: u32| MonitorInfo {
             monitor: Rect {
                 left: 0,
@@ -2428,11 +2451,41 @@ mod tests {
             },
             dpi,
         };
-        assert_eq!(flyout_height(478.0, &monitor(1032, 96)), 478.0);
-        assert_eq!(flyout_height(700.0, &monitor(1032, 96)), 560.0);
+        let icon = Anchor::Rect(Rect {
+            left: 1780,
+            top: 1040,
+            right: 1812,
+            bottom: 1072,
+        });
+        let space = |m: &MonitorInfo, avoid: Option<Rect>| {
+            let width = device(f64::from(FLYOUT_W), f64::from(m.dpi) / 96.0);
+            flyout_pos::flyout_max_height(icon, width, m, TaskbarEdge::Bottom, avoid)
+        };
+        let full = monitor(1032, 96);
+        assert_eq!(flyout_height(478.0, space(&full, None), 96), 478.0);
+        assert_eq!(flyout_height(700.0, space(&full, None), 96), 560.0);
         // A 500 px work area: 500 − 24.
-        assert_eq!(flyout_height(700.0, &monitor(500, 96)), 476.0);
+        let short = monitor(500, 96);
+        assert_eq!(flyout_height(700.0, space(&short, None), 96), 476.0);
         // At 150 % the work area is 1032 / 1.5 = 688 logical px.
-        assert_eq!(flyout_height(700.0, &monitor(1032, 144)), 560.0);
+        let scaled = monitor(1032, 144);
+        assert_eq!(flyout_height(700.0, space(&scaled, None), 144), 560.0);
+        // A readout floating 4 px above the taskbar, under the flyout: the flyout ends 12 px above
+        // it, so a 500 px work area leaves 500 − 4 − 40 − 24 = 432.
+        let floating = Rect {
+            left: 1620,
+            top: 456,
+            right: 1796,
+            bottom: 496,
+        };
+        assert_eq!(
+            flyout_height(700.0, space(&short, Some(floating)), 96),
+            432.0
+        );
+        // At 125 % a space of 701 device px is 560.8 logical px: floored, so the window (rounded
+        // to device px) cannot grow past the space.
+        assert_eq!(flyout_height(700.0, 701, 120), 560.0);
+        assert_eq!(flyout_height(700.0, 601, 120), 480.0);
+        assert!(device(f64::from(flyout_height(700.0, 601, 120)), 1.25) <= 601);
     }
 }
