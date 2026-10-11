@@ -3,7 +3,10 @@
 //! [`FakeSecrets`], [`FakeSpawner`] (scripted child output, records input) and [`FakeEnv`].
 //!
 //! All data given to these fakes in tests is invented (`tests/fixtures/<provider>/README.md`):
-//! never a real token, log or usage file.
+//! never a real token, log or usage file. [`chromium_cache`] builds invented Chromium HTTP caches
+//! into a [`FakeFs`].
+
+pub mod chromium_cache;
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::ffi::OsString;

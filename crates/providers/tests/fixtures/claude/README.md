@@ -1,8 +1,12 @@
 # Fixtures: claude
 
 Test inputs for the `claude` provider: Claude Desktop's `plan-usage-history.json`, the OAuth
-usage endpoint's JSON body, Claude Code's `.credentials.json` and the cached usage in
-`.claude.json`.
+usage endpoint's JSON body (also what Claude Desktop's HTTP cache keeps), Claude Code's
+`.credentials.json` and the cached usage in `.claude.json`.
+
+Claude Desktop's HTTP cache (Chromium's block-file format) is never a fixture file: the real one
+holds a person's conversations. Tests build invented caches in memory with
+`lastdrop_providers::fakes::chromium_cache` (`src/fakes/chromium_cache.rs`), from these bodies.
 
 **Every fixture here is invented.** Write it by hand from the documented or observed *shape* of
 the data, with made-up values. Never copy a real file, response or log from a machine, and never
@@ -36,6 +40,10 @@ against these fixtures.
   `mcpOAuth {…}`. Claude Code hosted by Claude Desktop leaves `accessToken: ""`, `expiresAt: 0`.
 - `.claude.json`: `cachedUsageUtilization {fetchedAtMs, accountUuid, utilization: {usage body}}`
   among `projects`, `oauthAccount` and many other keys.
+- Claude Desktop's HTTP cache (`%APPDATA%\Claude\Cache\Cache_Data`): `index`, `data_0` …
+  `data_3`, `f_xxxxxx`; entries keyed `1/0/<url>`; the usage endpoint
+  `https://claude.ai/api/organizations/<org>/usage` (with and without a query) answered with the
+  usage body above, observed `Content-Encoding: zstd`.
 
 ## Files
 
@@ -43,6 +51,7 @@ against these fixtures.
 |---|---|
 | `usage-200-two-windows.json` | minimal body: 5-hour and weekly |
 | `usage-200-current.json` | today's shape: `limits[]` with a `Fable` weekly, a surface scope, an unknown entry, `extra_usage`, `spend`, codenames, an unknown window |
+| `usage-200-current.json.br` | the same body brotli-compressed (a `br` response in the Desktop cache), made with .NET's `System.IO.Compression.BrotliStream` at `CompressionLevel.Optimal` (PowerShell 7); binary in `.gitattributes` |
 | `usage-200-five-hour-null-reset.json` | between sessions: 5-hour at 0 % with `resets_at: null`; unused per-model weekly |
 | `usage-200-five-hour-null.json` | `five_hour: null` (omitted, never 0 %); weekly over 100 % |
 | `usage-200-legacy-opus.json` | the old shape: `seven_day_opus` / `seven_day_sonnet`, no `limits` |

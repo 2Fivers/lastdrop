@@ -65,7 +65,8 @@ Messages between threads: workers send results to the main thread with
 
 - **Snapshot** — one reading of one account of one service: provider, account (label, plan),
   `measured_at` (when the service computed it), `fetched_at`, `source` (for example
-  `ClaudeDesktopHistory`, `ClaudeOAuthUsage`, `CodexAppServer`, `CodexRollout`, `MeshyApi`),
+  `ClaudeOAuthUsage`, `ClaudeDesktopCache`, `ClaudeDesktopHistory`, `CodexAppServer`,
+  `CodexRollout`, `MeshyApi`),
   `meters`, `balances`, and `health` (`Ok`, `Stale`, `SignInRequired`, `Error`).
 - **Meter** — a usage window: stable id (`five_hour`, `weekly`, `weekly:fable`, …), label,
   `used` as a share (1.0 = the limit; may exceed 1 when the service says so), whether the limit
@@ -100,7 +101,7 @@ fixed order and returns the freshest success; every attempt is logged (without s
 
 | Provider | Sources, in order |
 |---|---|
-| Claude | Claude Desktop's `plan-usage-history.json` (no token) → OAuth usage endpoint with Claude Code's token, read-only, never refreshed, at most every 5 min, `Retry-After` honoured → Claude Code's cached usage in `.claude.json` |
+| Claude | OAuth usage endpoint with Claude Code's token when the file holds a usable one, read-only, never refreshed, at most every 5 min, `Retry-After` honoured → Claude Desktop's own last usage response in its Chromium HTTP cache (`Cache\Cache_Data`, block-file format, read-only and shared, no token) → Claude Desktop's `plan-usage-history.json` (no token) → Claude Code's cached usage in `.claude.json`; the most recently measured reading wins, readings under 2 min apart count as one and the earlier source wins |
 | Codex | `codex app-server` (`account/rateLimits/read`, newest bundled or PATH `codex.exe`, no window, 8 s init / 3 s per call) → newest rollout `token_count.rate_limits` |
 | Meshy | `GET https://api.meshy.ai/openapi/v1/balance` with the key from Credential Manager |
 

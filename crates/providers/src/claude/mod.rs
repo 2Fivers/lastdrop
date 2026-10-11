@@ -1,13 +1,18 @@
 //! Claude plans: 5-hour session, weekly all models, weekly per model (R§2 table).
 //!
 //! Sources, in order (ARCHITECTURE provider table):
-//! 1. [`desktop`]: Claude Desktop's `plan-usage-history.json` (no token).
-//! 2. [`oauth`]: the OAuth usage endpoint with Claude Code's token — read-only, never refreshed,
-//!    at most every 5 minutes per credential, `Retry-After` honoured, stop on 401 until the
-//!    token file changes.
-//! 3. [`cache`]: Claude Code's cached usage in `.claude.json`.
+//! 1. [`oauth`]: the OAuth usage endpoint with Claude Code's token, when the file holds a usable
+//!    one — read-only, never refreshed, at most every 5 minutes per credential, `Retry-After`
+//!    honoured, stop on 401 until the token file changes.
+//! 2. [`desktop_cache`]: Claude Desktop's own last usage response, from its Chromium HTTP cache
+//!    (no token; read with [`blockfile`] and [`response_info`]).
+//! 3. [`desktop`]: Claude Desktop's `plan-usage-history.json` (no token).
+//! 4. [`cache`]: Claude Code's cached usage in `.claude.json` (no token).
 //!
-//! The provider returns the freshest success (by `measured_at`). Each source parses into a
+//! The provider returns the most recently **measured** success (by `measured_at`). Readings less
+//! than [`SAME_READING`] apart count as one moment, and the earlier source in the order wins:
+//! Claude Desktop writes a history sample when it receives the response its cache keeps, and that
+//! response is the richer reading (reset times, per-model windows). Each source parses into a
 //! [`ClaudeUsage`]; [`to_snapshot`] turns it into meters with the R§2 definitions.
 //!
 //! **Reset times.** Claude Desktop's history has no reset times. When the freshest reading lacks
@@ -18,14 +23,14 @@
 //! within a window; one point of slack for the history's whole percentages). Otherwise the
 //! reset stays unknown (R§3.2 "no reset time").
 //!
-//! **401 from the OAuth source** stops only that source, not the account: the desktop history and
-//! the cache need no token and keep being read. The provider remembers, per account, the
-//! `.credentials.json` fingerprint that got the 401 (interior `Mutex`, the trait takes `&self`;
-//! locked only to read or update that map, never across file or HTTP I/O) and skips the OAuth
-//! source until the fingerprint changes. When another source answers, the
-//! snapshot carries `Health::SignInRequired` (the service shows STALE(SIGN_IN), R§3.8); when none
-//! does, the fetch fails with `FetchError::Auth` and the scheduler stops the whole source until
-//! [`Provider::credential_fingerprint`] changes.
+//! **401 from the OAuth source** stops only that source, not the account: Claude Desktop's cache
+//! and history and Claude Code's cached usage need no token and keep being read. The provider
+//! remembers, per account, the `.credentials.json` fingerprint that got the 401 (interior
+//! `Mutex`, the trait takes `&self`; locked only to read or update that map, never across file or
+//! HTTP I/O) and skips the OAuth source until the fingerprint changes. When another source
+//! answers, the snapshot carries `Health::SignInRequired` (the service shows STALE(SIGN_IN),
+//! R§3.8); when none does, the fetch fails with `FetchError::Auth` and the scheduler stops the
+//! whole source until [`Provider::credential_fingerprint`] changes.
 //!
 //! The same memory keeps the OAuth source's own pace: no request less than 5 minutes after the
 //! previous one (the scheduler's minimum covers whole fetches; this covers the source when
@@ -40,9 +45,12 @@
 
 mod json;
 
+pub mod blockfile;
 pub mod cache;
 pub mod desktop;
+pub mod desktop_cache;
 pub mod oauth;
+pub mod response_info;
 
 use std::collections::BTreeMap;
 use std::io;
@@ -111,6 +119,12 @@ pub const OAUTH_MIN_GAP_SLACK: Duration = Duration::from_secs(30);
 /// Usage slack when taking a reset time from an older reading of the same window: one percentage
 /// point, because the desktop history stores whole percentages (**not from the spec**).
 const RESET_FILL_TOLERANCE: f64 = 0.01;
+
+/// Readings of different sources less than this apart count as the same moment, and the earlier
+/// source in the order wins (**not from the spec**): Claude Desktop writes a history sample when
+/// it receives the usage response its HTTP cache keeps, moments apart, and the cached response
+/// has the reset times and per-model windows the sample lacks.
+pub const SAME_READING: SignedDuration = SignedDuration::from_mins(2);
 
 /// The OAuth source's memory for one account (see the module docs).
 #[derive(Clone, Debug, Default)]
@@ -319,7 +333,11 @@ impl Provider for ClaudeProvider {
             });
         };
         let options = &self.options;
-        if !(options.desktop_history || options.oauth_usage || options.cached_usage) {
+        if !(options.oauth_usage
+            || options.desktop_cache
+            || options.desktop_history
+            || options.cached_usage)
+        {
             return Err(FetchError::Unavailable {
                 detail: "every Claude source is turned off".to_owned(),
             });
@@ -329,22 +347,10 @@ impl Provider for ClaudeProvider {
         let mut failures = Vec::new();
         let mut rejected = false;
         let mut plan = None;
+        let no_desktop = || FetchError::Unavailable {
+            detail: "Claude Desktop's data folder not found".to_owned(),
+        };
 
-        if options.desktop_history {
-            let result = match desktop_dir {
-                Some(dir) => desktop::read(ctx, dir),
-                None => Err(FetchError::Unavailable {
-                    detail: "Claude Desktop's data folder not found".to_owned(),
-                }),
-            };
-            collect(
-                ctx,
-                SourceKind::ClaudeDesktopHistory,
-                result,
-                &mut readings,
-                &mut failures,
-            );
-        }
         // Older answers that only lend reset times (module docs, "Reset times").
         let mut donors = Vec::new();
         if options.oauth_usage {
@@ -365,6 +371,32 @@ impl Provider for ClaudeProvider {
                 ctx,
                 SourceKind::ClaudeOAuthUsage,
                 outcome.result,
+                &mut readings,
+                &mut failures,
+            );
+        }
+        if options.desktop_cache {
+            let result = match desktop_dir {
+                Some(dir) => desktop_cache::read(ctx, dir),
+                None => Err(no_desktop()),
+            };
+            collect(
+                ctx,
+                SourceKind::ClaudeDesktopCache,
+                result,
+                &mut readings,
+                &mut failures,
+            );
+        }
+        if options.desktop_history {
+            let result = match desktop_dir {
+                Some(dir) => desktop::read(ctx, dir),
+                None => Err(no_desktop()),
+            };
+            collect(
+                ctx,
+                SourceKind::ClaudeDesktopHistory,
+                result,
                 &mut readings,
                 &mut failures,
             );
@@ -508,11 +540,20 @@ fn collect(
     }
 }
 
-/// The index of the reading with the latest `measured_at`; on a tie the earlier source wins.
+/// The index of the most recently measured reading. A reading counts as newer only when it is
+/// [`SAME_READING`] or more after the best so far, so of readings of one moment the earlier
+/// source in the order wins.
 fn freshest(readings: &[Candidate]) -> Option<usize> {
     let mut best: Option<usize> = None;
     for (i, reading) in readings.iter().enumerate() {
-        if best.is_none_or(|b| reading.measured_at > readings[b].measured_at) {
+        let newer = |b: usize| {
+            let same_until = readings[b]
+                .measured_at
+                .checked_add(SAME_READING)
+                .unwrap_or(Timestamp::MAX);
+            reading.measured_at >= same_until
+        };
+        if best.is_none_or(newer) {
             best = Some(i);
         }
     }
