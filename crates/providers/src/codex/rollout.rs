@@ -244,12 +244,62 @@ pub fn parse_tail(tail: &[u8]) -> Result<Option<CodexUsage>, FetchError> {
 /// newest event; stops as soon as the next file was last written before that event. An event
 /// without a `timestamp` is dated by its file's modification time.
 pub fn fetch(ctx: &FetchContext<'_>, codex_home: &Path) -> Result<CodexUsage, FetchError> {
+    read_files(ctx, &candidates(ctx, codex_home)).0
+}
+
+/// A rollout read remembered with the files it could look at: the newest [`MAX_FILES_READ`]
+/// rollout files' paths, sizes and modification times. Paths and the usage only, never file
+/// contents.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Seen {
+    files: Vec<(PathBuf, u64, Timestamp)>,
+    result: Option<Result<CodexUsage, FetchError>>,
+}
+
+/// [`fetch`] that reads no tail when the newest [`MAX_FILES_READ`] files are the same files,
+/// with the same sizes and modification times, as at the read `seen` remembers: the result is
+/// then the remembered one (the read depends on nothing else). Otherwise the files are read and
+/// `seen` remembers this read, unless a tail could not be read or a file has no modification
+/// time (then the next fetch reads again).
+pub fn fetch_seen(
+    ctx: &FetchContext<'_>,
+    codex_home: &Path,
+    seen: &mut Seen,
+) -> Result<CodexUsage, FetchError> {
     let files = candidates(ctx, codex_home);
-    if files.is_empty() {
-        return Err(FetchError::Unavailable {
-            detail: "no Codex sessions".to_owned(),
-        });
+    let looked_at: Option<Vec<(PathBuf, u64, Timestamp)>> = files
+        .iter()
+        .take(MAX_FILES_READ)
+        .map(|f| Some((f.path.clone(), f.meta.len, f.meta.modified?)))
+        .collect();
+    if let (Some(looked_at), Some(result)) = (&looked_at, &seen.result)
+        && *looked_at == seen.files
+    {
+        return result.clone();
     }
+    let (result, complete) = read_files(ctx, &files);
+    *seen = match looked_at {
+        Some(files) if complete => Seen {
+            files,
+            result: Some(result.clone()),
+        },
+        _ => Seen::default(),
+    };
+    result
+}
+
+/// [`fetch`] over `files` (newest first); `false` beside the result when a tail could not be read.
+fn read_files(
+    ctx: &FetchContext<'_>,
+    files: &[DirEntry],
+) -> (Result<CodexUsage, FetchError>, bool) {
+    if files.is_empty() {
+        let none = FetchError::Unavailable {
+            detail: "no Codex sessions".to_owned(),
+        };
+        return (Err(none), true);
+    }
+    let mut complete = true;
     let mut best: Option<CodexUsage> = None;
     let mut parse_error: Option<FetchError> = None;
     for file in files.iter().take(MAX_FILES_READ) {
@@ -263,7 +313,8 @@ pub fn fetch(ctx: &FetchContext<'_>, codex_home: &Path) -> Result<CodexUsage, Fe
         let tail = match ctx.fs.read_tail(&file.path, TAIL_BYTES) {
             Ok(tail) => tail,
             Err(e) => {
-                log::debug!("codex rollout: cannot read {}: {e}", file.path.display());
+                log::debug!("codex rollout: cannot read a session file: {e}");
+                complete = false;
                 continue;
             }
         };
@@ -287,9 +338,10 @@ pub fn fetch(ctx: &FetchContext<'_>, codex_home: &Path) -> Result<CodexUsage, Fe
             }
         }
     }
-    best.ok_or_else(|| {
+    let result = best.ok_or_else(|| {
         parse_error.unwrap_or_else(|| FetchError::Unavailable {
             detail: "no rate limits in recent Codex sessions".to_owned(),
         })
-    })
+    });
+    (result, complete)
 }

@@ -332,6 +332,7 @@ fn a_failing_credential_store_is_transient_not_a_missing_key() {
         spawner: &spawner,
         env: &env,
         deadline: now() + SignedDuration::from_secs(30),
+        manual: false,
     };
     let err = MeshyProvider::new()
         .fetch(&ctx, &account())

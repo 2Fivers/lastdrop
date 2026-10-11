@@ -24,14 +24,28 @@
 //! the rollout has a newer event. The memory (interior `Mutex`, shared by clones, locked only to
 //! read or update it, never across file or process I/O) is keyed by `CODEX_HOME`, so accounts
 //! sharing a folder share the pace. A start counts when a process was started, whatever it
-//! answered; a missing `codex.exe` or Codex folder starts nothing and does not count. A changed
-//! credential fingerprint ([`CREDENTIAL_FILES`]: a new sign-in, another account) lifts the pace and
-//! forgets the last answer. The app-server itself rewrites `auth.json` when it renews Codex's
-//! sign-in (codex-rs `login/src/auth/manager.rs`: shortly before the access token expires), so the
-//! fingerprint is taken again after every start that did not end in a sign-in error: its own
-//! renewal never lifts the pace, a sign-in after a sign-in error always does. A manual refresh
-//! does not lift it: the provider cannot tell one from a scheduled fetch. The memory lives as
-//! long as the provider, which the app rebuilds when the Codex options change.
+//! answered; a missing `codex.exe` or Codex folder, or a process that could not be started
+//! (`app_server::run`), starts nothing and does not count. A changed credential fingerprint
+//! ([`CREDENTIAL_FILES`]: a new sign-in, another account) lifts the pace and forgets the last
+//! answer. The app-server itself rewrites `auth.json` when it renews Codex's sign-in (codex-rs
+//! `login/src/auth/manager.rs`: shortly before the access token expires), so the fingerprint is
+//! taken again after every start that did not end in a sign-in error: its own renewal never lifts
+//! the pace, a sign-in after a sign-in error always does. Two more things lift it once the last
+//! start has finished: a manual refresh (`FetchContext::manual`; F§3), and a window of the last
+//! answer that has reset since that start (its numbers are known to be outdated; the scheduler
+//! fetches shortly after a reset, R§3.9). A temporary failure of a start tells the scheduler to
+//! come back when the rest ends (`retry_after`), and while the rest lasts the same failure stands
+//! in with that wait, so the back-off counts a failed start once.
+//! The memory lives as long as the provider, which the app rebuilds when the Codex options change.
+//!
+//! **Freshness.** Between starts the last answer stands in with its own `measured_at`, so a
+//! reading can be up to the pace plus one poll interval old when the next one comes: the provider
+//! declares [`APP_SERVER_PACE`] as its `reading_pace`, and the service's freshness allows for it
+//! (`lastdrop_core::stats::stale_after_paced`).
+//!
+//! **Rollout reads.** The rollout files hold the user's Codex sessions; their tails are read only
+//! when one of the newest files changed since the last read (size or modification time,
+//! [`rollout::fetch_seen`]): an unchanged folder gives the remembered result without a read.
 //!
 //! **Why not `min_interval`.** [`Provider::min_interval`] stays [`MIN_INTERVAL`] (1 minute), the
 //! lower bound between whole fetches in `lastdrop_core::refresh`: a fetch is now a few file reads
@@ -119,18 +133,70 @@ impl LiveMemory {
     /// (the clock went back) does not hold the app-server back.
     fn rest_until(&self, now: Timestamp) -> Option<Timestamp> {
         let started = self.started?;
-        let until = add(
-            started,
-            APP_SERVER_PACE.saturating_sub(APP_SERVER_PACE_SLACK),
-        );
+        let until = rest_end(started);
         (started <= now && now < until).then_some(until)
+    }
+
+    /// Why a rest gives way at `now` (module docs, "The app-server's pace"): the user asked
+    /// (`manual`), or a window of the last answer has reset since the start that gave it (that
+    /// answer is outdated; R§3.9's refresh after a reset). Never while that start still runs.
+    fn lift_reason(&self, manual: bool, now: Timestamp) -> Option<&'static str> {
+        let last = self.last.as_ref()?;
+        if manual {
+            return Some("of a manual refresh");
+        }
+        let (Some(started), Ok(usage)) = (self.started, last) else {
+            return None;
+        };
+        [&usage.primary, &usage.secondary]
+            .into_iter()
+            .flatten()
+            .filter_map(|w| w.resets_at)
+            .any(|reset| started < reset && reset <= now)
+            .then_some("a window of its last answer has reset since")
+    }
+}
+
+/// The end of the rest after a start at `started`: [`APP_SERVER_PACE`] less
+/// [`APP_SERVER_PACE_SLACK`].
+fn rest_end(started: Timestamp) -> Timestamp {
+    add(
+        started,
+        APP_SERVER_PACE.saturating_sub(APP_SERVER_PACE_SLACK),
+    )
+}
+
+/// A failure of the app-server source as the scheduler should see it: a temporary failure (or a
+/// refusal) cannot be retried before the rest ends at `until`, so it says so (`retry_after`)
+/// instead of having the scheduler come back for a stand-in of the same failure, which would
+/// count as another failure and grow the back-off without a new attempt.
+fn paced(error: FetchError, until: Timestamp, now: Timestamp) -> FetchError {
+    let wait = Duration::try_from(until.duration_since(now)).unwrap_or(Duration::ZERO);
+    match error {
+        FetchError::Transient {
+            from,
+            detail,
+            retry_after,
+        } => FetchError::Transient {
+            from,
+            detail,
+            retry_after: Some(retry_after.unwrap_or(Duration::ZERO).max(wait)),
+        },
+        FetchError::RateLimited { from, retry_after } => FetchError::RateLimited {
+            from,
+            retry_after: Some(retry_after.unwrap_or(Duration::ZERO).max(wait)),
+        },
+        other => other,
     }
 }
 
 /// What the app-server source gave in one fetch.
 enum Live {
-    /// Started now; its result.
-    Started(Result<CodexUsage, FetchError>),
+    /// Started now; its result, and why a rest gave way for it.
+    Started {
+        result: Result<CodexUsage, FetchError>,
+        lifted: Option<&'static str>,
+    },
     /// Not started: the last start (at `started`) rests until `until`; its result stands in
     /// (`None`: that start has not finished yet).
     Resting {
@@ -152,6 +218,9 @@ pub struct CodexProvider {
     /// Per `CODEX_HOME`: the app-server's pace and last result, shared by clones (it describes
     /// the folder, not this value).
     live: Arc<Mutex<BTreeMap<PathBuf, LiveMemory>>>,
+    /// Per `CODEX_HOME`: the last rollout read and the files it looked at
+    /// ([`rollout::fetch_seen`]), so unchanged session files are not read again on every fetch.
+    rollouts: Arc<Mutex<BTreeMap<PathBuf, rollout::Seen>>>,
 }
 
 impl CodexProvider {
@@ -161,7 +230,18 @@ impl CodexProvider {
             options,
             last_exe: Arc::new(Mutex::new(None)),
             live: Arc::default(),
+            rollouts: Arc::default(),
         }
+    }
+
+    /// The rollout source with this provider's memory of the files it read: the lock is held
+    /// only to take or put back that memory, never while files are read.
+    fn rollout(&self, ctx: &FetchContext<'_>, codex_home: &Path) -> Result<CodexUsage, FetchError> {
+        let rollouts = || self.rollouts.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut seen = rollouts().remove(codex_home).unwrap_or_default();
+        let result = rollout::fetch_seen(ctx, codex_home, &mut seen);
+        rollouts().insert(codex_home.to_path_buf(), seen);
+        result
     }
 
     /// The options in use.
@@ -189,7 +269,8 @@ impl CodexProvider {
 
     /// The app-server source with its pace: find `codex.exe` (remembered for the sign-in
     /// command), check the folder and the time left, then start it unless the last start of this
-    /// `CODEX_HOME` is less than [`APP_SERVER_PACE`] ago. `started` is when the fetch began.
+    /// `CODEX_HOME` is less than [`APP_SERVER_PACE`] ago and nothing lifts the rest
+    /// ([`LiveMemory::lift_reason`]). `started` is when the fetch began.
     fn live(&self, ctx: &FetchContext<'_>, codex_home: &Path, started: Timestamp) -> Live {
         let Some(exe) = app_server::find_codex_exe(ctx, self.options.codex_exe.as_deref()) else {
             return Live::Unavailable(FetchError::Unavailable {
@@ -201,26 +282,42 @@ impl CodexProvider {
             return Live::Unavailable(error);
         }
         let fingerprint = fingerprint_of(ctx, codex_home);
-        {
+        let (before, lifted) = {
             let mut memories = self.memories();
             let memory = memories.entry(codex_home.to_path_buf()).or_default();
             memory.follow_credential(fingerprint);
+            let mut lifted = None;
             if let (Some(until), Some(last_start)) = (memory.rest_until(started), memory.started) {
-                return Live::Resting {
-                    started: last_start,
-                    until,
-                    last: memory.last.clone(),
-                };
+                lifted = memory.lift_reason(ctx.manual, started);
+                if lifted.is_none() {
+                    return Live::Resting {
+                        started: last_start,
+                        until,
+                        last: memory.last.clone(),
+                    };
+                }
             }
             // Claims the start before the lock is released: a concurrent fetch of an account
             // with the same folder rests instead of starting a second app-server.
-            memory.started = Some(started);
-            memory.last = None;
-        }
-        let result = app_server::fetch_with(ctx, &exe, codex_home).map(|mut usage| {
-            usage.measured_at.get_or_insert(ctx.clock.now());
-            usage
-        });
+            let before = (memory.started.replace(started), memory.last.take());
+            (before, lifted)
+        };
+        let result = match app_server::run(ctx, &exe, codex_home) {
+            Ok(result) => result.map(|mut usage| {
+                usage.measured_at.get_or_insert(ctx.clock.now());
+                usage
+            }),
+            Err(not_started) => {
+                // No process was started (module docs: such a try does not count): the claim
+                // is withdrawn and the memory is as it was.
+                if let Some(memory) = self.memories().get_mut(codex_home)
+                    && memory.started == Some(started)
+                {
+                    (memory.started, memory.last) = before;
+                }
+                return Live::Unavailable(not_started);
+            }
+        };
         // The app-server may have renewed the sign-in and rewritten auth.json: that is not a new
         // sign-in. After a sign-in error a changed file is one, so the old fingerprint stays.
         let fingerprint_after = (!matches!(result, Err(FetchError::Auth { .. })))
@@ -233,7 +330,8 @@ impl CodexProvider {
             }
             memory.last = Some(result.clone());
         }
-        Live::Started(result)
+        let result = result.map_err(|e| paced(e, rest_end(started), ctx.clock.now()));
+        Live::Started { result, lifted }
     }
 }
 
@@ -304,7 +402,7 @@ impl Provider for CodexProvider {
         let rollout = self
             .options
             .rollout_fallback
-            .then(|| rollout::fetch(ctx, codex_home));
+            .then(|| self.rollout(ctx, codex_home));
         if let Some(Ok(usage)) = &rollout
             && let Some(age) = fresh_age(usage, started)
         {
@@ -328,8 +426,11 @@ impl Provider for CodexProvider {
 
         // 2. The app-server, at its pace.
         let live_result = match self.live(ctx, codex_home, started) {
-            Live::Started(result) => {
-                let reason = start_reason(rollout.as_ref(), started);
+            Live::Started { result, lifted } => {
+                let reason = match lifted {
+                    Some(why) => format!("{why}, before its 15-minute pace"),
+                    None => start_reason(rollout.as_ref(), started),
+                };
                 match &result {
                     Ok(usage) => log::info!(
                         "codex[{}]: using the app-server's answer ({} window(s)); started because \
@@ -356,15 +457,13 @@ impl Provider for CodexProvider {
                     started.duration_since(last_start).as_mins(),
                     APP_SERVER_PACE.as_secs() / 60
                 );
-                let last = last.unwrap_or_else(|| {
-                    Err(FetchError::Transient {
+                match last {
+                    None => Err(FetchError::Transient {
                         from: SourceKind::CodexAppServer,
                         detail: "codex app-server is starting for another account".to_owned(),
                         retry_after: None,
-                    })
-                });
-                match last {
-                    Ok(usage) => {
+                    }),
+                    Some(Ok(usage)) => {
                         let newer_rollout = match &rollout {
                             Some(Ok(event)) if event.measured_at > usage.measured_at => Some(event),
                             _ => None,
@@ -396,12 +495,12 @@ impl Provider for CodexProvider {
                             ctx.clock.now(),
                         ));
                     }
-                    Err(error) => {
+                    Some(Err(error)) => {
                         log::info!(
                             "codex[{}]: the app-server's last start gave no reading: {error}",
                             key.0
                         );
-                        Err(error)
+                        Err(paced(error, until, ctx.clock.now()))
                     }
                 }
             }
@@ -453,6 +552,11 @@ impl Provider for CodexProvider {
 
     fn min_interval(&self) -> Duration {
         MIN_INTERVAL
+    }
+
+    /// [`APP_SERVER_PACE`]: between starts the last answer stands in.
+    fn reading_pace(&self) -> Option<Duration> {
+        Some(APP_SERVER_PACE)
     }
 
     /// Size + mtime of `<codex_home>\auth.json` (or of the keyring-mode store, see

@@ -150,7 +150,11 @@ pub fn run_job(
     let deadline = started
         .checked_add(SignedDuration::try_from(FETCH_BUDGET).unwrap_or(SignedDuration::ZERO))
         .unwrap_or(started);
-    let ctx = FetchContext { deadline, ..*io };
+    let ctx = FetchContext {
+        deadline,
+        manual: job.manual && job.probe.is_none(),
+        ..*io
+    };
     let guarded = |f: &dyn Fn() -> Result<Snapshot, FetchError>| {
         catch_unwind(AssertUnwindSafe(f)).unwrap_or_else(|_| {
             Err(FetchError::Unavailable {
@@ -286,6 +290,7 @@ fn worker(io: &WorkerIo, sink: &ResultSink, rx: &Mutex<Receiver<Job>>, stop: &At
         spawner: &io.spawner,
         env: &io.env,
         deadline: Timestamp::now(),
+        manual: false,
     };
     loop {
         // The lock is held only while waiting for the next job (no other work).
@@ -412,6 +417,14 @@ pub fn plan_sources(
         wake(until, &mut out);
     }
     out
+}
+
+/// The pace a provider keeps for its live reading (`ServiceStatus::reading_pace`,
+/// `lastdrop_core::stats::stale_after_paced`).
+pub fn reading_pace(provider: &dyn Provider) -> Option<SignedDuration> {
+    provider
+        .reading_pace()
+        .and_then(|pace| SignedDuration::try_from(pace).ok())
 }
 
 /// The poll interval in effect for a source (`ServiceStatus::poll_interval`, R§3.8 `stale_after`).
@@ -549,6 +562,52 @@ mod tests {
         let done = rx.recv_timeout(Duration::from_secs(10)).expect("result");
         assert_eq!(done.provider, ProviderId::Codex);
         scheduler.shutdown();
+    }
+
+    /// A provider that records whether each fetch was a manual one (`FetchContext::manual`).
+    struct ManualRecorder(Mutex<Vec<bool>>);
+
+    impl Provider for ManualRecorder {
+        fn id(&self) -> ProviderId {
+            ProviderId::Codex
+        }
+
+        fn fetch(
+            &self,
+            ctx: &FetchContext<'_>,
+            _account: &AccountSource,
+        ) -> Result<Snapshot, FetchError> {
+            self.0.lock().expect("lock").push(ctx.manual);
+            Err(FetchError::Unavailable {
+                detail: "recording test provider".to_owned(),
+            })
+        }
+
+        fn min_interval(&self) -> Duration {
+            Duration::from_secs(60)
+        }
+    }
+
+    #[test]
+    fn a_manual_job_tells_the_provider() {
+        let fakes = Fakes::new(ts("2026-10-10T10:42:00Z"));
+        let ctx = fakes.context(SignedDuration::from_secs(20));
+        let recorder = Arc::new(ManualRecorder(Mutex::new(Vec::new())));
+        let source = crate::state::tests::source_of(ProviderId::Codex);
+        for manual in [true, false] {
+            let job = Job {
+                source: SourceKey {
+                    provider: ProviderId::Codex,
+                    account: lastdrop_core::model::AccountKey::primary(),
+                },
+                provider: recorder.clone(),
+                account: source.clone(),
+                manual,
+                probe: None,
+            };
+            run_job(&job, &fakes.clock, &ctx, &|| None);
+        }
+        assert_eq!(*recorder.0.lock().expect("lock"), [true, false]);
     }
 
     /// A provider whose fetch takes `delay` and counts its calls.

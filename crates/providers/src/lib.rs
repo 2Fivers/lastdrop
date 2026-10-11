@@ -64,6 +64,14 @@ pub trait Provider: Send + Sync {
     /// Lower bound between fetches for one credential source (rate limits, politeness).
     fn min_interval(&self) -> Duration;
 
+    /// The longest the provider lets a live answer stand in for new ones when it paces a source
+    /// itself, below the poll interval (Codex's app-server, at most every 15 minutes). The
+    /// service's freshness allows for it (`lastdrop_core::stats::stale_after_paced`). `None`: every
+    /// fetch reads anew, or the provider's pace is not longer than its `min_interval`.
+    fn reading_pace(&self) -> Option<Duration> {
+        None
+    }
+
     /// A fingerprint of the account's credential (token file size + mtime), so the scheduler
     /// can lift an auth stop when it changes (ARCHITECTURE: "stop on 401 until the credential
     /// file changes"). `None` when the provider cannot tell.
@@ -109,6 +117,9 @@ pub struct FetchContext<'a> {
     pub env: &'a dyn io::Env,
     /// The fetch must finish or fail by this instant (per the clock).
     pub deadline: Timestamp,
+    /// The user asked for this fetch (Refresh now, F5, Retry; F§3), so a provider's own pace
+    /// may give way (Codex's app-server). Scheduled fetches and probes: `false`.
+    pub manual: bool,
 }
 
 impl FetchContext<'_> {

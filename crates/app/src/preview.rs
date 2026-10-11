@@ -311,6 +311,7 @@ fn live_models() -> Result<LiveModels, AppError> {
         spawner: &io.spawner,
         env: &io.env,
         deadline: now,
+        manual: false,
     };
     let jobs: Vec<Job> = state
         .sources

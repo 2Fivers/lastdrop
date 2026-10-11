@@ -15,7 +15,7 @@ use lastdrop_providers::codex::{
     self, CodexProvider, CodexUsage, CodexWindow, app_server, meter, rollout, to_snapshot,
 };
 use lastdrop_providers::fakes::{FakeLine, FakeSpawner, Fakes};
-use lastdrop_providers::io::{ChildIo, CredentialName, SpawnSpec, Spawner};
+use lastdrop_providers::io::{ChildIo, Clock, CredentialName, SpawnSpec, Spawner};
 use lastdrop_providers::{AccountSource, FetchContext, FetchError, Provider};
 use serde_json::Value;
 
@@ -334,7 +334,8 @@ fn a_server_error_is_transient_and_its_message_is_not_repeated() {
         FetchError::Transient {
             from: SourceKind::CodexAppServer,
             detail: "app-server error -32603".to_owned(),
-            retry_after: None,
+            // Not before the app-server may start again (15 min less 30 s).
+            retry_after: Some(Duration::from_secs(14 * 60 + 30)),
         }
     );
 }
@@ -1560,12 +1561,334 @@ fn a_failed_start_counts_toward_the_pace_but_a_missing_codex_exe_does_not() {
     assert_eq!(f.spawner.spawned().len(), 1);
 
     // The failed start counts: five minutes later its error stands in, nothing is started.
+    // Both ask the scheduler to come back when the rest ends (15 min less 30 s after 1 min).
+    assert_eq!(
+        failed.retry_after(),
+        Some(Duration::from_secs(14 * 60 + 30))
+    );
     f.clock.set(now() + SignedDuration::from_mins(6));
     let again = p
         .fetch(&f.context(budget()), &account())
         .expect_err("resting");
-    assert_eq!(again, failed);
+    assert_eq!(again.detail(), failed.detail());
+    assert_eq!(again.retry_after(), Some(Duration::from_secs(9 * 60 + 30)));
     assert_eq!(f.spawner.spawned().len(), 1);
+}
+
+/// Fails its first spawn as Windows does for an executable being replaced, then spawns like
+/// `FakeSpawner`.
+struct FailingFirstSpawn<'a> {
+    inner: &'a FakeSpawner,
+    failed: Mutex<bool>,
+}
+
+impl Spawner for FailingFirstSpawn<'_> {
+    fn spawn(&self, spec: &SpawnSpec) -> io::Result<Box<dyn ChildIo>> {
+        let mut failed = self.failed.lock().expect("lock");
+        if !*failed {
+            *failed = true;
+            return Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "fixture: codex.exe is being replaced",
+            ));
+        }
+        self.inner.spawn(spec)
+    }
+}
+
+#[test]
+fn a_process_that_could_not_be_started_does_not_count_toward_the_pace() {
+    let f = fakes();
+    f.spawner.script(script(RATE_LIMITS));
+    let p = provider_without_fallback();
+    let failing = FailingFirstSpawn {
+        inner: &f.spawner,
+        failed: Mutex::new(false),
+    };
+    let err = p
+        .fetch(&context_with(&f, &failing), &account())
+        .expect_err("spawn failed");
+    assert_eq!(err.detail(), "could not start codex app-server");
+    assert!(f.spawner.spawned().is_empty());
+
+    // A minute later (Codex's update done) it is started at once, not held for 15 minutes.
+    f.clock.set(now() + SignedDuration::from_mins(1));
+    let snap = p
+        .fetch(&context_with(&f, &failing), &account())
+        .expect("started");
+    assert_eq!(snap.source, SourceKind::CodexAppServer);
+    assert_eq!(snap.measured_at, now() + SignedDuration::from_mins(1));
+    assert_eq!(f.spawner.spawned().len(), 1);
+}
+
+#[test]
+fn a_failed_start_is_one_failure_for_the_back_off() {
+    use lastdrop_core::refresh::{Due, PolicyInput, SourceState, next_due, record};
+    use lastdrop_core::settings::RefreshInterval;
+
+    let f = fakes();
+    f.spawner
+        .script(script(SERVER_ERROR))
+        .script(script(RATE_LIMITS));
+    let p = provider_without_fallback();
+    let mut state = SourceState::default();
+    let mut fetches = 0;
+    // The scheduler's policy at the default 5-minute interval, for 15 minutes.
+    loop {
+        let due = next_due(&PolicyInput {
+            now: f.clock.now(),
+            min_interval: p.min_interval(),
+            interval: RefreshInterval::Minutes(5),
+            adaptive: false,
+            activity: Default::default(),
+            paused: false,
+            resets: &[],
+            jitter_unit: 0.5,
+            credential: None,
+            state: &state,
+        });
+        let Due::At(at) = due else { panic!("{due:?}") };
+        if at > now() + SignedDuration::from_mins(15) {
+            break;
+        }
+        f.clock.set(at.max(f.clock.now()));
+        fetches += 1;
+        let result = p.fetch(&f.context(budget()), &account());
+        let attempt = match &result {
+            Ok(_) => lastdrop_core::refresh::AttemptResult::Success,
+            Err(e) => e.attempt_result(None),
+        };
+        record(&mut state, at, f.clock.now(), &attempt, p.min_interval());
+        if fetches == 1 {
+            assert_eq!(state.consecutive_failures, 1);
+        }
+    }
+    // The 503 at 0:00, then the next start when the rest ends (14:30): no fetch in between
+    // replays the failure and counts it again.
+    assert_eq!(fetches, 2, "no stand-in failure fetched in between");
+    assert_eq!(f.spawner.spawned().len(), 2);
+    assert_eq!(state.consecutive_failures, 0, "the second start answered");
+}
+
+#[test]
+fn a_manual_refresh_or_a_reset_since_the_last_start_lifts_the_rest() {
+    let f = fakes();
+    f.spawner
+        .script(script(RATE_LIMITS))
+        .script(script(WEEKLY_ONLY))
+        .script(script(RATE_LIMITS));
+    let p = provider_without_fallback();
+    // RATE_LIMITS' 5-hour window resets at 12:56.
+    let budget = at(&f, "2026-10-10T12:50:00Z");
+    p.fetch(&f.context(budget), &account()).expect("start");
+    let budget = at(&f, "2026-10-10T12:55:00Z");
+    p.fetch(&f.context(budget), &account()).expect("stand-in");
+    assert_eq!(f.spawner.spawned().len(), 1, "resting before the reset");
+
+    // The scheduler's refresh after the reset (R§3.9): the stand-in is outdated, so it starts.
+    let budget = at(&f, "2026-10-10T12:57:00Z");
+    let snap = p
+        .fetch(&f.context(budget), &account())
+        .expect("after the reset");
+    assert_eq!(f.spawner.spawned().len(), 2);
+    assert_eq!(snap.measured_at, ts("2026-10-10T12:57:00Z"));
+    assert_eq!(
+        snap.account.plan.as_deref(),
+        Some("Pro Lite"),
+        "a new answer"
+    );
+
+    // Its weekly window resets in days: resting again.
+    let budget = at(&f, "2026-10-10T12:59:00Z");
+    let snap = p.fetch(&f.context(budget), &account()).expect("stand-in");
+    assert_eq!(snap.measured_at, ts("2026-10-10T12:57:00Z"));
+    assert_eq!(f.spawner.spawned().len(), 2);
+
+    // Refresh now (F§3) starts it at once.
+    let ctx = FetchContext {
+        manual: true,
+        ..f.context(budget)
+    };
+    let snap = p.fetch(&ctx, &account()).expect("manual");
+    assert_eq!(f.spawner.spawned().len(), 3);
+    assert_eq!(snap.measured_at, ts("2026-10-10T12:59:00Z"));
+}
+
+#[test]
+fn a_manual_refresh_does_not_start_a_second_app_server_while_one_runs() {
+    let f = fakes();
+    f.spawner
+        .script(script(RATE_LIMITS))
+        .script(script(WEEKLY_ONLY));
+    let p = provider_without_fallback();
+    let alias = AccountSource::Codex {
+        account: AccountKey("alias".to_owned()),
+        codex_home: codex_home(),
+    };
+    let during = Mutex::new(None);
+    let concurrent = HookSpawner {
+        inner: &f.spawner,
+        hook: || {
+            let ctx = FetchContext {
+                manual: true,
+                ..f.context(budget())
+            };
+            *during.lock().expect("lock") = Some(p.clone().fetch(&ctx, &alias));
+        },
+    };
+    p.fetch(&context_with(&f, &concurrent), &account())
+        .expect("start");
+    let during = during.into_inner().expect("lock").expect("fetched");
+    assert!(during.is_err(), "nothing to stand in yet");
+    assert_eq!(f.spawner.spawned().len(), 1);
+}
+
+/// The time the app-server takes to answer in [`run_schedule`].
+const ANSWER_TAKES: SignedDuration = SignedDuration::from_secs(5);
+
+/// Three hours of the scheduler's policy (`lastdrop_core::refresh`, adaptive off) against the
+/// provider at a poll interval of `minutes`, every start answering after [`ANSWER_TAKES`]: the
+/// times the app-server started, and the first moment the service was stale with `pace` as its
+/// reading pace (judged when each fetch's answer can arrive at the latest, the oldest the
+/// reading gets).
+fn run_schedule(minutes: u16, pace: Option<SignedDuration>) -> (Vec<Timestamp>, Option<Timestamp>) {
+    use lastdrop_core::refresh::{
+        Activity, AttemptResult, Due, PolicyInput, SourceState, effective_interval, next_due,
+        record,
+    };
+    use lastdrop_core::settings::RefreshInterval;
+    use lastdrop_core::stats::{Freshness, ServiceStatus, freshness};
+
+    let f = fakes();
+    let p = provider();
+    let answering = HookSpawner {
+        inner: &f.spawner,
+        hook: || {
+            f.spawner.script(script(RATE_LIMITS));
+            f.clock.advance(ANSWER_TAKES);
+        },
+    };
+    let interval = RefreshInterval::Minutes(minutes);
+    let mut state = SourceState::default();
+    let mut status = ServiceStatus {
+        poll_interval: effective_interval(interval, false, Activity::default(), p.min_interval()),
+        reading_pace: pace,
+        ..ServiceStatus::default()
+    };
+    let mut resets: Vec<Timestamp> = Vec::new();
+    let mut starts = Vec::new();
+    let mut stale = None;
+    let end = now() + SignedDuration::from_hours(3);
+    loop {
+        let due = next_due(&PolicyInput {
+            now: f.clock.now(),
+            min_interval: p.min_interval(),
+            interval,
+            adaptive: false,
+            activity: Activity::default(),
+            paused: false,
+            resets: &resets,
+            jitter_unit: 0.5,
+            credential: None,
+            state: &state,
+        });
+        let Due::At(at) = due else {
+            panic!("{minutes} min: {due:?}")
+        };
+        let at = at.max(f.clock.now());
+        if at > end {
+            break;
+        }
+        f.clock.set(at);
+        let latest = at + ANSWER_TAKES;
+        if stale.is_none() && freshness(latest, &status) != Freshness::Fresh {
+            stale = Some(latest);
+        }
+        let spawned = f.spawner.spawned().len();
+        let snap = p
+            .fetch(&context_with(&f, &answering), &account())
+            .unwrap_or_else(|e| panic!("{minutes} min at {at}: {e:?}"));
+        if f.spawner.spawned().len() > spawned {
+            starts.push(at);
+        }
+        record(
+            &mut state,
+            at,
+            f.clock.now(),
+            &AttemptResult::Success,
+            p.min_interval(),
+        );
+        status.last_success = Some(
+            status
+                .last_success
+                .map_or(snap.measured_at, |t| t.max(snap.measured_at)),
+        );
+        resets = snap.meters.iter().filter_map(|m| m.resets_at).collect();
+    }
+    (starts, stale)
+}
+
+#[test]
+fn at_any_poll_interval_the_paced_app_server_keeps_the_service_fresh() {
+    let pace = SignedDuration::try_from(codex::APP_SERVER_PACE).expect("pace");
+    assert_eq!(provider().reading_pace(), Some(codex::APP_SERVER_PACE));
+    // RATE_LIMITS' 5-hour window resets at 12:56, inside the three hours: one early start.
+    let reset = ts("2026-10-10T12:56:00Z");
+    for minutes in 1..=30 {
+        let (starts, stale) = run_schedule(minutes, Some(pace));
+        assert_eq!(stale, None, "every {minutes} min");
+        assert!(starts.len() >= 2, "every {minutes} min: {starts:?}");
+        for pair in starts.windows(2) {
+            let gap = pair[1].duration_since(pair[0]);
+            let after_reset = pair[0] < reset && reset <= pair[1];
+            assert!(
+                after_reset || gap >= SignedDuration::from_secs(14 * 60 + 30),
+                "every {minutes} min: started {gap:?} apart at {}",
+                pair[1]
+            );
+        }
+    }
+    // The spec's rule alone (no pace): polled every 7 minutes, the stand-in outlives 15 minutes.
+    let (_, stale) = run_schedule(7, None);
+    assert!(stale.is_some(), "the case the pace extension is for");
+}
+
+#[test]
+fn unchanged_rollout_files_are_not_read_again() {
+    let f = fakes();
+    // An event 12 minutes old: not fresh, so the app-server starts and then rests.
+    let path = add_rollout(
+        &f,
+        r"2026\10\10",
+        "rollout-2026-10-10T10-20-00-a.jsonl",
+        ROLLOUT_TWO_WINDOWS,
+        ts("2026-10-10T10:30:03Z"),
+    );
+    f.spawner.script(script(RATE_LIMITS));
+    let p = provider();
+    p.fetch(&f.context(budget()), &account()).expect("start");
+    assert_eq!(f.fs.tail_reads(), std::slice::from_ref(&path));
+
+    // Resting fetches with the session file unchanged: no read; the result is the same.
+    let mut seen = rollout::Seen::default();
+    let first = rollout::fetch_seen(&f.context(budget()), &codex_home(), &mut seen);
+    assert_eq!(f.fs.tail_reads().len(), 2);
+    for minutes in [1, 5, 10] {
+        f.clock.set(now() + SignedDuration::from_mins(minutes));
+        let snap = p.fetch(&f.context(budget()), &account()).expect("stand-in");
+        assert_eq!(snap.source, SourceKind::CodexAppServer);
+        let again = rollout::fetch_seen(&f.context(budget()), &codex_home(), &mut seen);
+        assert_eq!(again, first);
+    }
+    assert_eq!(f.fs.tail_reads().len(), 2, "no tail read again");
+
+    // Codex writes to the session: read again, and its newer event wins over the stand-in.
+    let newer = ROLLOUT_TWO_WINDOWS.replace("2026-10-10T10:30:01", "2026-10-10T10:51:00");
+    f.fs.add_file(&path, newer, ts("2026-10-10T10:51:01Z"));
+    let snap = p.fetch(&f.context(budget()), &account()).expect("rollout");
+    assert_eq!(f.fs.tail_reads().len(), 3);
+    assert_eq!(snap.source, SourceKind::CodexRollout);
+    assert_eq!(snap.measured_at, ts("2026-10-10T10:51:00Z"));
 }
 
 #[test]

@@ -139,6 +139,7 @@ struct FakeFile {
 #[derive(Debug, Default)]
 pub struct FakeFs {
     files: Mutex<BTreeMap<PathBuf, FakeFile>>,
+    tail_reads: Mutex<Vec<PathBuf>>,
 }
 
 impl FakeFs {
@@ -167,6 +168,11 @@ impl FakeFs {
     /// Removes a file.
     pub fn remove(&self, path: &Path) {
         lock(&self.files).remove(path);
+    }
+
+    /// Every `read_tail` so far, by path, in order.
+    pub fn tail_reads(&self) -> Vec<PathBuf> {
+        lock(&self.tail_reads).clone()
     }
 
     fn not_found(path: &Path) -> io::Error {
@@ -226,6 +232,7 @@ impl Fs for FakeFs {
     }
 
     fn read_tail(&self, path: &Path, max_len: u64) -> io::Result<Vec<u8>> {
+        lock(&self.tail_reads).push(path.to_path_buf());
         let files = lock(&self.files);
         let file = files.get(path).ok_or_else(|| FakeFs::not_found(path))?;
         let keep = usize::try_from(max_len)
@@ -525,6 +532,7 @@ impl Fakes {
             spawner: &self.spawner,
             env: &self.env,
             deadline: self.clock.now() + budget,
+            manual: false,
         }
     }
 }

@@ -29,7 +29,7 @@ use lastdrop_win::theme::ThemeInfo;
 
 use crate::history::{HistoryStore, IN_MEMORY_SPAN};
 use crate::persist::{self, SavedState, SeenMap};
-use crate::scheduler::{JobResult, poll_interval};
+use crate::scheduler::{JobResult, poll_interval, reading_pace};
 
 /// Everything known about one credential source.
 pub struct SourceRuntime {
@@ -191,6 +191,7 @@ pub fn build_sources(
                 }
             };
             let poll = poll_interval(settings, provider.as_ref(), Activity::default());
+            let pace = reading_pace(provider.as_ref());
             let runtime = match existing.remove(&key) {
                 Some(mut kept) => {
                     kept.provider = provider.clone();
@@ -198,6 +199,7 @@ pub fn build_sources(
                     kept.account.alias.clone_from(&account.alias);
                     kept.account.tag.clone_from(&account.tag);
                     kept.status.poll_interval = poll;
+                    kept.status.reading_pace = pace;
                     kept
                 }
                 None => SourceRuntime {
@@ -212,6 +214,7 @@ pub fn build_sources(
                     latest: None,
                     status: ServiceStatus {
                         poll_interval: poll,
+                        reading_pace: pace,
                         ..ServiceStatus::default()
                     },
                     refresh: SourceState::default(),
@@ -917,5 +920,26 @@ pub(crate) mod tests {
             })
         };
         assert!(build_sources(&settings, &providers, &unresolved, BTreeMap::new()).is_empty());
+    }
+
+    #[test]
+    fn a_source_that_paces_its_live_reading_tells_the_freshness_rule() {
+        let settings = settings_of(&[ProviderId::Claude, ProviderId::Codex]);
+        let providers = lastdrop_providers::providers(&settings);
+        let resolve = |p: ProviderId, _: &AccountSettings| Ok(source_of(p));
+        let sources = build_sources(&settings, &providers, &resolve, BTreeMap::new());
+        let pace = |p: ProviderId| {
+            sources
+                .iter()
+                .find(|(k, _)| k.provider == p)
+                .map(|(_, s)| s.status.reading_pace)
+                .expect("a source")
+        };
+        assert_eq!(
+            pace(ProviderId::Codex),
+            Some(jiff::SignedDuration::from_mins(15)),
+            "the app-server's pace"
+        );
+        assert_eq!(pace(ProviderId::Claude), None);
     }
 }

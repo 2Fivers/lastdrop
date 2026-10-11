@@ -59,6 +59,7 @@ fn live_desktop_cache_smoke() {
         spawner: &spawner,
         env: &env,
         deadline: Timestamp::now() + SignedDuration::from_secs(20),
+        manual: false,
     };
     let account = AccountSource::resolve(ProviderId::Claude, &AccountSettings::primary(), &env)
         .expect("a Claude account source");

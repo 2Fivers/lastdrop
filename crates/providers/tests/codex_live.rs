@@ -201,6 +201,7 @@ fn live_provider_pace_smoke() {
             spawner: &spawner,
             env: &env,
             deadline: Timestamp::now() + SignedDuration::from_secs(20),
+            manual: false,
         };
         let began = Instant::now();
         println!("fetch {round}:");
@@ -251,6 +252,7 @@ fn live_app_server_smoke() {
         spawner: &spawner,
         env: &env,
         deadline: Timestamp::now() + SignedDuration::from_secs(20),
+        manual: false,
     };
     let exe = app_server::find_codex_exe(&ctx, None).expect("codex.exe on this machine");
 

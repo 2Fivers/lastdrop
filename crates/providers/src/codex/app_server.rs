@@ -594,6 +594,17 @@ pub fn fetch_with(
     exe: &Path,
     codex_home: &Path,
 ) -> Result<CodexUsage, FetchError> {
+    run(ctx, exe, codex_home).and_then(|answered| answered)
+}
+
+/// [`fetch_with`], telling whether a process was started: the outer `Err` when none was (the
+/// Codex folder is gone, no time is left, or the spawn failed: `codex.exe` missing or not
+/// startable), else the conversation's result. The provider's pace counts only started processes.
+pub fn run(
+    ctx: &FetchContext<'_>,
+    exe: &Path,
+    codex_home: &Path,
+) -> Result<Result<CodexUsage, FetchError>, FetchError> {
     preflight(ctx, codex_home)?;
     let spec = launch_spec(ctx, exe, codex_home);
     log::debug!("codex app-server: starting {}", exe.display());
@@ -611,7 +622,7 @@ pub fn fetch_with(
     if let Err(e) = child.kill() {
         log::warn!("codex app-server: kill failed: {e}");
     }
-    result
+    Ok(result)
 }
 
 /// The whole source: find → spawn → initialize → read → kill, within the timeouts and the
