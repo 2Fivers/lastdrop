@@ -21,7 +21,7 @@
 //! [`HistoryStore::open`]. Appends and the compaction are queued, in order, for the writer thread
 //! ([`crate::writer`]), which also retries a failed append in front of the next one.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fs::{self, File};
 use std::io::{self, BufRead, BufReader, BufWriter, Read, Write};
 use std::path::{Path, PathBuf};
@@ -67,6 +67,13 @@ pub struct HistoryStore {
     /// Keyed by file name ([`HistoryStore::file_name`]): the file is a meter's identity on disk,
     /// and a file can be loaded before the meter's [`MeterKey`] is seen again.
     series: BTreeMap<String, Series>,
+    /// The file name of every meter recorded in this run, so the statistics' lookups (several
+    /// per meter on every minute tick) build no string. A key not in it (a meter not read yet
+    /// in this run) has its name built on the spot.
+    names: HashMap<MeterKey, String>,
+    /// [`HistoryStore::sparkline_series`], kept until a series is added or removed or changes
+    /// kind; `None` = to be worked out again.
+    spark: Option<BTreeSet<String>>,
     /// Where appends and compactions go.
     writer: WriterHandle,
 }
@@ -343,6 +350,8 @@ impl HistoryStore {
         let mut store = HistoryStore {
             dir: dir.to_owned(),
             series: BTreeMap::new(),
+            names: HashMap::new(),
+            spark: None,
             writer,
         };
         let since = sub(now, IN_MEMORY_SPAN);
@@ -435,16 +444,27 @@ impl HistoryStore {
         if !sample.value.is_finite() {
             return;
         }
-        let name = HistoryStore::file_name(key);
-        let series = self.series.entry(name.clone()).or_insert_with(|| {
+        if !self.names.contains_key(key) {
+            self.names.insert(key.clone(), HistoryStore::file_name(key));
+        }
+        let name = &self.names[key];
+        if !self.series.contains_key(name) {
             let service = format!(
                 "{}.{}",
                 sanitize(key.provider.as_str()),
                 sanitize(&key.account.0)
             );
-            Series::new(service, sanitize(&key.meter.0), kind)
-        });
-        series.kind = kind;
+            let series = Series::new(service, sanitize(&key.meter.0), kind);
+            self.series.insert(name.clone(), series);
+            self.spark = None;
+        }
+        let Some(series) = self.series.get_mut(name) else {
+            return;
+        };
+        if series.kind != kind {
+            series.kind = kind;
+            self.spark = None;
+        }
         let newest = series
             .samples
             .last()
@@ -476,7 +496,7 @@ impl HistoryStore {
             let lines: Vec<Sample> = pending.into_iter().chain([sample]).collect();
             match lines_of(&lines) {
                 Ok(text) => {
-                    self.writer.append(self.dir.join(&name), text);
+                    self.writer.append(self.dir.join(name), text);
                     series.last_persisted = Some(sample.t);
                     persisted = true;
                 }
@@ -500,7 +520,10 @@ impl HistoryStore {
     pub fn trim_memory(&mut self, now: Timestamp) {
         let floor = sub(now, IN_MEMORY_SPAN);
         let spark_since = sub(now, SPARK_SPAN);
-        let spark = self.sparkline_series();
+        let spark = match self.spark.take() {
+            Some(spark) => spark,
+            None => self.sparkline_series(),
+        };
         for (name, series) in &mut self.series {
             // A stale meter is judged at its reading (R§3.8), so its needs count from there.
             let anchor = series.samples.last().map_or(now, |s| s.t.min(now));
@@ -530,6 +553,7 @@ impl HistoryStore {
                 series.tail_pending = false;
             }
         }
+        self.spark = Some(spark);
     }
 
     /// The file names of each service's sparkline meter (`flyout::spark_meter`): its `weekly`
@@ -573,8 +597,14 @@ impl HistoryStore {
     pub fn compact(&mut self, now: Timestamp) {
         let cutoff = sub(now, HISTORY_RETENTION);
         self.writer.compact(self.dir.clone(), cutoff);
+        let before = self.series.len();
         self.series
             .retain(|_, s| !s.samples.is_empty() || s.last_persisted.is_some_and(|t| t >= cutoff));
+        if self.series.len() != before {
+            let series = &self.series;
+            self.names.retain(|_, name| series.contains_key(name));
+            self.spark = None;
+        }
     }
 
     /// Waits until every write queued so far is on disk (tests; shutdown joins the writer).
@@ -585,7 +615,11 @@ impl HistoryStore {
 
 impl HistoryView for HistoryStore {
     fn samples(&self, key: &MeterKey, since: Timestamp) -> &[Sample] {
-        match self.series.get(&HistoryStore::file_name(key)) {
+        let series = match self.names.get(key) {
+            Some(name) => self.series.get(name),
+            None => self.series.get(&HistoryStore::file_name(key)),
+        };
+        match series {
             Some(series) => {
                 let v = &series.samples;
                 &v[v.partition_point(|s| s.t < since)..]
@@ -1063,6 +1097,50 @@ mod tests {
         let kept =
             times(store.samples(&key(ProviderId::Codex, MeterId::FIVE_HOUR), Timestamp::MIN));
         assert_eq!(kept.first(), Some(&h(16 * 24)), "16 days for F§6");
+    }
+
+    #[test]
+    fn a_new_series_moves_the_sparkline_to_it() {
+        let dir = TempDir::new("spark-new");
+        let now = t0();
+        let h = |n: i64| now - SignedDuration::from_hours(n);
+        let five = |n: i64| h(5 * (n / 5)) + SignedDuration::from_hours(1);
+        let samples: Vec<Sample> = (0..20 * 24)
+            .rev()
+            .map(|n| Sample::window(h(n), 0.1, Some(five(n))))
+            .collect();
+        write_samples(&dir.file("codex.default.five_hour.jsonl"), &samples);
+        let mut store = dir.open(now);
+        let five_key = key(ProviderId::Codex, MeterId::FIVE_HOUR);
+        assert_eq!(
+            times(store.samples(&five_key, Timestamp::MIN)).first(),
+            Some(&h(16 * 24))
+        );
+
+        // A weekly window appears: it becomes the sparkline meter, so the 5-hour window keeps
+        // only its current instance from the next trim on.
+        let later = now + SignedDuration::from_mins(1);
+        let weekly = meter(
+            MeterId::WEEKLY,
+            0.2,
+            Some(now + days(3)),
+            WindowLen::Fixed(SignedDuration::from_hours(168)),
+        );
+        let mut reading = snapshot(later, vec![weekly], Vec::new());
+        reading.provider = ProviderId::Codex;
+        store.record(&reading);
+        store.trim_memory(later);
+        let kept = times(store.samples(&five_key, Timestamp::MIN));
+        assert!(
+            kept.first() >= Some(&h(5)),
+            "current instance only: {kept:?}"
+        );
+        // The recorded meter is found by its key (its file name cached) as before.
+        let weekly_key = key(ProviderId::Codex, MeterId::WEEKLY);
+        assert_eq!(
+            times(store.samples(&weekly_key, Timestamp::MIN)),
+            vec![later]
+        );
     }
 
     #[test]

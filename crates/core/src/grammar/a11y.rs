@@ -108,7 +108,7 @@ fn row_core(a: &Assessment, service: &ServiceEval, cx: &TextContext<'_>) -> Stri
     let meter = spoken_name(&a.names.name);
     let n = pct(a).to_string();
     let base = [
-        ("service", svc.as_str()),
+        ("service", &*svc),
         ("meter", meter.as_str()),
         ("n", n.as_str()),
     ];
@@ -299,7 +299,7 @@ pub fn tray_tooltip(eval: &Evaluation, cx: &TextContext<'_>) -> String {
     let pct_text = percent(pct(a), cx.locale);
     let args = |extra: &[(&'static str, String)]| {
         let mut v: Vec<(&str, String)> = vec![
-            ("service", svc.clone()),
+            ("service", svc.clone().into_owned()),
             ("meter", a.names.short_name.clone()),
             ("pct", pct_text.clone()),
         ];

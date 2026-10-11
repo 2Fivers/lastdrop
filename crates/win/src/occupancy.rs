@@ -6,6 +6,9 @@
 //! its sink. It does nothing else. When UI Automation fails or times out, the answer is
 //! [`OccupancyResult::Unknown`] and placement floats the readout instead of guessing.
 //!
+//! COM and the automation object are set up on the first request, not when the thread starts:
+//! a readout that is off never asks, so UI Automation is never loaded into the process for it.
+//!
 //! What counts as an app button (recorded on Windows 11 25H2): every UIA `Button` under
 //! `Shell_TrayWnd` — Start, Search, Task View, Widgets and the `Taskbar.TaskListButtonAutomationPeer`
 //! app buttons — except the notification area's (`SystemTray.*` classes, or anything starting at or
@@ -24,8 +27,9 @@ use windows::Win32::System::Com::{
 use windows::Win32::System::Variant::VARIANT;
 use windows::Win32::UI::Accessibility::{
     AutomationElementMode_None, CUIAutomation, CUIAutomation8, IUIAutomation, IUIAutomation2,
-    TreeScope_Descendants, UIA_BoundingRectanglePropertyId, UIA_ButtonControlTypeId,
-    UIA_ClassNamePropertyId, UIA_ControlTypePropertyId,
+    IUIAutomationCacheRequest, IUIAutomationCondition, TreeScope_Descendants,
+    UIA_BoundingRectanglePropertyId, UIA_ButtonControlTypeId, UIA_ClassNamePropertyId,
+    UIA_ControlTypePropertyId,
 };
 use windows::Win32::UI::WindowsAndMessaging::{FindWindowExW, GetWindowRect, IsWindow};
 use windows::core::{Interface, w};
@@ -77,8 +81,8 @@ pub struct OccupancyHandle {
 }
 
 impl OccupancyHandle {
-    /// Starts the thread (COM MTA, `CUIAutomation8`, timeouts set). `sink` runs on the occupancy
-    /// thread and must only post to the readout thread.
+    /// Starts the thread; COM (MTA) and `CUIAutomation8` with its timeouts follow on the first
+    /// request. `sink` runs on the occupancy thread and must only post to the readout thread.
     pub fn spawn(
         sink: Box<dyn Fn(OccupancyResult) + Send + 'static>,
     ) -> std::io::Result<OccupancyHandle> {
@@ -124,22 +128,12 @@ impl Drop for OccupancyHandle {
     }
 }
 
-/// The thread body: COM MTA, one automation object, then measure on request until stopped.
+/// The thread body: measure on request until stopped; COM MTA and one [`Automation`] from the
+/// first request on.
 fn run(shared: &Shared, sink: &dyn Fn(OccupancyResult)) {
-    // SAFETY: initializes COM for this thread; balanced by CoUninitialize below on success.
-    let com = unsafe { CoInitializeEx(None, COINIT_MULTITHREADED) };
-    let automation = if com.is_ok() {
-        match create_automation() {
-            Ok(a) => Some(a),
-            Err(e) => {
-                log::warn!("UI Automation unavailable: {e}");
-                None
-            }
-        }
-    } else {
-        log::warn!("COM initialization failed on the occupancy thread: {com:?}");
-        None
-    };
+    // `None` until the first request; then whether COM is initialized on this thread.
+    let mut com_ok: Option<bool> = None;
+    let mut automation: Option<Automation> = None;
     loop {
         let hwnd = {
             let mut queue = shared.lock();
@@ -159,6 +153,23 @@ fn run(shared: &Shared, sink: &dyn Fn(OccupancyResult)) {
         let Some(hwnd) = hwnd else {
             break;
         };
+        if com_ok.is_none() {
+            // SAFETY: initializes COM for this thread; balanced by CoUninitialize below on
+            // success.
+            let com = unsafe { CoInitializeEx(None, COINIT_MULTITHREADED) };
+            if com.is_ok() {
+                automation = match Automation::new() {
+                    Ok(a) => Some(a),
+                    Err(e) => {
+                        log::warn!("UI Automation unavailable: {e}");
+                        None
+                    }
+                };
+            } else {
+                log::warn!("COM initialization failed on the occupancy thread: {com:?}");
+            }
+            com_ok = Some(com.is_ok());
+        }
         let result = match &automation {
             Some(a) => match measure(a, hwnd) {
                 Ok(extents) => OccupancyResult::Measured(extents),
@@ -172,10 +183,42 @@ fn run(shared: &Shared, sink: &dyn Fn(OccupancyResult)) {
         sink(result);
     }
     drop(automation);
-    if com.is_ok() {
+    if com_ok == Some(true) {
         // SAFETY: balances the successful CoInitializeEx above; every COM object of this
         // thread has been released.
         unsafe { CoUninitialize() };
+    }
+}
+
+/// The UI Automation objects a measurement uses, made once.
+struct Automation {
+    automation: IUIAutomation,
+    /// `BoundingRectangle`, `ControlType` and `ClassName`, `AutomationElementMode_None`.
+    cache: IUIAutomationCacheRequest,
+    /// `ControlType == Button`.
+    buttons: IUIAutomationCondition,
+}
+
+impl Automation {
+    fn new() -> windows::core::Result<Automation> {
+        let automation = create_automation()?;
+        // SAFETY: plain calls on a live object; the VARIANT is a local valid for the call.
+        unsafe {
+            let cache = automation.CreateCacheRequest()?;
+            cache.AddProperty(UIA_BoundingRectanglePropertyId)?;
+            cache.AddProperty(UIA_ControlTypePropertyId)?;
+            cache.AddProperty(UIA_ClassNamePropertyId)?;
+            cache.SetAutomationElementMode(AutomationElementMode_None)?;
+            let buttons = automation.CreatePropertyCondition(
+                UIA_ControlTypePropertyId,
+                &VARIANT::from(UIA_ButtonControlTypeId.0),
+            )?;
+            Ok(Automation {
+                automation,
+                cache,
+                buttons,
+            })
+        }
     }
 }
 
@@ -204,26 +247,21 @@ fn create_automation() -> windows::core::Result<IUIAutomation> {
 }
 
 /// One measurement of the taskbar `hwnd`.
-fn measure(automation: &IUIAutomation, hwnd: isize) -> windows::core::Result<AppButtonExtents> {
+fn measure(automation: &Automation, hwnd: isize) -> windows::core::Result<AppButtonExtents> {
     let taskbar = HWND(hwnd as *mut core::ffi::c_void);
     // SAFETY: IsWindow accepts any value.
     if !unsafe { IsWindow(Some(taskbar)) }.as_bool() {
         return Err(windows::Win32::Foundation::E_HANDLE.into());
     }
     let tray_left = tray_left(taskbar);
-    // SAFETY: plain calls on live COM objects; the VARIANT is a local valid for the call.
+    // SAFETY: plain calls on live COM objects.
     let found = unsafe {
-        let element = automation.ElementFromHandle(taskbar)?;
-        let cache = automation.CreateCacheRequest()?;
-        cache.AddProperty(UIA_BoundingRectanglePropertyId)?;
-        cache.AddProperty(UIA_ControlTypePropertyId)?;
-        cache.AddProperty(UIA_ClassNamePropertyId)?;
-        cache.SetAutomationElementMode(AutomationElementMode_None)?;
-        let condition = automation.CreatePropertyCondition(
-            UIA_ControlTypePropertyId,
-            &VARIANT::from(UIA_ButtonControlTypeId.0),
-        )?;
-        element.FindAllBuildCache(TreeScope_Descendants, &condition, &cache)?
+        let element = automation.automation.ElementFromHandle(taskbar)?;
+        element.FindAllBuildCache(
+            TreeScope_Descendants,
+            &automation.buttons,
+            &automation.cache,
+        )?
     };
     // SAFETY: plain getter on a live array.
     let count = unsafe { found.Length()? };

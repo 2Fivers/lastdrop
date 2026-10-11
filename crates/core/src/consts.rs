@@ -186,6 +186,11 @@ pub const ADAPTIVE_IDLE_FACTOR: u32 = 3;
 /// maximum of the interval setting in ROADMAP "Settings").
 pub const ADAPTIVE_IDLE_MAX: Duration = Duration::from_secs(30 * 60);
 
+/// The user counts as idle for the adaptive refresh after this long without keyboard or mouse
+/// input in the session; a locked session or a display turned off for inactivity has none
+/// (**not from the spec**; ARCHITECTURE "slower when idle").
+pub const ADAPTIVE_IDLE_AFTER: Duration = Duration::from_secs(10 * 60);
+
 /// Default refresh interval in minutes (**not from the spec**; R§3.8's examples use 5 min and
 /// undocumented endpoints allow no less).
 pub const DEFAULT_REFRESH_MINUTES: u16 = 5;

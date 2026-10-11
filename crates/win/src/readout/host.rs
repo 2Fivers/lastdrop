@@ -7,8 +7,8 @@
 //! `ReleaseCapture`) goes to `DefWindowProc`. WinEvent callbacks never borrow the state: they
 //! only (re)arm debounce timers and re-assert the z-order through handles kept in a `Cell`.
 //!
-//! Locks: the mailbox lock is held for a swap, the UIA data lock for a copy — never across a
-//! Win32 call (ARCHITECTURE "Messages between threads").
+//! Locks: the mailbox lock and the UIA data lock are held for a swap (or, for the UIA data, to
+//! take a reference) — never across a Win32 call (ARCHITECTURE "Messages between threads").
 
 use std::cell::{Cell, RefCell};
 use std::sync::mpsc::SyncSender;
@@ -347,7 +347,11 @@ struct Host {
     visible: bool,
     last_content: Option<Content>,
     last_rect: Option<Rect>,
-    last_uia: Option<UiaData>,
+    /// The UI Automation data the provider reports.
+    last_uia: Option<Arc<UiaData>>,
+    /// What `last_uia` was built from (model, layout, form, slot): a present with the same
+    /// skips rebuilding it (pointer moves and foreground changes present often).
+    uia_from: Option<(Arc<ReadoutModel>, ReadoutLayout, ReadoutForm, Rect)>,
     last_report: Option<Report>,
     pointer: Pointer,
     announce_pending: bool,
@@ -519,6 +523,7 @@ impl Host {
                 last_content: None,
                 last_rect: None,
                 last_uia: None,
+                uia_from: None,
                 last_report: None,
                 pointer: Pointer::default(),
                 announce_pending: false,
@@ -781,8 +786,9 @@ impl Host {
     /// Draws (when the content changed), pushes and shows the readout at `self.shown`, or hides
     /// it.
     fn present(&mut self) {
-        let (Some(shown), Some(model), Some((_, _, layout))) =
-            (self.shown, self.model.clone(), self.layout.clone())
+        // Only the layout is copied; the width inputs it was computed from stay where they are.
+        let layout = self.layout.as_ref().map(|(_, _, layout)| *layout);
+        let (Some(shown), Some(model), Some(layout)) = (self.shown, self.model.clone(), layout)
         else {
             self.hide();
             return;
@@ -859,14 +865,13 @@ impl Host {
                 floating: content.floating,
             },
         )?;
-        let pixels = canvas.pixels()?;
         log::debug!("readout: frame {w}×{h} {:?}", content.form);
         let surface = match self.surface.take() {
             Some(s) if s.size() == (w, h) => s,
             _ => Surface::new(w, h)?,
         };
-        self.surface.insert(surface).write(&pixels);
-        Ok(())
+        // Straight from the canvas into the DIB section, no buffer in between.
+        canvas.copy_pixels_into(self.surface.insert(surface).bits_mut())
     }
 
     fn hide(&mut self) {
@@ -891,9 +896,31 @@ impl Host {
         {
             self.set_uia(UiaData::default());
         }
+        self.uia_from = None;
     }
 
-    fn update_uia(&mut self, model: &ReadoutModel, layout: &ReadoutLayout, shown: Shown) {
+    fn update_uia(&mut self, model: &Arc<ReadoutModel>, layout: &ReadoutLayout, shown: Shown) {
+        let unchanged = self.uia_from.as_ref().is_some_and(|(m, l, form, rect)| {
+            Arc::ptr_eq(m, model) && l == layout && *form == shown.form && *rect == shown.rect
+        });
+        if !unchanged {
+            self.build_uia(model, layout, shown);
+            self.uia_from = Some((Arc::clone(model), *layout, shown.form, shown.rect));
+        }
+        if std::mem::take(&mut self.announce_pending) {
+            PROVIDER.with(|p| {
+                if let Ok(p) = p.try_borrow()
+                    && let Some(p) = p.as_ref()
+                {
+                    p.announce();
+                }
+            });
+        }
+    }
+
+    /// Builds the UI Automation data of what is drawn and hands it to the provider when it
+    /// differs from what the provider has.
+    fn build_uia(&mut self, model: &ReadoutModel, layout: &ReadoutLayout, shown: Shown) {
         let rows = frame::rows_for(model, layout, shown.form)
             .into_iter()
             .map(|(row, y, _)| UiaRow {
@@ -918,26 +945,18 @@ impl Host {
             rows,
             slot: shown.rect,
         };
-        if self.last_uia.as_ref() != Some(&data) {
+        if self.last_uia.as_deref() != Some(&data) {
             self.set_uia(data);
-        }
-        if std::mem::take(&mut self.announce_pending) {
-            PROVIDER.with(|p| {
-                if let Ok(p) = p.try_borrow()
-                    && let Some(p) = p.as_ref()
-                {
-                    p.announce();
-                }
-            });
         }
     }
 
     fn set_uia(&mut self, data: UiaData) {
+        let data = Arc::new(data);
         PROVIDER.with(|p| {
             if let Ok(p) = p.try_borrow()
                 && let Some(p) = p.as_ref()
             {
-                p.shared().set(data.clone());
+                p.shared().set(Arc::clone(&data));
             }
         });
         self.last_uia = Some(data);

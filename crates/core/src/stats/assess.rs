@@ -5,6 +5,7 @@
 //! tick (R§12). Its [`Evaluation`] is the input of every surface builder
 //! ([`crate::readout`], [`crate::flyout`]).
 
+use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet};
 
 use jiff::{SignedDuration, Timestamp};
@@ -14,7 +15,7 @@ use super::balance::{BalanceStats, balance_stats, is_top_up};
 use super::forecast::{Forecast, current_instance, forecast, runway_minutes, same_window_instance};
 use super::freshness::{Freshness, ServiceStatus, StaleReason, freshness};
 use super::history::{HistoryView, Sample};
-use super::rank::{AutoRows, Candidate, DisplayClass, rank, select_rows};
+use super::rank::{AutoRows, Candidate, DisplayClass, rank, select_rows_ranked};
 use super::reset::{EffectiveWindow, ResetView, effective_window};
 use super::severity::{
     BalanceSeverityInput, CriticalCause, Severity, SeverityMemory, SeverityOutcome,
@@ -188,12 +189,25 @@ pub struct AbsentMeter {
     pub balance: bool,
 }
 
+impl Assessment {
+    /// A balance meter (R§3.6); a meter still loading is one when its catalogue entry is.
+    pub fn is_balance(&self) -> bool {
+        match &self.meter {
+            AssessedMeter::Window(_) => false,
+            AssessedMeter::Balance(_) => true,
+            AssessedMeter::Loading => catalogue_is_balance(&self.key),
+        }
+    }
+}
+
 impl ServiceEval {
     /// The service name with the account alias when there is one (`Claude · Work`, R§6.4).
-    pub fn display_name(&self) -> String {
+    /// Borrowed when there is no alias.
+    pub fn display_name(&self) -> Cow<'static, str> {
+        let name = self.source.provider.display_name();
         match &self.account.alias {
-            Some(alias) => format!("{} · {alias}", self.source.provider.display_name()),
-            None => self.source.provider.display_name().to_owned(),
+            Some(alias) => Cow::Owned(format!("{name} · {alias}")),
+            None => Cow::Borrowed(name),
         }
     }
 }
@@ -329,7 +343,7 @@ pub fn evaluate(input: &EvalInput<'_>, memory: &mut EvalMemory) -> Evaluation {
     let ranked: Vec<MeterKey> = order.iter().map(|&i| candidates[i].key.clone()).collect();
     let winner = ranked.first().cloned();
 
-    let (readout_rows, pinned) = readout_rows(input, &services, &candidates, memory);
+    let (readout_rows, pinned) = readout_rows(input, &services, &candidates, &order, memory);
     let multi_service = if pinned {
         distinct_providers(readout_rows.iter().map(|k| k.provider)) > 1
     } else {
@@ -377,11 +391,12 @@ fn hidden_meters(settings: &Settings, provider: ProviderId) -> &[MeterId] {
 /// The readout rows (R§4.3): the pins that are evaluated, in the user's order; else the auto rows
 /// with hysteresis (R§3.10). Judgement call: pins of which none is available (service disabled,
 /// a per-model meter not reported yet) fall back to the auto rows instead of hiding the readout.
-/// Returns the rows and whether they are pins.
+/// Returns the rows and whether they are pins. `ranked` is [`rank`] of `candidates`.
 fn readout_rows(
     input: &EvalInput<'_>,
     services: &[ServiceEval],
     candidates: &[Candidate],
+    ranked: &[usize],
     memory: &mut EvalMemory,
 ) -> (Vec<MeterKey>, bool) {
     if let ReadoutContent::Pinned(pins) = &input.settings.readout.content {
@@ -398,7 +413,7 @@ fn readout_rows(
             return (rows, true);
         }
     }
-    let auto = select_rows(candidates, AUTO_ROWS, input.now, &memory.auto_rows);
+    let auto = select_rows_ranked(candidates, ranked, AUTO_ROWS, input.now, &memory.auto_rows);
     let rows = auto.shown.clone();
     memory.auto_rows = auto;
     (rows, false)
@@ -414,21 +429,20 @@ fn catalogue_is_balance(key: &MeterKey) -> bool {
 
 /// The rank candidate of an assessment (R§3.10).
 pub(crate) fn candidate(a: &Assessment) -> Candidate {
-    let (is_balance, resets_at, t_out, days_left) = match &a.meter {
+    let (resets_at, t_out, days_left) = match &a.meter {
         AssessedMeter::Window(w) => (
-            false,
             w.resets_at,
             // A run-out after the reset does not count: critical by level then ranks by `R`.
             w.forecast.filter(|f| f.runs_out).and_then(|f| f.t_out),
             None,
         ),
-        AssessedMeter::Balance(b) => (true, None, b.stats.t_out, b.stats.days_left),
-        AssessedMeter::Loading => (catalogue_is_balance(&a.key), None, None, None),
+        AssessedMeter::Balance(b) => (None, b.stats.t_out, b.stats.days_left),
+        AssessedMeter::Loading => (None, None, None),
     };
     Candidate {
         key: a.key.clone(),
         class: a.class,
-        is_balance,
+        is_balance: a.is_balance(),
         resets_at,
         t_out,
         pressure: a.pressure,
@@ -553,15 +567,24 @@ fn evaluate_service(
         ));
     }
     meters.sort_by_key(|a| a.meter_order);
-    for meter in &snapshot.meters {
-        memory
-            .seen
-            .insert(key(&meter.id), (meter.names.clone(), false));
-    }
-    for balance in &snapshot.balances {
-        memory
-            .seen
-            .insert(key(&balance.id), (balance.names.clone(), true));
+    // One probe key whose meter id is overwritten in place: a meter seen before (every meter on
+    // every tick but the first) costs no allocation.
+    let mut probe = key(&MeterId(String::new()));
+    let reported = (snapshot.meters.iter().map(|m| (&m.id, &m.names, false)))
+        .chain(snapshot.balances.iter().map(|b| (&b.id, &b.names, true)));
+    for (id, names, balance) in reported {
+        probe.meter.0.clone_from(&id.0);
+        match memory.seen.get_mut(&probe) {
+            Some(entry) => {
+                if entry.0 != *names {
+                    entry.0 = names.clone();
+                }
+                entry.1 = balance;
+            }
+            None => {
+                memory.seen.insert(probe.clone(), (names.clone(), balance));
+            }
+        }
     }
     let absent = absent_meters(memory, &source, &meters, hidden);
 
@@ -602,27 +625,31 @@ fn absent_meters(
 
 /// The readings of the window instance the meter's reading belongs to, ending with that reading
 /// (added when the history does not have it yet).
-fn instance_samples(
-    history: &dyn HistoryView,
+///
+/// Borrowed from the history (this runs for every meter on every minute tick); copied only in
+/// the rare case that the history lacks the reading (the app records it before evaluating).
+fn instance_samples<'h>(
+    history: &'h dyn HistoryView,
     key: &MeterKey,
     meter: &Meter,
     eff: &EffectiveWindow,
     reading_at: Timestamp,
-) -> Vec<Sample> {
+) -> Cow<'h, [Sample]> {
     let since = match (eff.resets_at, eff.window) {
         (Some(r), Some(len)) => sub(sub(r, len), SAME_WINDOW_TOLERANCE),
         _ => sub(reading_at, INSTANCE_LOOKBACK),
     };
-    let mut all: Vec<Sample> = history
-        .samples(key, since)
-        .iter()
-        .filter(|s| s.t <= reading_at)
-        .copied()
-        .collect();
-    if all.last().is_none_or(|s| s.t < reading_at) {
-        all.push(Sample::window(reading_at, meter.used, meter.resets_at));
+    let samples = history.samples(key, since);
+    let upto = &samples[..samples.partition_point(|s| s.t <= reading_at)];
+    if upto.last().is_some_and(|s| s.t >= reading_at) {
+        return Cow::Borrowed(current_instance(upto));
     }
-    current_instance(&all).to_vec()
+    let mut all = Vec::with_capacity(upto.len() + 1);
+    all.extend_from_slice(upto);
+    all.push(Sample::window(reading_at, meter.used, meter.resets_at));
+    let start = all.len() - current_instance(&all).len();
+    all.drain(..start);
+    Cow::Owned(all)
 }
 
 /// The reset time of a reading that has none but was taken inside a known window instance
@@ -655,13 +682,19 @@ fn record_severity(
     memory: &mut EvalMemory,
     changes: &mut Vec<LiveChange>,
 ) {
-    memory.severity.insert(key.clone(), outcome.memory);
-    let previous = memory
-        .last_severity
-        .insert(key.clone(), outcome.severity)
-        .unwrap_or(Severity::Ok);
+    upsert(&mut memory.severity, key, outcome.memory);
+    let previous = upsert(&mut memory.last_severity, key, outcome.severity).unwrap_or(Severity::Ok);
     if outcome.severity > previous {
         changes.push(LiveChange::SeverityRose(key.clone()));
+    }
+}
+
+/// `map.insert(key.clone(), value)` that clones the key only when it is not in the map yet (a
+/// meter's entries exist from its first evaluation on). Returns the previous value.
+fn upsert<V>(map: &mut BTreeMap<MeterKey, V>, key: &MeterKey, value: V) -> Option<V> {
+    match map.get_mut(key) {
+        Some(slot) => Some(std::mem::replace(slot, value)),
+        None => map.insert(key.clone(), value),
     }
 }
 
@@ -721,7 +754,7 @@ fn assess_window(
     let samples = if live {
         instance_samples(cx.history, &key, meter, &eff, cx.reading_at)
     } else {
-        Vec::new()
+        Cow::Borrowed(&[][..])
     };
     let forecast = if live && cx.stale.is_none() {
         forecast(&samples, eff.resets_at, eff.window)
@@ -742,7 +775,7 @@ fn assess_window(
 
     // A new window instance clears the hysteresis (R§3.7, R§3.9); a reset time that passed or
     // changed is announced (R§11), a window that merely starts (none → some) is not.
-    let previous = memory.instance.insert(key.clone(), eff.resets_at);
+    let previous = upsert(&mut memory.instance, &key, eff.resets_at);
     let new_instance = match previous {
         Some(Some(prev)) => !same_window_instance(Some(prev), eff.resets_at),
         Some(None) => eff.resets_at.is_some(),
@@ -850,19 +883,14 @@ fn assess_balance(
     } else {
         cx.now
     };
-    let samples: Vec<Sample> = cx
-        .history
-        .samples(&key, sub(at, BAL_REF_LOOKBACK))
-        .iter()
-        .filter(|s| s.t <= at)
-        .copied()
-        .collect();
-    let stats = balance_stats(balance.amount, balance.last_top_up, &samples, at);
+    let history = cx.history.samples(&key, sub(at, BAL_REF_LOOKBACK));
+    let samples = &history[..history.partition_point(|s| s.t <= at)];
+    let stats = balance_stats(balance.amount, balance.last_top_up, samples, at);
     let pct = display_pct(stats.used_share, stats.exhausted);
 
     let outcome = if cx.stale.is_none() {
         // A top-up re-evaluates at once (R§3.7): no hysteresis carried over it.
-        let topped_up = match samples.as_slice() {
+        let topped_up = match samples {
             [.., before, last] if last.value.to_bits() == balance.amount.to_bits() => {
                 is_top_up(before.value, last.value)
             }
@@ -913,5 +941,97 @@ fn assess_balance(
         state,
         class,
         pressure: stats.used_share,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::model::{AccountKey, WindowLen};
+
+    fn ts(mins: i64) -> Timestamp {
+        Timestamp::from_second(1_800_000_000 + mins * 60).expect("valid")
+    }
+
+    fn key(provider: ProviderId, meter: &str) -> MeterKey {
+        MeterKey {
+            provider,
+            account: AccountKey::primary(),
+            meter: MeterId::new(meter),
+        }
+    }
+
+    fn five_hour(used: f64, resets_at: Option<Timestamp>) -> Meter {
+        Meter {
+            id: MeterId::new(MeterId::FIVE_HOUR),
+            names: MeterNames::new("5h", "5-hour", "5-hour session"),
+            order: 0,
+            used,
+            limited: false,
+            resets_at,
+            window: WindowLen::Fixed(SignedDuration::from_hours(5)),
+            starts_on_use: true,
+        }
+    }
+
+    #[test]
+    fn instance_samples_borrow_the_history_and_copy_only_to_add_the_reading() {
+        let k = key(ProviderId::Claude, MeterId::FIVE_HOUR);
+        let (r_old, r_new) = (ts(60), ts(400));
+        let history: BTreeMap<MeterKey, Vec<Sample>> = BTreeMap::from([(
+            k.clone(),
+            vec![
+                Sample::window(ts(0), 0.5, Some(r_old)),
+                Sample::window(ts(120), 0.1, Some(r_new)),
+                Sample::window(ts(180), 0.2, Some(r_new)),
+                Sample::window(ts(240), 0.3, Some(r_new)),
+            ],
+        )]);
+        let meter = five_hour(0.2, Some(r_new));
+        let eff = effective_window(&meter, ts(180), ts(181));
+
+        // The history has the reading: the instance is borrowed, later readings cut off.
+        let got = instance_samples(&history, &k, &meter, &eff, ts(180));
+        assert!(matches!(got, Cow::Borrowed(_)));
+        assert_eq!(*got, history[&k][1..3]);
+
+        // It lacks the reading: appended, still cut to the current instance.
+        let got = instance_samples(&history, &k, &meter, &eff, ts(200));
+        assert!(matches!(got, Cow::Owned(_)));
+        let mut want = history[&k][1..3].to_vec();
+        want.push(Sample::window(ts(200), 0.2, Some(r_new)));
+        assert_eq!(*got, want[..]);
+
+        // A reading of a new instance stands alone.
+        let next = five_hour(0.05, Some(ts(700)));
+        let eff = effective_window(&next, ts(400), ts(401));
+        let got = instance_samples(&history, &k, &next, &eff, ts(400));
+        assert_eq!(*got, [Sample::window(ts(400), 0.05, Some(ts(700)))]);
+    }
+
+    #[test]
+    fn upsert_returns_the_previous_value() {
+        let mut map = BTreeMap::new();
+        let k = key(ProviderId::Codex, MeterId::WEEKLY);
+        assert_eq!(upsert(&mut map, &k, 1), None);
+        assert_eq!(upsert(&mut map, &k, 2), Some(1));
+        assert_eq!(map, BTreeMap::from([(k, 2)]));
+    }
+
+    #[test]
+    fn loading_meters_are_balances_by_their_catalogue_entry() {
+        let loading = |k: MeterKey| Assessment {
+            key: k,
+            names: MeterNames::new("", "", ""),
+            service_order: 0,
+            meter_order: 0,
+            meter: AssessedMeter::Loading,
+            severity: None,
+            state: RowState::Loading,
+            class: DisplayClass::Loading,
+            pressure: 0.0,
+        };
+        assert!(loading(key(ProviderId::Meshy, MeterId::CREDITS)).is_balance());
+        assert!(!loading(key(ProviderId::Claude, MeterId::WEEKLY)).is_balance());
     }
 }

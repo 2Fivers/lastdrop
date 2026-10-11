@@ -86,13 +86,13 @@ impl Surface {
         (self.width, self.height)
     }
 
-    /// Copies premultiplied BGRA rows (stride `width × 4`) into the DIB.
-    pub(super) fn write(&mut self, pixels: &[u8]) {
+    /// The DIB's pixels to fill: premultiplied BGRA rows, top-down, stride `width × 4`.
+    pub(super) fn bits_mut(&mut self) -> &mut [u8] {
         let len = (self.width as usize) * (self.height as usize) * 4;
-        let n = len.min(pixels.len());
-        // SAFETY: the DIB section holds `width × height × 4` bytes (32 bpp, no row padding);
-        // `n` never exceeds it or the source.
-        unsafe { core::ptr::copy_nonoverlapping(pixels.as_ptr(), self.bits, n) };
+        // SAFETY: the DIB section holds `width × height × 4` bytes (32 bpp, no row padding) and
+        // lives as long as `self`; GDI touches them only inside `present`, which needs `&self`,
+        // so nothing else reads or writes them while this borrow lasts.
+        unsafe { core::slice::from_raw_parts_mut(self.bits, len) }
     }
 
     /// Pushes the DIB to `hwnd` at `pos` (screen device px), sizing the window to the surface.

@@ -42,7 +42,7 @@ use lastdrop_core::consts::layout::{
     CARD_BAR_ROW_H, CARD_BAR_W, CARD_EDGE_MARGIN, CARD_TASKBAR_GAP, CARD_W, FLYOUT_BAR_ROW_H,
     FLYOUT_BAR_W, FLYOUT_MAX_H, FLYOUT_W,
 };
-use lastdrop_core::consts::{FLYOUT_TOGGLE_DEBOUNCE, MINUTE_TICK_OFFSET};
+use lastdrop_core::consts::{ADAPTIVE_IDLE_AFTER, FLYOUT_TOGGLE_DEBOUNCE, MINUTE_TICK_OFFSET};
 use lastdrop_core::flyout::{
     CardAction, CardBody, CardModel, FlyoutModel, MessageKind, MeterRowModel, RightKind,
     SparkModel, Tone, build_flyout, spark_geometry,
@@ -664,6 +664,9 @@ pub struct Runtime {
     pub rng: Cell<u64>,
     /// The local date history files were last compacted.
     pub last_compact: Cell<Option<jiff::civil::Date>>,
+    /// Whether the user was idle when the refresh was last planned ([`user_idle`]); the minute
+    /// tick replans when that changes.
+    pub planned_idle: Cell<bool>,
     /// `--bench`.
     pub bench: Option<Rc<bench::Bench>>,
 }
@@ -735,15 +738,23 @@ pub fn on_job_result(app: &App, result: JobResult) {
     replan(app);
 }
 
+/// The user is idle for the adaptive refresh ("slower when idle"): no keyboard or mouse input
+/// for [`ADAPTIVE_IDLE_AFTER`]. Unknown counts as not idle.
+fn user_idle() -> bool {
+    lastdrop_win::idle::since_last_input().is_some_and(|d| d >= ADAPTIVE_IDLE_AFTER)
+}
+
 /// Asks the scheduler what is due, submits the jobs, records `next_try` per source and arms the
 /// refresh timer for the next wake-up.
 pub fn replan(app: &App) {
     let now = Timestamp::now();
+    let idle = user_idle();
+    app.rt.planned_idle.set(idle);
     let plan = {
         let st = app.state.borrow();
         let activity = Activity {
             flyout_open: st.flyout.open,
-            user_idle: false,
+            user_idle: idle,
         };
         crate::scheduler::plan(&st, now, activity, &mut || app.jitter_unit())
     };
@@ -846,7 +857,9 @@ fn arm_minute_tick(app: &App) {
 }
 
 /// The minute tick (R§12): recompute `N` and severities (a WARNING can turn CRITICAL by runway
-/// between readings), then freshness, then redraw; trim history memory; re-arm.
+/// between readings), then freshness, then redraw; trim history memory; re-arm. Also replans
+/// when the user went idle or came back since the last plan, so the adaptive interval follows
+/// within a minute without a wake-up of its own (an idle wait can be up to 30 minutes).
 pub fn on_minute_tick(app: &App) {
     let now = Timestamp::now();
     let mut pause_ended = false;
@@ -866,6 +879,8 @@ pub fn on_minute_tick(app: &App) {
     }
     if pause_ended {
         save_settings(app);
+    }
+    if pause_ended || user_idle() != app.rt.planned_idle.get() {
         replan(app);
     }
     rebuild(app, now);
@@ -992,8 +1007,16 @@ fn on_system_event(app: &App, event: SystemEvent) {
 
 /// Re-reads the theme once and hands the same value to the readout, the tray icon, the popups
 /// and their DWM attributes, so they cannot disagree.
+///
+/// One switch of light/dark, accent or contrast arrives as several messages (`WM_SETTINGCHANGE`
+/// "ImmersiveColorSet", `WM_DWMCOLORIZATIONCOLORCHANGED`, `WM_THEMECHANGED`, `WM_SYSCOLORCHANGE`,
+/// to the readout's host window and to each popup): only the first that finds a different theme
+/// applies it, the rest change nothing and return here.
 fn apply_theme(app: &App) {
     let theme = lastdrop_win::theme::read();
+    if app.state.borrow().theme == theme {
+        return;
+    }
     app.state.borrow_mut().theme = theme;
     app.readout.set_theme(theme);
     set_theme(&app.windows.flyout.global::<ui::Theme>(), &theme);

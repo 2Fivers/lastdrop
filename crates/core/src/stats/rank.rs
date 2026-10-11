@@ -159,7 +159,18 @@ pub fn select_rows(
     now: Timestamp,
     prev: &AutoRows,
 ) -> AutoRows {
-    let ranked = rank(candidates);
+    select_rows_ranked(candidates, &rank(candidates), n, now, prev)
+}
+
+/// [`select_rows`] with the ranking already computed: `ranked` must be [`rank`] of `candidates`
+/// (an evaluation ranks once for the winner and the rows).
+pub fn select_rows_ranked(
+    candidates: &[Candidate],
+    ranked: &[usize],
+    n: usize,
+    now: Timestamp,
+    prev: &AutoRows,
+) -> AutoRows {
     // Position in rank order of each ranked candidate.
     let position = |key: &MeterKey| ranked.iter().position(|&i| &candidates[i].key == key);
     // Keep the rows still ranked, best first; a smaller N keeps the best of them.

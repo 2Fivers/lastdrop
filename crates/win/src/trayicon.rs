@@ -1,4 +1,4 @@
-//! Renders the tray icon image from a `TrayModel` (R§9): RGBA at the size of
+//! Renders the tray icon image from a `TrayModel` (R§9): BGRA at the size of
 //! `GetSystemMetricsForDpi(SM_CXSMICON, dpi)` of the taskbar's monitor (16/20/24/32; in-between
 //! sizes use the next smaller layout, centred — never a scaled bitmap). The app hands the image to
 //! [`crate::tray::Tray::set_image`] on the main thread.
@@ -47,7 +47,7 @@ fn drop_transform(key: f32, offset: f32, factor: f32) -> (PointF, f32) {
 /// Draws `model.icon` at `size × size` px for `theme` (taskbar theme; contrast themes per R§9.2) with the
 /// R§9.2 layout for that size (`lastdrop_core::readout::tray::tray_layout_for`): digits as one
 /// DirectWrite layout with letter spacing, origin `x = key/2 + 0.25 − w/2` unsnapped; the mini bar
-/// from `tray_bar_geometry`; tiles; the drop path. Returns **straight** (non-premultiplied) RGBA
+/// from `tray_bar_geometry`; tiles; the drop path. Returns **straight** (non-premultiplied) BGRA
 /// rows, top-down, as [`crate::tray::Tray::set_image`] expects.
 pub fn render(
     model: &TrayModel,
@@ -69,11 +69,9 @@ pub fn render(
         theme,
     );
     canvas.end()?;
-    let pixels = canvas.pixels()?;
-    Ok(crate::tray::TrayImage {
-        size,
-        rgba: straight_rgba(&pixels),
-    })
+    let mut bgra = canvas.pixels()?;
+    unpremultiply(&mut bgra);
+    Ok(crate::tray::TrayImage { size, bgra })
 }
 
 /// The icon's pixels for one layout at `offset` (R§9.1 shape ladder, R§9.2 geometry).
@@ -193,22 +191,20 @@ fn draw(
     }
 }
 
-/// Premultiplied BGRA → straight RGBA.
-fn straight_rgba(bgra: &[u8]) -> Vec<u8> {
-    let mut out = Vec::with_capacity(bgra.len());
-    for p in bgra.as_chunks::<4>().0 {
+/// Premultiplied BGRA → straight BGRA, in place.
+fn unpremultiply(bgra: &mut [u8]) {
+    for p in bgra.as_chunks_mut::<4>().0 {
         let a = p[3];
         if a == 0 {
-            out.extend_from_slice(&[0, 0, 0, 0]);
+            *p = [0, 0, 0, 0];
             continue;
         }
         let un = |c: u8| -> u8 {
             let v = (u32::from(c) * 255 + u32::from(a) / 2) / u32::from(a);
             u8::try_from(v.min(255)).unwrap_or(255)
         };
-        out.extend_from_slice(&[un(p[2]), un(p[1]), un(p[0]), a]);
+        *p = [un(p[0]), un(p[1]), un(p[2]), a];
     }
-    out
 }
 
 #[cfg(test)]
@@ -265,21 +261,27 @@ mod tests {
         }
     }
 
+    /// The pixel at `(x, y)` as `[r, g, b, a]`.
     fn rgba(img: &crate::tray::TrayImage, x: u32, y: u32) -> [u8; 4] {
         let i = ((y * img.size + x) * 4) as usize;
         [
-            img.rgba[i],
-            img.rgba[i + 1],
-            img.rgba[i + 2],
-            img.rgba[i + 3],
+            img.bgra[i + 2],
+            img.bgra[i + 1],
+            img.bgra[i],
+            img.bgra[i + 3],
         ]
     }
 
     #[test]
     fn premultiplied_pixels_become_straight() {
-        assert_eq!(straight_rgba(&[0, 0, 0, 0]), vec![0, 0, 0, 0]);
-        assert_eq!(straight_rgba(&[64, 32, 128, 128]), vec![255, 64, 128, 128]);
-        assert_eq!(straight_rgba(&[255, 255, 255, 255]), vec![255; 4]);
+        let mut px = [0, 0, 0, 0, 64, 32, 128, 128, 255, 255, 255, 255, 9, 9, 9, 0];
+        unpremultiply(&mut px);
+        assert_eq!(
+            px,
+            [
+                0, 0, 0, 0, 128, 64, 255, 128, 255, 255, 255, 255, 0, 0, 0, 0
+            ]
+        );
     }
 
     #[test]
@@ -303,7 +305,7 @@ mod tests {
         )
         .expect("render");
         assert_eq!(img.size, 16);
-        assert_eq!(img.rgba.len(), 16 * 16 * 4);
+        assert_eq!(img.bgra.len(), 16 * 16 * 4);
         // Fill: opaque white (dark taskbar TextPrimary #FFFFFFFF), columns 1..7, rows 12..15.
         assert_eq!(rgba(&img, 1, 13), [255, 255, 255, 255]);
         assert_eq!(rgba(&img, 6, 12), [255, 255, 255, 255]);

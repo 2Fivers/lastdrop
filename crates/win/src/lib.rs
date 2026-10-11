@@ -6,7 +6,7 @@
 //! - [`palette`]: `ColorRole` → ARGB per theme, including high contrast (R§7, F§7).
 //! - [`render`]: Direct2D + DirectWrite on a WIC premultiplied-BGRA bitmap (software), grayscale
 //!   text antialiasing; text measuring for `core::readout::layout`.
-//! - [`trayicon`]: renders a `TrayModel` to RGBA at 16/20/24/32 px (R§9).
+//! - [`trayicon`]: renders a `TrayModel` to straight BGRA at 16/20/24/32 px (R§9).
 //! - [`tray`]: our own notification-area icon (`Shell_NotifyIconW`, `NOTIFYICON_VERSION_4`): hover
 //!   card on `NIN_POPUPOPEN`, `NIN_KEYSELECT`, `WM_CONTEXTMENU`, the context menu, `TaskbarCreated`
 //!   (R§8.3, R§10).
@@ -18,7 +18,7 @@
 //! - [`backdrop`]: DWM backdrop, corners, dark mode, tool-window and no-activate show/hide.
 //! - [`autostart`], [`credentials`], [`single_instance`], [`locale`], [`network`], [`hotkey`]
 //!   (optional global hotkey, R§10), [`shell`] (usage page in the browser, vendor sign-in in a
-//!   console, F§4.3, F§9).
+//!   console, F§4.3, F§9), [`idle`] (time since the last input, for the adaptive refresh).
 //!
 //! # Threading rules (ARCHITECTURE "Threads")
 //!
@@ -26,7 +26,7 @@
 //! |---|---|---|
 //! | **main** | Slint event loop: flyout and hover card; the tray icon ([`tray`]); the app state | blocking I/O |
 //! | **readout** | the taskbar readout: a hidden top-level window that receives `TaskbarCreated`, the layered readout window, the WinEvent hooks on the taskbar, its own message loop and drawing | I/O, waiting on locks held by other threads, synchronous cross-process calls while holding a lock |
-//! | **occupancy** | a UI Automation client (MTA) that measures where the taskbar's app buttons are, with connection and transaction timeouts | anything else |
+//! | **occupancy** | a UI Automation client (MTA) that measures where the taskbar's app buttons are, with connection and transaction timeouts; set up on the first measurement | anything else |
 //! | **refresh workers** | provider fetches (files, HTTP, `codex app-server`), one job per credential source at a time | touching UI objects |
 //!
 //! The table is the tray process's. The dialog process (settings and about windows, its own
@@ -58,6 +58,7 @@ pub mod credentials;
 pub mod flyout_pos;
 pub mod geom;
 pub mod hotkey;
+pub mod idle;
 pub mod locale;
 pub mod network;
 pub mod occupancy;

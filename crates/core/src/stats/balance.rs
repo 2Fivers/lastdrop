@@ -12,17 +12,27 @@ use crate::util::{add, duration_from_hours, sub};
 const BAL_SPAN_DAYS: f64 = 7.0;
 
 /// The history with the current reading appended when the history does not end with it (the
-/// app records the reading before evaluating, tests may not).
-fn with_current(history: &[Sample], current: f64, now: Timestamp) -> Vec<Sample> {
-    let mut all: Vec<Sample> = history.to_vec();
-    let ends_with_current = all
-        .last()
-        .is_some_and(|s| s.value.to_bits() == current.to_bits());
-    if !ends_with_current {
-        let t = all.last().map_or(now, |s| s.t.max(now));
-        all.push(Sample::balance(t, current));
-    }
-    all
+/// app records the reading before evaluating, tests may not). An iterator, so the history (30
+/// days of samples, evaluated every minute) is not copied.
+fn with_current(
+    history: &[Sample],
+    current: f64,
+    now: Timestamp,
+) -> impl Iterator<Item = Sample> + Clone + '_ {
+    let extra = match history.last() {
+        Some(s) if s.value.to_bits() == current.to_bits() => None,
+        last => Some(Sample::balance(last.map_or(now, |s| s.t.max(now)), current)),
+    };
+    history.iter().copied().chain(extra)
+}
+
+/// Consecutive pairs of `samples` (what `windows(2)` gives for a slice).
+fn pairs(samples: impl Iterator<Item = Sample>) -> impl Iterator<Item = (Sample, Sample)> {
+    samples
+        .scan(None, |previous: &mut Option<Sample>, s| {
+            Some(previous.replace(s).map(|p| (p, s)))
+        })
+        .flatten()
 }
 
 /// An increase from `before` to `after` is a top-up when it is at least 1 % of the balance
@@ -62,13 +72,21 @@ pub fn balance_reference(
     history: &[Sample],
     now: Timestamp,
 ) -> f64 {
-    let all = with_current(history, current, now);
+    reference_of(current, reported, with_current(history, current, now), now)
+}
+
+/// [`balance_reference`] over the history with the current reading ([`with_current`]).
+fn reference_of(
+    current: f64,
+    reported: Option<TopUp>,
+    all: impl Iterator<Item = Sample> + Clone,
+    now: Timestamp,
+) -> f64 {
     // The most recent top-up detected in the history: (when, balance right after it).
-    let detected = all
-        .windows(2)
-        .rev()
-        .find(|w| is_top_up(w[0].value, w[1].value))
-        .map(|w| (w[1].t, w[1].value));
+    let detected = pairs(all.clone())
+        .filter(|(before, after)| is_top_up(before.value, after.value))
+        .last()
+        .map(|(_, after)| (after.t, after.value));
     let top_up = match (reported, detected) {
         (Some(r), Some((t, v))) => Some(if t > r.at { v } else { r.balance_after }),
         (Some(r), None) => Some(r.balance_after),
@@ -77,8 +95,7 @@ pub fn balance_reference(
     };
     let reference = top_up.unwrap_or_else(|| {
         let since = sub(now, BAL_REF_LOOKBACK);
-        all.iter()
-            .filter(|s| s.t >= since)
+        all.filter(|s| s.t >= since)
             .map(|s| s.value)
             .fold(current, f64::max)
     });
@@ -88,11 +105,15 @@ pub fn balance_reference(
 /// `burn` (R§3.6): sum of decreases between consecutive samples in the last 7 days
 /// (`BAL_SPAN`) divided by 7, units per day; increases are ignored.
 pub fn burn_per_day(history: &[Sample], now: Timestamp) -> f64 {
+    burn_of(history.iter().copied(), now)
+}
+
+/// [`burn_per_day`] over any ascending run of samples.
+fn burn_of(samples: impl Iterator<Item = Sample>, now: Timestamp) -> f64 {
     let since = sub(now, BAL_SPAN);
-    let spent: f64 = history
-        .windows(2)
-        .filter(|w| w[0].t >= since && w[1].t <= now)
-        .map(|w| (w[0].value - w[1].value).max(0.0))
+    let spent: f64 = pairs(samples)
+        .filter(|(a, b)| a.t >= since && b.t <= now)
+        .map(|(a, b)| (a.value - b.value).max(0.0))
         .sum();
     spent / BAL_SPAN_DAYS
 }
@@ -106,7 +127,7 @@ pub fn balance_stats(
     now: Timestamp,
 ) -> BalanceStats {
     let all = with_current(history, current, now);
-    let reference = balance_reference(current, reported, history, now);
+    let reference = reference_of(current, reported, all.clone(), now);
     let used_share = if reference > 0.0 {
         (1.0 - current / reference).clamp(0.0, 1.0)
     } else if current <= 0.0 {
@@ -114,9 +135,11 @@ pub fn balance_stats(
     } else {
         0.0
     };
-    let burn = burn_per_day(&all, now);
-    let covered = match (all.first(), all.last()) {
-        (Some(a), Some(b)) => b.t.duration_since(a.t),
+    let burn = burn_of(all.clone(), now);
+    // `with_current` never shortens the history, so its first sample is the history's.
+    let first = history.first().map(|s| s.t);
+    let covered = match (first, all.last()) {
+        (Some(a), Some(b)) => b.t.duration_since(a),
         _ => SignedDuration::ZERO,
     };
     let valid = covered >= BAL_MIN_HISTORY;
@@ -216,6 +239,25 @@ mod tests {
         assert!(s.valid);
         assert_eq!(s.burn_per_day, 0.0);
         assert_eq!(s.days_left, None);
+    }
+
+    #[test]
+    fn the_current_reading_counts_when_the_history_lacks_it() {
+        let h = [
+            Sample::balance(day(0), 1000.0),
+            Sample::balance(day(3), 800.0),
+        ];
+        let with = [h[0], h[1], Sample::balance(day(4), 1500.0)];
+        // A top-up to the current reading, appended at `now`.
+        assert_eq!(
+            balance_stats(1500.0, None, &h, day(4)),
+            balance_stats(1500.0, None, &with, day(4))
+        );
+        assert_eq!(balance_reference(1500.0, None, &h, day(4)), 1500.0);
+        // A history that ends with the current amount gets nothing appended.
+        let s = balance_stats(800.0, None, &h, day(5));
+        assert!((s.burn_per_day - 200.0 / 7.0).abs() < 1e-9);
+        assert_eq!(s.reference, 1000.0);
     }
 
     #[test]

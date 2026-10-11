@@ -24,10 +24,10 @@ use windows::Win32::UI::WindowsAndMessaging::{
 /// How long the icon stays (the smoke budget is 20 s).
 const SHOW_FOR: Duration = Duration::from_secs(12);
 
-/// A filled disc of `rgb` with a soft edge, straight RGBA.
+/// A filled disc of `rgb` with a soft edge, straight BGRA.
 fn disc(size: u32, rgb: [u8; 3]) -> TrayImage {
     let n = size as usize;
-    let mut rgba = vec![0u8; n * n * 4];
+    let mut bgra = vec![0u8; n * n * 4];
     let c = size as f32 / 2.0;
     let r = c - 1.0;
     for y in 0..n {
@@ -35,10 +35,10 @@ fn disc(size: u32, rgb: [u8; 3]) -> TrayImage {
             let d = ((x as f32 + 0.5 - c).powi(2) + (y as f32 + 0.5 - c).powi(2)).sqrt();
             let a = (r + 0.5 - d).clamp(0.0, 1.0);
             let i = (y * n + x) * 4;
-            rgba[i..i + 4].copy_from_slice(&[rgb[0], rgb[1], rgb[2], (a * 255.0).round() as u8]);
+            bgra[i..i + 4].copy_from_slice(&[rgb[2], rgb[1], rgb[0], (a * 255.0).round() as u8]);
         }
     }
-    TrayImage { size, rgba }
+    TrayImage { size, bgra }
 }
 
 fn main() {

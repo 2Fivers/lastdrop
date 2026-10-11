@@ -22,8 +22,9 @@ use crate::grammar::time::{
 };
 use crate::model::{MeterKey, SourceKey};
 use crate::stats::{
-    AssessedMeter, Assessment, BalanceAssessment, Evaluation, Freshness, Pace, ResetView, RowState,
-    ServiceEval, Severity, StaleReason, WindowAssessment, candidate, compare, runway_minutes,
+    AssessedMeter, Assessment, BalanceAssessment, Candidate, Evaluation, Freshness, Pace,
+    ResetView, RowState, ServiceEval, Severity, StaleReason, WindowAssessment, candidate, compare,
+    runway_minutes,
 };
 
 /// Templates with a value Lastdrop may not know: the template without the sentence that holds
@@ -117,7 +118,7 @@ fn card_service(
     };
     CardService {
         glyph: service.source.provider.glyph(),
-        name: service.display_name(),
+        name: service.display_name().into_owned(),
         plan: service.account.plan.clone(),
         age,
         meters: meters.iter().map(|a| card_meter(a, cx)).collect(),
@@ -129,7 +130,7 @@ fn card_meter(a: &Assessment, cx: &TextContext<'_>) -> CardMeter {
     match &a.meter {
         AssessedMeter::Balance(b) => CardMeter::Balance(card_balance(a, b, cx)),
         AssessedMeter::Window(w) => CardMeter::Window(card_window(a, Some(w), cx)),
-        AssessedMeter::Loading if candidate(a).is_balance => CardMeter::Balance(CardBalanceMeter {
+        AssessedMeter::Loading if a.is_balance() => CardMeter::Balance(CardBalanceMeter {
             name: a.names.name.clone(),
             value: cx.strings.template(Msg::NoReset).to_owned(),
             value_semibold: false,
@@ -418,16 +419,20 @@ fn also_tracked(
     cx: &TextContext<'_>,
 ) -> Option<AlsoTracked> {
     let s = cx.strings;
-    let mut others: Vec<(&ServiceEval, &Assessment)> = eval
+    // Each with its rank candidate, built once rather than twice per comparison.
+    let mut ranked: Vec<(Candidate, &ServiceEval, &Assessment)> = eval
         .services
         .iter()
         .flat_map(|svc| svc.meters.iter().map(move |a| (svc, a)))
         .filter(|(_, a)| !shown.contains(&a.key) && a.state != RowState::Loading)
+        .map(|(svc, a)| (candidate(a), svc, a))
         .collect();
-    if others.is_empty() {
+    if ranked.is_empty() {
         return None;
     }
-    others.sort_by(|(_, a), (_, b)| compare(&candidate(a), &candidate(b)));
+    ranked.sort_by(|(a, ..), (b, ..)| compare(a, b));
+    let mut others: Vec<(&ServiceEval, &Assessment)> =
+        ranked.into_iter().map(|(_, svc, a)| (svc, a)).collect();
     let more = others.len().saturating_sub(ALSO_TRACKED_MAX);
     others.truncate(ALSO_TRACKED_MAX);
     others.sort_by_key(|(_, a)| (a.service_order, a.meter_order));
@@ -535,7 +540,7 @@ fn stale_header(
             };
             let detail = service.status.failure_detail.clone().unwrap_or_default();
             let base = [
-                ("service", svc.as_str()),
+                ("service", &*svc),
                 ("detail", detail.as_str()),
                 ("time", time.as_str()),
             ];

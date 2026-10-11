@@ -12,7 +12,7 @@ use crate::grammar::strings::{Msg, Strings, text};
 use crate::grammar::{LocaleFormat, TimeStyle};
 use crate::model::{MeterKind, MeterNames, catalog};
 use crate::settings::{ReadoutContent, Settings};
-use crate::stats::{AssessedMeter, Assessment, Evaluation, LiveChange, RowState, ServiceEval};
+use crate::stats::{Assessment, Evaluation, LiveChange, RowState, ServiceEval};
 
 /// What every surface builder reads besides the evaluation.
 #[derive(Clone, Copy)]
@@ -107,13 +107,6 @@ struct CanAppear<'a> {
 /// What can appear in the readout (R§6.3, R§6.4): the pins in pinned mode; else every
 /// non-hidden catalogue meter of every enabled service plus every meter the evaluation holds.
 fn can_appear<'a>(eval: &'a Evaluation, settings: &Settings) -> Vec<CanAppear<'a>> {
-    let is_balance = |a: &Assessment| match &a.meter {
-        AssessedMeter::Balance(_) => true,
-        AssessedMeter::Window(_) => false,
-        AssessedMeter::Loading => catalog(a.key.provider)
-            .iter()
-            .any(|d| d.id == a.key.meter.0 && d.kind == MeterKind::Balance),
-    };
     if let ReadoutContent::Pinned(pins) = &settings.readout.content {
         // A pin whose meter the latest reading lacks keeps its room (`ServiceEval::absent`).
         let pinned: Vec<CanAppear<'a>> = pins
@@ -122,7 +115,7 @@ fn can_appear<'a>(eval: &'a Evaluation, settings: &Settings) -> Vec<CanAppear<'a
                 Some((service, a)) => Some(CanAppear {
                     service,
                     names: a.names.clone(),
-                    balance: is_balance(a),
+                    balance: a.is_balance(),
                 }),
                 None => eval.services.iter().find_map(|service| {
                     let m = service.absent.iter().find(|m| &m.key == k)?;
@@ -144,7 +137,7 @@ fn can_appear<'a>(eval: &'a Evaluation, settings: &Settings) -> Vec<CanAppear<'a
             out.push(CanAppear {
                 service,
                 names: a.names.clone(),
-                balance: is_balance(a),
+                balance: a.is_balance(),
             });
         }
         // Meters reported earlier (in this run, or in an earlier one the state file remembers)

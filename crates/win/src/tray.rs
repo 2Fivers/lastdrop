@@ -90,14 +90,14 @@ pub enum TrayInput {
     Recreated,
 }
 
-/// A tray icon image: straight (non-premultiplied) RGBA, top-down rows, `size × size` px
-/// ([`crate::trayicon::render`]).
+/// A tray icon image: straight (non-premultiplied) BGRA, top-down rows, `size × size` px
+/// ([`crate::trayicon::render`]); the byte order of the icon's 32-bpp DIB, so it is copied as is.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TrayImage {
     /// Edge length in device px (16/20/24/32 at 100/125/150/200 %).
     pub size: u32,
     /// `size * size * 4` bytes.
-    pub rgba: Vec<u8>,
+    pub bgra: Vec<u8>,
 }
 
 /// One entry of the context menu (R§10). Ids are the app's; `0` is never used (it means
@@ -645,11 +645,11 @@ fn grapheme_cut(chars: &[char], mut cut: usize) -> usize {
     cut
 }
 
-/// An `HICON` from straight RGBA (32-bpp DIB colour bitmap + 1-bpp AND mask from the alpha).
+/// An `HICON` from straight BGRA (32-bpp DIB colour bitmap + 1-bpp AND mask from the alpha).
 fn create_hicon(image: &TrayImage) -> windows::core::Result<HICON> {
     let size = image.size;
     let expected = (size as usize) * (size as usize) * 4;
-    if size == 0 || size > 256 || image.rgba.len() != expected {
+    if size == 0 || size > 256 || image.bgra.len() != expected {
         return Err(Error::new(
             E_INVALIDARG,
             "tray image: size × size × 4 bytes expected",
@@ -678,13 +678,9 @@ fn create_hicon(image: &TrayImage) -> windows::core::Result<HICON> {
     // SAFETY: the DIB section owns `expected` bytes of pixel memory at `bits` (32 bpp, no row
     // padding at 4 bytes per pixel) until DeleteObject below.
     let pixels = unsafe { std::slice::from_raw_parts_mut(bits.cast::<u8>(), expected) };
-    let (dst, _) = pixels.as_chunks_mut::<4>();
-    let (src, _) = image.rgba.as_chunks::<4>();
-    for (d, &[r, g, b, a]) in dst.iter_mut().zip(src) {
-        *d = [b, g, r, a];
-    }
+    pixels.copy_from_slice(&image.bgra);
 
-    let mask_bits = and_mask(&image.rgba, size as usize);
+    let mask_bits = and_mask(&image.bgra, size as usize);
     // SAFETY: `mask_bits` holds a word-aligned 1-bpp bitmap of `size × size` (see `and_mask`).
     let mask = unsafe { CreateBitmap(side, side, 1, 1, Some(mask_bits.as_ptr().cast())) };
     if mask.is_invalid() {
@@ -707,13 +703,13 @@ fn create_hicon(image: &TrayImage) -> windows::core::Result<HICON> {
 
 /// The 1-bpp AND mask (rows padded to 16 bits, as `CreateBitmap` wants): 1 where the pixel is
 /// fully transparent. Drawing uses the alpha channel; the mask matters only where alpha is not
-/// supported.
-fn and_mask(rgba: &[u8], size: usize) -> Vec<u8> {
+/// supported. `pixels` are 4 bytes each with the alpha last (BGRA).
+fn and_mask(pixels: &[u8], size: usize) -> Vec<u8> {
     let stride = size.div_ceil(16) * 2;
     let mut mask = vec![0u8; stride * size];
     for y in 0..size {
         for x in 0..size {
-            if rgba[(y * size + x) * 4 + 3] == 0 {
+            if pixels[(y * size + x) * 4 + 3] == 0 {
                 mask[y * stride + x / 8] |= 0x80 >> (x % 8);
             }
         }
@@ -897,28 +893,28 @@ mod tests {
     #[test]
     fn and_mask_marks_transparent_pixels() {
         // 2 × 2: opaque, transparent / transparent, opaque.
-        let rgba = [
+        let bgra = [
             1, 2, 3, 255, 0, 0, 0, 0, //
             0, 0, 0, 0, 9, 9, 9, 128,
         ];
-        let mask = and_mask(&rgba, 2);
+        let mask = and_mask(&bgra, 2);
         assert_eq!(mask, vec![0b0100_0000, 0, 0b1000_0000, 0]);
     }
 
     #[test]
-    fn creates_icons_from_rgba_and_rejects_bad_sizes() {
+    fn creates_icons_from_bgra_and_rejects_bad_sizes() {
         for size in [16u32, 20, 24, 32] {
-            let mut rgba = vec![0u8; (size * size * 4) as usize];
-            for px in rgba.as_chunks_mut::<4>().0.iter_mut().step_by(3) {
-                *px = [0x8E, 0x3A, 0xA7, 0xFF];
+            let mut bgra = vec![0u8; (size * size * 4) as usize];
+            for px in bgra.as_chunks_mut::<4>().0.iter_mut().step_by(3) {
+                *px = [0xA7, 0x3A, 0x8E, 0xFF];
             }
-            let icon = create_hicon(&TrayImage { size, rgba }).expect("icon");
+            let icon = create_hicon(&TrayImage { size, bgra }).expect("icon");
             assert!(!icon.is_invalid());
             destroy_icon(icon);
         }
         let bad = TrayImage {
             size: 16,
-            rgba: vec![0; 10],
+            bgra: vec![0; 10],
         };
         assert_eq!(create_hicon(&bad).map_err(|e| e.code()), Err(E_INVALIDARG));
     }
