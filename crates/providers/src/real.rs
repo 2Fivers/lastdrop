@@ -213,6 +213,10 @@ impl UreqHttp {
             .build();
         let config = ureq::Agent::config_builder()
             .tls_config(tls)
+            // No connection pool: providers poll minutes apart, long after servers drop idle
+            // connections, and ureq only purges its pool on the next request, so a pooled TLS
+            // connection would hold ~0.5 MB for nothing.
+            .max_idle_connections(0)
             .http_status_as_error(false)
             .max_redirects(0)
             .proxy(proxy)
