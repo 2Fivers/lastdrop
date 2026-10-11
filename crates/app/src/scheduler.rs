@@ -138,8 +138,11 @@ impl Secrets for CredentialManager {
 
 /// Runs one job with `io`'s clock and the given I/O, on the calling thread: a probe reads the
 /// credential fingerprint and fetches only when it changed; a fetch is followed by a fingerprint
-/// read; a failure asks `internet` whether the machine is online. A panicking provider is
-/// reported as [`FetchError::Unavailable`] (debug builds; release builds abort on panic).
+/// read; a failure asks `internet` whether the machine is online.
+///
+/// Providers must not panic: the release profile has `panic = "abort"`, so a panic there ends
+/// the app. The `catch_unwind` below only guards debug and test builds, where a panicking
+/// provider is reported as [`FetchError::Unavailable`] instead of ending the worker.
 pub fn run_job(
     job: &Job,
     clock: &dyn Clock,

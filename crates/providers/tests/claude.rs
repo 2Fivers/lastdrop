@@ -476,7 +476,7 @@ fn statuses_map_to_fetch_errors() {
         with(429, "", Some("99999999")),
         Err(FetchError::RateLimited {
             from: SourceKind::ClaudeOAuthUsage,
-            retry_after: Some(oauth::MAX_RETRY_AFTER),
+            retry_after: Some(lastdrop_providers::io::MAX_RETRY_AFTER),
         }),
         "capped"
     );

@@ -67,8 +67,10 @@ Single instance and messages, all per session ("Single instance" below):
 - After Apply the dialog process writes `settings.json` itself (atomic) and posts
   `Lastdrop.SettingsChanged` to the tray process. The tray process re-reads the file and applies
   it (hotkey, services, readout, refresh plan); a missing or broken file is ignored. It does not
-  write the file again. It keeps its own pause: the tray menu owns the pause, and the dialog keeps
-  the pause the file has when Apply re-reads it.
+  write the file again. It keeps its own pause: the tray menu owns the pause. Apply re-reads the
+  file and writes only what the window changed since it opened (or since the last Apply) onto it,
+  so what the tray changed meanwhile (pause, pinned meters, readout auto or off) survives; when
+  both changed the same setting, the window wins.
 - Saving or removing the Meshy key happens in the dialog process (Credential Manager); the same
   message, with another flag, makes the tray process lift Meshy's sign-in stop and read again.
 - Autostart is set by the dialog process. A changed hotkey is tested there (registered and
@@ -153,8 +155,11 @@ Rules for every provider:
 - **Never log a secret** (tokens, keys, cookies, account ids, e-mail addresses). The logger
   redacts known shapes as a second line of defence.
 - Undocumented endpoints are polled no more than every 5 minutes per credential, back off on
-  429/403, and stop on 401 until the credential file changes.
+  429/403 (`Retry-After` honoured up to 24 h), and stop on 401 until the credential file
+  changes (or appears: a missing file has a fingerprint too, so signing in lifts the stop).
 - Parsers tolerate unknown and missing fields; a missing value is `None`, never 0.
+- **Never panic.** Release builds abort on panic (`panic = "abort"`), so no `expect`,
+  `unwrap`, `unreachable!` or unchecked indexing on anything read or looked up.
 - Fixtures in tests are invented data, never copied from a real machine.
 
 ## Windows layer (`lastdrop-win`)

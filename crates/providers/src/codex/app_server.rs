@@ -32,6 +32,7 @@
 //! {usedPercent, windowDurationMins, resetsAt (Unix s)} | null, secondary, planType, …}`. Only
 //! the `type` and `planType` of the account are read; the e-mail address is never kept.
 
+use std::borrow::Cow;
 use std::ffi::OsString;
 use std::io::{self, ErrorKind};
 use std::path::{Path, PathBuf};
@@ -131,6 +132,13 @@ fn newest_bundled(ctx: &FetchContext<'_>) -> Option<PathBuf> {
         .map(|(_, exe)| exe)
 }
 
+/// The file name of `path` for the log (`codex.exe`, `codex.cmd`): never the folders, which hold
+/// the Windows user name (the same rule as `claude::file_error`).
+fn file_name(path: &Path) -> Cow<'_, str> {
+    path.file_name()
+        .map_or(Cow::Borrowed("codex"), |n| n.to_string_lossy())
+}
+
 /// The first `name` in an absolute `PATH` folder.
 fn on_path(ctx: &FetchContext<'_>, name: &str) -> Option<PathBuf> {
     let path = non_empty_var(ctx, "PATH")?;
@@ -146,15 +154,16 @@ fn on_path(ctx: &FetchContext<'_>, name: &str) -> Option<PathBuf> {
 /// Bundled = the Codex desktop app's `%LOCALAPPDATA%\OpenAI\Codex\bin\<hash>\codex.exe`
 /// ([`BUNDLED_BIN_DIR`]), newest by modification time (the copy inside the VS Code extension
 /// is not searched yet). After `codex.exe` on `PATH` comes `codex.cmd` on `PATH` (the npm
-/// install), which [`launch_spec`] starts through `cmd.exe`.
+/// install), which [`spawn_spec`] starts like an executable (Rust runs a `.cmd` through
+/// `cmd.exe`, quoting and escaping for it).
 pub fn find_codex_exe(ctx: &FetchContext<'_>, override_path: Option<&Path>) -> Option<PathBuf> {
     if let Some(path) = override_path {
         if is_file(ctx, path) {
             return Some(path.to_path_buf());
         }
         log::warn!(
-            "codex: the configured codex.exe ({}) does not exist; looking elsewhere",
-            path.display()
+            "codex: the configured {} does not exist; looking elsewhere",
+            file_name(path)
         );
     }
     newest_bundled(ctx)
@@ -175,7 +184,12 @@ fn app_server_args() -> Vec<OsString> {
 /// `codex app-server -c features.plugins=false` with `CODEX_HOME` = `codex_home`.
 ///
 /// The working directory is `codex_home`, so the child never inherits (or holds open) whatever
-/// folder Lastdrop was started in.
+/// folder Lastdrop was started in. `exe` may be npm's `codex.cmd`: the spawner starts a `.cmd`
+/// through `cmd.exe` with Rust's own quoting and escaping for it (std ≥ 1.77), so a path with
+/// spaces or `&` and the `=` of the override arrive intact (npm's wrapper passes them on with
+/// `%*`). Only a folder name holding `%NAME%` of a set variable is still expanded by `cmd.exe`
+/// (std quotes the script's path but does not escape `%` in it); Codex cannot be started from
+/// such a folder, as it could not before.
 pub fn spawn_spec(exe: &Path, codex_home: &Path) -> SpawnSpec {
     SpawnSpec {
         program: exe.to_path_buf(),
@@ -185,45 +199,6 @@ pub fn spawn_spec(exe: &Path, codex_home: &Path) -> SpawnSpec {
             Some(codex_home.as_os_str().to_owned()),
         )],
         cwd: Some(codex_home.to_path_buf()),
-    }
-}
-
-/// `cmd.exe /d /c <script> app-server -c features.plugins=false` for an npm `codex.cmd`: like
-/// [`spawn_spec`] but through the command interpreter `comspec` (`/d`: no AutoRun commands that
-/// could print to stdout). npm's wrapper passes its arguments on with `%*`, which keeps the `=`.
-pub fn spawn_spec_via_cmd(comspec: &Path, script: &Path, codex_home: &Path) -> SpawnSpec {
-    let mut args: Vec<OsString> = vec!["/d".into(), "/c".into(), script.as_os_str().to_owned()];
-    args.extend(app_server_args());
-    SpawnSpec {
-        program: comspec.to_path_buf(),
-        args,
-        ..spawn_spec(script, codex_home)
-    }
-}
-
-/// The command interpreter: `%ComSpec%` when absolute, else `%SystemRoot%\System32\cmd.exe`,
-/// else `C:\Windows\System32\cmd.exe`.
-pub fn command_interpreter(ctx: &FetchContext<'_>) -> PathBuf {
-    non_empty_var(ctx, "ComSpec")
-        .map(PathBuf::from)
-        .filter(|p| p.is_absolute())
-        .or_else(|| {
-            non_empty_var(ctx, "SystemRoot")
-                .map(|root| PathBuf::from(root).join("System32").join("cmd.exe"))
-        })
-        .unwrap_or_else(|| PathBuf::from(r"C:\Windows\System32\cmd.exe"))
-}
-
-/// [`spawn_spec`] for an executable, [`spawn_spec_via_cmd`] for a `.cmd`/`.bat` script.
-pub fn launch_spec(ctx: &FetchContext<'_>, exe: &Path, codex_home: &Path) -> SpawnSpec {
-    let is_script = exe
-        .extension()
-        .and_then(|e| e.to_str())
-        .is_some_and(|e| e.eq_ignore_ascii_case("cmd") || e.eq_ignore_ascii_case("bat"));
-    if is_script {
-        spawn_spec_via_cmd(&command_interpreter(ctx), exe, codex_home)
-    } else {
-        spawn_spec(exe, codex_home)
     }
 }
 
@@ -606,8 +581,8 @@ pub fn run(
     codex_home: &Path,
 ) -> Result<Result<CodexUsage, FetchError>, FetchError> {
     preflight(ctx, codex_home)?;
-    let spec = launch_spec(ctx, exe, codex_home);
-    log::debug!("codex app-server: starting {}", exe.display());
+    let spec = spawn_spec(exe, codex_home);
+    log::debug!("codex app-server: starting {}", file_name(exe));
     let mut child = ctx.spawner.spawn(&spec).map_err(|e| {
         if e.kind() == ErrorKind::NotFound {
             FetchError::Unavailable {

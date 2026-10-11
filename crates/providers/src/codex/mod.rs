@@ -76,6 +76,7 @@ use serde_json::Value;
 
 use crate::account::AccountSource;
 use crate::error::FetchError;
+use crate::fingerprint::{self, file_fingerprint, is_absent};
 use crate::io::TerminalCommand;
 use crate::{FetchContext, Provider};
 
@@ -545,7 +546,7 @@ impl Provider for CodexProvider {
             }
             Some(Err(rollout_error)) => {
                 log::warn!("codex[{}]: rollout failed: {rollout_error}", key.0);
-                Err(most_telling(live_error, rollout_error))
+                Err(live_error.or_more_telling(rollout_error))
             }
         }
     }
@@ -560,7 +561,7 @@ impl Provider for CodexProvider {
     }
 
     /// Size + mtime of `<codex_home>\auth.json` (or of the keyring-mode store, see
-    /// [`CREDENTIAL_FILES`]); `None` when neither exists.
+    /// [`CREDENTIAL_FILES`]); `absent` when neither exists, so signing in lifts an auth stop.
     fn credential_fingerprint(
         &self,
         ctx: &FetchContext<'_>,
@@ -641,41 +642,17 @@ fn start_reason(rollout: Option<&Result<CodexUsage, FetchError>>, now: Timestamp
     }
 }
 
-/// Size + mtime of the first of [`CREDENTIAL_FILES`] in `codex_home`; `None` when neither exists.
-/// Only metadata is read, never the contents.
+/// Size + mtime of the first of [`CREDENTIAL_FILES`] in `codex_home` that exists
+/// ([`file_fingerprint`]); `absent` when neither does, so signing in lifts an auth stop; `None`
+/// when the first one's metadata cannot be read. Only metadata is read, never the contents.
 fn fingerprint_of(ctx: &FetchContext<'_>, codex_home: &Path) -> Option<CredentialFingerprint> {
-    CREDENTIAL_FILES.iter().find_map(|name| {
-        let meta = ctx.fs.metadata(&codex_home.join(name)).ok()?;
-        if meta.is_dir {
-            return None;
-        }
-        let modified = meta
-            .modified
-            .map_or_else(|| "-".to_owned(), |t| t.as_nanosecond().to_string());
-        Some(CredentialFingerprint(format!(
-            "{name}:{}:{modified}",
-            meta.len
-        )))
-    })
-}
-
-/// The more telling of two failures (`FetchError` docs: an auth error over a parse error over
-/// "not found"); `first` on a tie.
-fn most_telling(first: FetchError, second: FetchError) -> FetchError {
-    fn rank(e: &FetchError) -> u8 {
-        match e {
-            FetchError::Auth { .. } => 5,
-            FetchError::RateLimited { .. } | FetchError::Offline { .. } => 4,
-            FetchError::Transient { .. } => 3,
-            FetchError::Parse { .. } => 2,
-            FetchError::Unavailable { .. } => 1,
+    for name in CREDENTIAL_FILES {
+        match file_fingerprint(ctx, &codex_home.join(name)) {
+            Some(fingerprint) if is_absent(&fingerprint) => {}
+            other => return other,
         }
     }
-    if rank(&second) > rank(&first) {
-        second
-    } else {
-        first
-    }
+    Some(fingerprint::absent())
 }
 
 // ---- Meters -------------------------------------------------------------------------------------

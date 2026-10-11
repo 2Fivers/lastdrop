@@ -30,6 +30,7 @@ use serde_json::{Map, Value};
 
 use crate::account::AccountSource;
 use crate::error::FetchError;
+use crate::fingerprint::file_fingerprint;
 use crate::io::{HeaderValue, HttpRequest, HttpResponse, Method, SpawnSpec, TerminalCommand};
 use crate::{FetchContext, Provider};
 
@@ -180,8 +181,9 @@ impl Provider for CopilotProvider {
         MIN_INTERVAL
     }
 
-    /// gh's `hosts.yml` (size + modification time): it changes when the user signs in again
-    /// (`gh auth login`), which lifts the auth stop.
+    /// gh's `hosts.yml` (size + modification time, [`file_fingerprint`]): it changes when the
+    /// user signs in again (`gh auth login`), which lifts the auth stop; `absent` while gh has
+    /// never been signed in, so the first sign-in lifts it too.
     fn credential_fingerprint(
         &self,
         ctx: &FetchContext<'_>,
@@ -190,17 +192,7 @@ impl Provider for CopilotProvider {
         let AccountSource::Copilot { config_dir, .. } = account else {
             return None;
         };
-        let meta = ctx.fs.metadata(&config_dir.join(HOSTS_FILE)).ok()?;
-        if meta.is_dir {
-            return None;
-        }
-        let modified = meta
-            .modified
-            .map_or_else(|| "-".to_owned(), |t| t.as_nanosecond().to_string());
-        Some(CredentialFingerprint(format!(
-            "{HOSTS_FILE}:{}:{modified}",
-            meta.len
-        )))
+        file_fingerprint(ctx, &config_dir.join(HOSTS_FILE))
     }
 
     /// `gh auth login` for github.com in a terminal, with the account's gh folder.

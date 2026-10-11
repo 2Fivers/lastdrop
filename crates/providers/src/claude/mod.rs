@@ -76,6 +76,7 @@ use lastdrop_core::settings::ClaudeOptions;
 
 use crate::account::AccountSource;
 use crate::error::FetchError;
+use crate::fingerprint::file_fingerprint;
 use crate::io::TerminalCommand;
 use crate::{FetchContext, Provider};
 
@@ -474,9 +475,9 @@ impl Provider for ClaudeProvider {
         UNDOCUMENTED_MIN_INTERVAL
     }
 
-    /// Size + mtime of `<config_dir>\.credentials.json`; `absent` while the file does not exist
-    /// (so its appearance lifts an auth stop); `None` when the metadata cannot be read or the
-    /// account is not a Claude account.
+    /// Size + mtime of `<config_dir>\.credentials.json` ([`file_fingerprint`]); `absent` while
+    /// the file does not exist (so its appearance lifts an auth stop); `None` when the metadata
+    /// cannot be read or the account is not a Claude account.
     fn credential_fingerprint(
         &self,
         ctx: &FetchContext<'_>,
@@ -529,19 +530,9 @@ pub fn organisation(
     oauth::read_organisation(ctx, config_dir).or_else(|| cache::read_organisation(ctx, state_file))
 }
 
-/// Size + mtime of the credentials file (module docs of [`Provider::credential_fingerprint`]).
+/// Size + mtime of the credentials file ([`file_fingerprint`]).
 fn fingerprint_of(ctx: &FetchContext<'_>, config_dir: &Path) -> Option<CredentialFingerprint> {
-    match ctx.fs.metadata(&oauth::credentials_path(config_dir)) {
-        Ok(meta) => Some(CredentialFingerprint(format!(
-            "{}:{}",
-            meta.len,
-            meta.modified.map_or(0, Timestamp::as_millisecond)
-        ))),
-        Err(e) if e.kind() == io::ErrorKind::NotFound => {
-            Some(CredentialFingerprint("absent".to_owned()))
-        }
-        Err(_) => None,
-    }
+    file_fingerprint(ctx, &oauth::credentials_path(config_dir))
 }
 
 /// The sources' results of one fetch.
@@ -665,24 +656,10 @@ fn fill_resets(chosen: &mut Candidate, others: &[Candidate]) {
     }
 }
 
-/// The failure to report when no source answered: an auth error over a throttle over offline
-/// over a temporary failure over a parse error over "not found"; the earlier source on a tie.
+/// The failure to report when no source answered ([`FetchError::most_telling`]); "no Claude data
+/// source" when no source was tried.
 fn most_telling(failures: Vec<FetchError>) -> FetchError {
-    let rank = |e: &FetchError| match e {
-        FetchError::Auth { .. } => 5,
-        FetchError::RateLimited { .. } => 4,
-        FetchError::Offline { .. } => 3,
-        FetchError::Transient { .. } => 2,
-        FetchError::Parse { .. } => 1,
-        FetchError::Unavailable { .. } => 0,
-    };
-    let mut best: Option<FetchError> = None;
-    for failure in failures {
-        if best.as_ref().is_none_or(|b| rank(&failure) > rank(b)) {
-            best = Some(failure);
-        }
-    }
-    best.unwrap_or_else(|| FetchError::Unavailable {
+    FetchError::most_telling(failures).unwrap_or_else(|| FetchError::Unavailable {
         detail: "no Claude data source".to_owned(),
     })
 }
@@ -715,19 +692,25 @@ fn add(t: Timestamp, d: Duration) -> Timestamp {
         .unwrap_or(Timestamp::MAX)
 }
 
-/// The R§2 catalogue entry of a Claude meter that every reading can have.
-fn catalogue(id: &str) -> (MeterNames, WindowLen, bool) {
-    let def = catalog(ProviderId::Claude)
+/// The R§2 catalogue entry of a Claude meter that every reading can have: names, window length
+/// and `starts_on_use`. The catalogue always has `five_hour` and `weekly` as windows
+/// (`lastdrop_core::model`); should it not, `fallback` (the same R§2 values) stands in, since a
+/// provider must never panic (release builds abort on panic).
+fn catalogue(
+    id: &str,
+    fallback: impl FnOnce() -> (MeterNames, WindowLen, bool),
+) -> (MeterNames, WindowLen, bool) {
+    catalog(ProviderId::Claude)
         .iter()
         .find(|d| d.id == id)
-        .expect("R§2: the Claude catalogue has five_hour and weekly");
-    match def.kind {
-        MeterKind::Window {
-            window,
-            starts_on_use,
-        } => (def.names(), window, starts_on_use),
-        MeterKind::Balance => unreachable!("R§2: Claude's catalogue meters are windows"),
-    }
+        .and_then(|def| match def.kind {
+            MeterKind::Window {
+                window,
+                starts_on_use,
+            } => Some((def.names(), window, starts_on_use)),
+            MeterKind::Balance => None,
+        })
+        .unwrap_or_else(fallback)
 }
 
 /// The meter id part of a model's display name: lower case, runs of other characters as `-`
@@ -767,7 +750,13 @@ fn model_names(model: &str) -> MeterNames {
 pub fn meter(reading: &WindowReading, order: u16) -> Meter {
     let (id, names, window, starts_on_use) = match &reading.window {
         ClaudeWindow::FiveHour => {
-            let (names, window, starts_on_use) = catalogue(MeterId::FIVE_HOUR);
+            let (names, window, starts_on_use) = catalogue(MeterId::FIVE_HOUR, || {
+                (
+                    MeterNames::new("5h", "5-hour", "5-hour session"),
+                    WindowLen::Fixed(SignedDuration::from_hours(5)),
+                    true,
+                )
+            });
             (
                 MeterId::new(MeterId::FIVE_HOUR),
                 names,
@@ -776,7 +765,13 @@ pub fn meter(reading: &WindowReading, order: u16) -> Meter {
             )
         }
         ClaudeWindow::Weekly => {
-            let (names, window, starts_on_use) = catalogue(MeterId::WEEKLY);
+            let (names, window, starts_on_use) = catalogue(MeterId::WEEKLY, || {
+                (
+                    MeterNames::new("Wk", "weekly", "Weekly · all models"),
+                    WindowLen::Fixed(SignedDuration::from_hours(7 * 24)),
+                    false,
+                )
+            });
             (MeterId::new(MeterId::WEEKLY), names, window, starts_on_use)
         }
         ClaudeWindow::WeeklyModel(model) => (
@@ -845,5 +840,27 @@ pub fn to_snapshot(
         meters,
         balances: Vec::new(),
         health: Health::Ok,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use jiff::SignedDuration;
+    use lastdrop_core::model::{MeterId, MeterNames, WindowLen};
+
+    use super::catalogue;
+
+    #[test]
+    fn the_catalogue_has_both_windows_and_a_missing_one_falls_back_without_panicking() {
+        let fallback = || {
+            (
+                MeterNames::new("?", "?", "?"),
+                WindowLen::Fixed(SignedDuration::from_hours(1)),
+                false,
+            )
+        };
+        assert_ne!(catalogue(MeterId::FIVE_HOUR, fallback), fallback());
+        assert_ne!(catalogue(MeterId::WEEKLY, fallback), fallback());
+        assert_eq!(catalogue("not_in_the_catalogue", fallback), fallback());
     }
 }

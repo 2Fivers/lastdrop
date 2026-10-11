@@ -1224,6 +1224,39 @@ mod tests {
     }
 
     #[test]
+    fn a_batch_script_gets_its_arguments_intact_from_a_path_with_spaces_and_ampersands() {
+        // npm's `codex.cmd` is spawned directly (`codex::app_server::spawn_spec`): std runs it
+        // through cmd.exe and quotes for it, so `&` in the profile folder's name does not end
+        // the command, and arguments arrive as given, `%…%` not expanded.
+        let dir = std::env::temp_dir().join(format!(
+            "lastdrop spawn A&B ^! {}-{}",
+            std::process::id(),
+            jiff::Timestamp::now().as_nanosecond()
+        ));
+        std::fs::create_dir_all(&dir).expect("dir");
+        let script = dir.join("echo args.cmd");
+        std::fs::write(&script, "@echo off\r\necho(%*\r\necho(%~3\r\n").expect("script");
+        let spec = SpawnSpec {
+            program: script,
+            args: ["app-server", "-c", "features.plugins=false", "a&b %PATH% c"]
+                .iter()
+                .map(OsString::from)
+                .collect(),
+            env: Vec::new(),
+            cwd: Some(dir.clone()),
+        };
+        let mut child = spawn_boxed(&spec);
+        let all = child.read_line(Duration::from_secs(10)).expect("line");
+        let third = child.read_line(Duration::from_secs(10)).expect("line");
+        child.kill().expect("kill");
+        let _ = std::fs::remove_dir_all(&dir);
+        let all = all.expect("the script ran");
+        assert!(all.starts_with("app-server -c "), "{all}");
+        assert!(all.ends_with(r#" "a&b %PATH% c""#), "{all}");
+        assert_eq!(third.as_deref(), Some("features.plugins=false"));
+    }
+
+    #[test]
     fn a_job_kills_the_whole_tree() {
         // The outer cmd starts an inner cmd that waits for input: two processes in the job.
         // (conhost.exe may be counted too.)

@@ -10,22 +10,32 @@
 //! lock held by another thread or do I/O (ARCHITECTURE "Threads"). So `log` calls only format,
 //! redact and push the line into an unbounded `std::sync::mpsc` channel (no file access, no lock
 //! that another thread holds across I/O); one writer thread owns the file, writes, rotates and
-//! flushes. The writer is joined at shutdown ([`shutdown`]) after it has written every queued
-//! line.
+//! flushes. At shutdown ([`shutdown`]) the writer writes every queued line and is joined, waiting
+//! at most [`SHUTDOWN_WAIT`] (a stuck disk does not keep the process alive).
 
 use std::borrow::Cow;
 use std::fs::{File, OpenOptions};
 use std::io::{BufWriter, Write};
 use std::path::{Path, PathBuf};
-use std::sync::mpsc::{self, Receiver, Sender};
+use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 use std::sync::{Mutex, OnceLock};
 use std::thread::JoinHandle;
+use std::time::Duration;
 
 /// Rotate when the current file reaches 1 MiB.
 pub const MAX_FILE_BYTES: u64 = 1 << 20;
 
 /// Files kept: `lastdrop.log`, `lastdrop.1.log`, `lastdrop.2.log` (and so on for another stem).
 pub const KEEP_FILES: usize = 3;
+
+/// After a failed rotation (another program holds a log file open without sharing delete), the
+/// next try comes after this much more has been written, 256 KiB (**not from the spec**): not on
+/// every line, and the failure is reported once per try.
+pub const ROTATE_RETRY_BYTES: u64 = MAX_FILE_BYTES / 4;
+
+/// How long [`shutdown`] waits for the queued lines: the file writer's wait
+/// ([`crate::writer::SHUTDOWN_WAIT`]). Lines still queued after it end with the process.
+pub const SHUTDOWN_WAIT: Duration = crate::writer::SHUTDOWN_WAIT;
 
 /// The tray process's log file name ([`APP_STEM`]).
 pub const FILE_NAME: &str = "lastdrop.log";
@@ -45,9 +55,16 @@ enum Line {
 }
 
 /// The writer thread, joined by [`shutdown`].
-static WRITER: OnceLock<Mutex<Option<JoinHandle<()>>>> = OnceLock::new();
+static WRITER: OnceLock<Mutex<Option<WriterThread>>> = OnceLock::new();
 /// The queue, to send [`Line::Stop`] at shutdown.
 static QUEUE: OnceLock<Sender<Line>> = OnceLock::new();
+
+/// The writer thread and how to know it ended.
+struct WriterThread {
+    handle: JoinHandle<()>,
+    /// Closed by the thread when it ends (the sender drops), so shutdown can wait with a limit.
+    ended: Receiver<()>,
+}
 
 /// The `log` implementation: format, redact, queue.
 struct FileLogger {
@@ -92,27 +109,47 @@ pub fn init_named(dir: &Path, stem: &str, level: log::LevelFilter) -> std::io::R
     std::fs::create_dir_all(dir)?;
     let mut file = LogFile::open(dir.to_path_buf(), stem)?;
     let (tx, rx) = mpsc::channel::<Line>();
+    let (ending, ended) = mpsc::channel::<()>();
     let handle = std::thread::Builder::new()
         .name("lastdrop-log".to_owned())
-        .spawn(move || file.run(&rx))?;
+        .spawn(move || {
+            file.run(&rx);
+            drop(ending);
+        })?;
     let _ = QUEUE.set(tx.clone());
-    let _ = WRITER.set(Mutex::new(Some(handle)));
+    let _ = WRITER.set(Mutex::new(Some(WriterThread { handle, ended })));
     log::set_boxed_logger(Box::new(FileLogger { queue: tx, level }))
         .map_err(|e| std::io::Error::other(e.to_string()))?;
     log::set_max_level(level);
     Ok(())
 }
 
-/// Writes every queued line and stops the writer thread. Lines logged afterwards are dropped.
+/// Writes every queued line and stops the writer thread, waiting at most [`SHUTDOWN_WAIT`]: a
+/// writer still busy after it is left to end with the process. Lines logged afterwards are
+/// dropped.
 pub fn shutdown() {
     if let Some(queue) = QUEUE.get() {
         let _ = queue.send(Line::Stop);
     }
-    let handle = WRITER
+    let writer = WRITER
         .get()
         .and_then(|w| w.lock().ok().and_then(|mut h| h.take()));
-    if let Some(handle) = handle {
-        let _ = handle.join();
+    if let Some(writer) = writer {
+        writer.join_within(SHUTDOWN_WAIT);
+    }
+}
+
+impl WriterThread {
+    /// Joins the thread once it has ended, waiting at most `wait` for that; `false` when it is
+    /// still busy (nothing to report it to: this is the logger).
+    fn join_within(self, wait: Duration) -> bool {
+        match self.ended.recv_timeout(wait) {
+            Err(RecvTimeoutError::Timeout) => false,
+            Ok(()) | Err(RecvTimeoutError::Disconnected) => {
+                let _ = self.handle.join();
+                true
+            }
+        }
     }
 }
 
@@ -123,6 +160,9 @@ struct LogFile {
     stem: String,
     out: BufWriter<File>,
     size: u64,
+    /// Rotate when `size` reaches this: [`MAX_FILE_BYTES`], or after a failed rotation
+    /// [`ROTATE_RETRY_BYTES`] more than the size it failed at.
+    rotate_at: u64,
 }
 
 impl LogFile {
@@ -135,6 +175,7 @@ impl LogFile {
             stem: stem.to_owned(),
             out: BufWriter::new(file),
             size,
+            rotate_at: MAX_FILE_BYTES,
         })
     }
 
@@ -170,11 +211,23 @@ impl LogFile {
         match line {
             Line::Stop => false,
             Line::Text(text) => {
-                if self.size >= MAX_FILE_BYTES
-                    && let Err(e) = self.rotate()
-                {
-                    // Nowhere to report it but the file itself.
-                    let _ = writeln!(self.out, "log rotation failed: {e}");
+                if self.size >= self.rotate_at {
+                    match self.rotate() {
+                        Ok(()) => self.rotate_at = MAX_FILE_BYTES,
+                        Err(e) => {
+                            // Back off, so a file that cannot be renamed is not tried (and
+                            // reported) on every line.
+                            self.rotate_at = self.size.saturating_add(ROTATE_RETRY_BYTES);
+                            // Nowhere to report it but the file itself.
+                            let report = format!(
+                                "log rotation failed: {e}; next try after another {} KiB",
+                                ROTATE_RETRY_BYTES / 1024
+                            );
+                            if writeln!(self.out, "{report}").is_ok() {
+                                self.size += report.len() as u64 + 1;
+                            }
+                        }
+                    }
                 }
                 if writeln!(self.out, "{text}").is_ok() {
                     self.size += text.len() as u64 + 1;
@@ -502,6 +555,60 @@ mod tests {
             "only three files are kept"
         );
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_failed_rotation_backs_off_and_is_reported_once_per_try() {
+        let dir = temp_dir("blocked");
+        // Non-empty folders where the rotated files go: neither can be replaced by a rename.
+        for blocker in ["lastdrop.1.log", "lastdrop.2.log"] {
+            std::fs::create_dir_all(dir.join(blocker)).expect("blocker");
+            std::fs::write(dir.join(blocker).join("keep"), "x").expect("blocker file");
+        }
+        let mut file = LogFile::open(dir.clone(), APP_STEM).expect("open");
+        let long = "z".repeat(1000);
+        let lines = |n: u64| (0..n).map(|_| Line::Text(long.clone()));
+        // Up to the limit and half a retry beyond it: one try, one report.
+        for line in lines((MAX_FILE_BYTES + ROTATE_RETRY_BYTES / 2) / 1000 + 1) {
+            assert!(file.take(line));
+        }
+        file.out.flush().expect("flush");
+        let log = std::fs::read_to_string(dir.join(FILE_NAME)).expect("read");
+        assert_eq!(log.matches("log rotation failed").count(), 1);
+
+        // The next try comes after another ROTATE_RETRY_BYTES, and succeeds once the files are
+        // free.
+        for blocker in ["lastdrop.1.log", "lastdrop.2.log"] {
+            std::fs::remove_dir_all(dir.join(blocker)).expect("unblock");
+        }
+        for line in lines(ROTATE_RETRY_BYTES / 1000 + 1) {
+            assert!(file.take(line));
+        }
+        file.out.flush().expect("flush");
+        let rotated = std::fs::read_to_string(dir.join("lastdrop.1.log")).expect("rotated");
+        assert_eq!(rotated.matches("log rotation failed").count(), 1);
+        assert!(file.size < ROTATE_RETRY_BYTES, "a new file");
+        assert_eq!(file.rotate_at, MAX_FILE_BYTES);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn shutdown_does_not_wait_for_a_stuck_writer_without_end() {
+        let (release, until) = mpsc::channel::<()>();
+        let (ending, ended) = mpsc::channel::<()>();
+        let handle = std::thread::spawn(move || {
+            let _ = until.recv();
+            drop(ending);
+        });
+        let stuck = WriterThread { handle, ended };
+        let started = std::time::Instant::now();
+        assert!(!stuck.join_within(Duration::from_millis(100)));
+        assert!(started.elapsed() < Duration::from_secs(2));
+        drop(release);
+
+        let (ending, ended) = mpsc::channel::<()>();
+        let handle = std::thread::spawn(move || drop(ending));
+        assert!(WriterThread { handle, ended }.join_within(SHUTDOWN_WAIT));
     }
 
     #[test]

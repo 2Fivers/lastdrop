@@ -48,10 +48,6 @@ pub const TIMEOUT: Duration = Duration::from_secs(10);
 /// expiry into a 401 that would stop the source (**not from the spec**).
 pub const EXPIRY_MARGIN: Duration = Duration::from_secs(60);
 
-/// Longest `Retry-After` honoured; a longer one is capped (**not from the spec**: guards against
-/// a malformed header stopping the source for weeks).
-pub const MAX_RETRY_AFTER: Duration = Duration::from_secs(24 * 60 * 60);
-
 /// The scope the usage endpoint needs. Tokens from `claude setup-token` are inference-only.
 const USAGE_SCOPE: &str = "user:profile";
 
@@ -231,34 +227,26 @@ pub fn request(token: &SecretString, timeout: Duration) -> HttpRequest {
 }
 
 /// Interprets the response: 200 → [`parse`]; 401 → Auth; 429/403 → RateLimited with
-/// `Retry-After`; 5xx → Transient. Any other status is a changed endpoint: Parse (`HTTP 404`),
-/// retried at the normal interval.
+/// `Retry-After` (capped, [`HttpResponse::retry_after`]); 5xx → Transient. Any other status is a
+/// changed endpoint: Parse (`HTTP 404`), retried at the normal interval.
 pub fn interpret(response: &HttpResponse, now: Timestamp) -> Result<ClaudeUsage, FetchError> {
     match response.status {
         200..=299 => parse(&response.body),
         401 => Err(FetchError::Auth { from: FROM }),
         403 | 429 => Err(FetchError::RateLimited {
             from: FROM,
-            retry_after: retry_after(response, now),
+            retry_after: response.retry_after(now),
         }),
         status @ 500..=599 => Err(FetchError::Transient {
             from: FROM,
             detail: format!("HTTP {status}"),
-            retry_after: retry_after(response, now),
+            retry_after: response.retry_after(now),
         }),
         status => Err(FetchError::Parse {
             from: FROM,
             detail: format!("HTTP {status}"),
         }),
     }
-}
-
-/// `Retry-After` as a duration from `now` ([`HttpResponse::retry_after`]), capped at
-/// [`MAX_RETRY_AFTER`].
-fn retry_after(response: &HttpResponse, now: Timestamp) -> Option<Duration> {
-    response
-        .retry_after(now)
-        .map(|wait| wait.min(MAX_RETRY_AFTER))
 }
 
 /// Parses the JSON body: `five_hour`, `seven_day`, and per-model weekly objects with
