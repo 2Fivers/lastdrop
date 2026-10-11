@@ -141,15 +141,14 @@ impl Bench {
         self.phase(&format!("hide{}", self.shows.get()));
     }
 
-    /// Writes the JSON (to a temporary file, then renamed over `out`).
-    pub fn write(&self, _app: &App, partial: bool) {
+    /// Queues the JSON for the writer thread, which replaces `out` atomically (the UI thread
+    /// does no file I/O, so the timeline is not skewed by the disk). The last write at exit is
+    /// queued before the writer stops, so it lands before the process ends.
+    pub fn write(&self, app: &App, partial: bool) {
         let json = self.json(partial);
-        let tmp = self.out.with_extension("json.tmp");
-        let written =
-            std::fs::write(&tmp, json.as_bytes()).and_then(|()| std::fs::rename(&tmp, &self.out));
-        if let Err(e) = written {
-            log::warn!("bench output: {e}");
-        }
+        app.writer
+            .handle()
+            .replace(self.out.clone(), json.into_bytes(), "bench output");
     }
 
     /// The JSON document, compatible with the spike's.

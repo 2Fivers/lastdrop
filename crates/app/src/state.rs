@@ -393,10 +393,8 @@ impl AppState {
             // The service was turned off while its fetch ran.
             return;
         };
-        if let Some(snapshot) = apply_to_source(source, result)
-            && let Err(e) = self.history.record(&snapshot)
-        {
-            log::warn!("history: {e}");
+        if let Some(snapshot) = apply_to_source(source, result) {
+            self.history.record(&snapshot);
         }
     }
 

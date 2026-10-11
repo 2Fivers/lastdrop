@@ -2,7 +2,8 @@
 //! `%APPDATA%\Lastdrop\settings.json` (atomic write, no secrets); data in
 //! `%LOCALAPPDATA%\Lastdrop\` (history, logs).
 //!
-//! Threading: main thread (settings are small; a save is one atomic file replace).
+//! Threading: loading runs on the main thread at start-up; saves are encoded on the main thread
+//! and written by the writer thread ([`crate::writer`], [`write_atomic`]).
 
 use std::ffi::OsString;
 use std::io::Write;
@@ -158,11 +159,16 @@ pub fn migrate(document: serde_json::Value) -> Result<Settings, serde_json::Erro
     Ok(settings)
 }
 
-/// Saves settings atomically ([`write_atomic`], pretty JSON).
-pub fn save_settings(path: &Path, settings: &Settings) -> std::io::Result<()> {
+/// The settings file's bytes (pretty JSON), for the writer thread.
+pub fn settings_bytes(settings: &Settings) -> std::io::Result<Vec<u8>> {
     let mut bytes = serde_json::to_vec_pretty(settings).map_err(std::io::Error::other)?;
     bytes.push(b'\n');
-    write_atomic(path, &bytes)
+    Ok(bytes)
+}
+
+/// Saves settings atomically ([`write_atomic`], pretty JSON) on the calling thread.
+pub fn save_settings(path: &Path, settings: &Settings) -> std::io::Result<()> {
+    write_atomic(path, &settings_bytes(settings)?)
 }
 
 /// Writes `bytes` to `path` atomically: a temporary file in the same folder, flushed, then

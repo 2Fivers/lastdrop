@@ -81,6 +81,7 @@ use crate::history::HistoryStore;
 use crate::persist::Paths;
 use crate::scheduler::{Job, JobResult, Scheduler, WorkerIo};
 use crate::state::AppState;
+use crate::writer::Writer;
 use crate::{AppError, Args, bench, persist, settings_window, ui};
 
 /// What `main` hands over.
@@ -161,7 +162,9 @@ pub fn run(startup: Startup) -> Result<(), AppError> {
     let theme = lastdrop_win::theme::read();
     let locale = lastdrop_win::locale::read(TimeZone::system());
     let now = Timestamp::now();
-    let history = HistoryStore::open(&paths.history, now)?;
+    // Every file write from here on goes through the writer thread, never the UI thread.
+    let writer = Writer::start()?;
+    let history = HistoryStore::open(&paths.history, now, writer.handle())?;
     let readout_enabled = settings.readout.enabled && !args.no_readout;
     let hotkey_setting = settings.hotkey.clone();
     let state = Rc::new(RefCell::new(AppState::new(
@@ -282,6 +285,7 @@ pub fn run(startup: Startup) -> Result<(), AppError> {
         hotkey: RefCell::new(None),
         args: args.clone(),
         paths,
+        writer,
         rt: Runtime {
             bench: bench.clone(),
             ..Runtime::default()
@@ -339,6 +343,8 @@ fn shutdown() {
     if let Some(hotkey) = app.hotkey.borrow_mut().take() {
         hotkey.unregister();
     }
+    // Every queued write (history, settings, state) reaches the disk before the threads end.
+    app.writer.shutdown();
     match Rc::try_unwrap(app) {
         Ok(app) => {
             let App {
@@ -664,6 +670,8 @@ pub struct App {
     pub args: Args,
     /// Folders.
     pub paths: Paths,
+    /// The file writer thread: history, settings and state writes, in queue order.
+    pub writer: Writer,
     /// Runtime bookkeeping.
     pub rt: Runtime,
 }
@@ -828,9 +836,8 @@ pub fn on_minute_tick(app: &App) {
         let today = now.to_zoned(st.locale.tz.clone()).date();
         if app.rt.last_compact.get() != Some(today) {
             app.rt.last_compact.set(Some(today));
-            if let Err(e) = st.history.compact(now) {
-                log::warn!("history compaction: {e}");
-            }
+            // Queued behind the appends so far; the writer thread runs it.
+            st.history.compact(now);
         }
     }
     if pause_ended {
@@ -1071,11 +1078,16 @@ fn resume(app: &App) {
     replan(app);
 }
 
-/// Saves the current settings (atomic write; failures are logged).
+/// Saves the current settings: encoded here, written atomically by the writer thread in queue
+/// order (a later save replaces an earlier one; failures are logged there).
 pub fn save_settings(app: &App) {
-    let settings = app.state.borrow().settings.clone();
-    if let Err(e) = persist::save_settings(&app.paths.settings, &settings) {
-        log::error!("cannot save settings: {e}");
+    let bytes = persist::settings_bytes(&app.state.borrow().settings);
+    match bytes {
+        Ok(bytes) => app
+            .writer
+            .handle()
+            .replace(app.paths.settings.clone(), bytes, "settings"),
+        Err(e) => log::error!("cannot encode settings: {e}"),
     }
 }
 
