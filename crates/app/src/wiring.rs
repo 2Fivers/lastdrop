@@ -1927,6 +1927,10 @@ fn place_hover_card(app: &App, model: &HoverCardModel, anchor: Rect) {
     };
     let rect = flyout_pos::hover_card_rect(anchor, size, &monitor, taskbar, edge);
     backdrop::set_rect(h, rect);
+    // A full repaint after every placement (and so before every show): Win32 moved or resized
+    // the card, or will show it, without Slint knowing, and Slint presents only what it saw
+    // change.
+    window.set_repaint_tick(!window.get_repaint_tick());
     // As for the flyout: moving onto a monitor with another DPI makes winit resize the window
     // synchronously (WM_DPICHANGED) with the old monitor's scale; place it again.
     if (f64::from(window.window().scale_factor()) - scale).abs() > 0.01 {

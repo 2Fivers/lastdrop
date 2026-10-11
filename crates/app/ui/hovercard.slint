@@ -170,6 +170,10 @@ export component HoverCard inherits Window {
     // The window height, set from Rust from content-height (logical px).
     in property <length> card-height: 200px;
     height: root.card-height;
+    // Toggled from Rust whenever the card is placed, so the next frame is a full repaint: the
+    // card is moved, resized, shown and hidden with Win32 behind Slint's back, and Slint would
+    // otherwise present only what it saw change (the header stayed blank after a re-show).
+    in-out property <bool> repaint-tick: false;
 
     in property <Glyph> header-glyph: Glyph.none;
     in property <string> title-text;
@@ -196,6 +200,9 @@ export component HoverCard inherits Window {
     // measured on a copy outside the layout.
     property <length> also-time-width: max(56px, time-probe.preferred-width);
 
+    Rectangle {
+        background: root.repaint-tick ? #00000001 : #00000000;
+    }
     Rectangle {
         background: Theme.window-fill;
         border-width: Theme.high-contrast ? 1px : 0px;
