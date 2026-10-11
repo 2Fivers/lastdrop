@@ -1,9 +1,11 @@
-//! Live smoke test of the Codex app-server source against this machine's Codex. Ignored by
-//! default; run by hand with
-//! `cargo test -p lastdrop-providers --test codex_live -- --ignored --nocapture`.
+//! Live smoke tests of the Codex provider against this machine's Codex. Ignored by default; run
+//! by hand with
+//! `cargo test -p lastdrop-providers --test codex_live -- --ignored --nocapture --test-threads=1`.
 //!
-//! It prints only the plan type, window lengths, used percentages and reset times — never the
-//! path, account, e-mail address or anything else Codex returns. The spawner here is a minimal
+//! `live_app_server_smoke` prints only the plan type, window lengths, used percentages and reset
+//! times; `live_provider_pace_smoke` only the source chosen, the provider's INFO/WARN lines
+//! (sources, reasons, minutes), ages, durations, start counts and used percentages — never the
+//! path, account, e-mail address or anything else Codex returns. `LocalSpawner` is a minimal
 //! local stand-in for `real::RealSpawner` (test only, not shipped).
 #![cfg(windows)]
 #![expect(
@@ -15,17 +17,21 @@ use std::io::{self, BufRead, BufReader, ErrorKind, Write};
 use std::os::windows::process::CommandExt;
 use std::path::PathBuf;
 use std::process::{Child, ChildStdin, Command, Stdio};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
 use std::thread;
 use std::time::{Duration, Instant};
 
 use jiff::{SignedDuration, Timestamp};
-use lastdrop_core::model::{AccountRef, SourceKind};
-use lastdrop_providers::FetchContext;
-use lastdrop_providers::codex::{app_server, to_snapshot};
+use lastdrop_core::model::{AccountKey, AccountRef, SourceKind};
+use lastdrop_core::settings::CodexOptions;
+use lastdrop_providers::codex::{CodexProvider, app_server, to_snapshot};
 use lastdrop_providers::fakes::FakeSecrets;
 use lastdrop_providers::io::{ChildIo, Env, SpawnSpec, Spawner};
-use lastdrop_providers::real::{CREATE_NO_WINDOW, RealClock, RealEnv, RealFs, UreqHttp};
+use lastdrop_providers::real::{
+    CREATE_NO_WINDOW, RealClock, RealEnv, RealFs, RealSpawner, UreqHttp,
+};
+use lastdrop_providers::{AccountSource, FetchContext, Provider};
 
 /// Piped stdin/stdout, stderr discarded, no window; a reader thread turns stdout into lines.
 #[derive(Default)]
@@ -121,16 +127,115 @@ impl Spawner for LocalSpawner {
     }
 }
 
+/// `RealSpawner` (kill-on-close job, no window), counting the starts.
+#[derive(Default)]
+struct CountingSpawner {
+    starts: AtomicUsize,
+}
+
+impl Spawner for CountingSpawner {
+    fn spawn(&self, spec: &SpawnSpec) -> io::Result<Box<dyn ChildIo>> {
+        self.starts.fetch_add(1, Ordering::SeqCst);
+        RealSpawner.spawn(spec)
+    }
+}
+
+/// Prints the Codex provider's INFO and WARN lines: which source was used and why (secret-free
+/// by design: sources, reasons, minutes).
+struct CodexLog;
+
+impl log::Log for CodexLog {
+    fn enabled(&self, metadata: &log::Metadata<'_>) -> bool {
+        metadata.level() <= log::Level::Info
+            && metadata.target().starts_with("lastdrop_providers::codex")
+    }
+
+    fn log(&self, record: &log::Record<'_>) {
+        if self.enabled(record.metadata()) {
+            println!("  log {}: {}", record.level(), record.args());
+        }
+    }
+
+    fn flush(&self) {}
+}
+
+static CODEX_LOG: CodexLog = CodexLog;
+
+/// `%CODEX_HOME%`, else `<home>\.codex`.
+fn live_codex_home(env: &RealEnv) -> PathBuf {
+    env.var("CODEX_HOME")
+        .filter(|v| !v.is_empty())
+        .map(PathBuf::from)
+        .or_else(|| env.home_dir().map(|h| h.join(".codex")))
+        .expect("a Codex folder")
+}
+
+#[test]
+#[ignore = "live: reads this machine's Codex rollout and may start its codex app-server once"]
+fn live_provider_pace_smoke() {
+    if log::set_logger(&CODEX_LOG).is_ok() {
+        log::set_max_level(log::LevelFilter::Info);
+    }
+    let env = RealEnv;
+    let account = AccountSource::Codex {
+        account: AccountKey::primary(),
+        codex_home: live_codex_home(&env),
+    };
+    let (clock, http, fs, secrets, spawner) = (
+        RealClock,
+        UreqHttp::new(),
+        RealFs,
+        FakeSecrets::new(),
+        CountingSpawner::default(),
+    );
+    let provider = CodexProvider::new(CodexOptions::default());
+
+    // Twice in a row, as two scheduled fetches a minute apart would: the second never starts
+    // another app-server (a fresh rollout, the first start's answer, or a newer rollout).
+    for round in 1..=2 {
+        let ctx = FetchContext {
+            clock: &clock,
+            http: &http,
+            fs: &fs,
+            secrets: &secrets,
+            spawner: &spawner,
+            env: &env,
+            deadline: Timestamp::now() + SignedDuration::from_secs(20),
+        };
+        let began = Instant::now();
+        println!("fetch {round}:");
+        match provider.fetch(&ctx, &account) {
+            Ok(snap) => {
+                println!(
+                    "  source {:?}, health {:?}, reading {} min old, {} ms, starts so far {}",
+                    snap.source,
+                    snap.health,
+                    Timestamp::now().duration_since(snap.measured_at).as_mins(),
+                    began.elapsed().as_millis(),
+                    spawner.starts.load(Ordering::SeqCst)
+                );
+                for m in &snap.meters {
+                    println!("  meter {}: used {:.0}%", m.id.0, m.used * 100.0);
+                }
+            }
+            Err(e) => println!(
+                "  error: {e}; {} ms, starts so far {}",
+                began.elapsed().as_millis(),
+                spawner.starts.load(Ordering::SeqCst)
+            ),
+        }
+    }
+    assert!(
+        spawner.starts.load(Ordering::SeqCst) <= 1,
+        "the second fetch started another app-server"
+    );
+}
+
 #[test]
 #[ignore = "live: starts this machine's codex app-server (manual smoke test)"]
 fn live_app_server_smoke() {
     let env = RealEnv;
-    let codex_home = env
-        .var("CODEX_HOME")
-        .filter(|v| !v.is_empty())
-        .map(PathBuf::from)
-        .or_else(|| env.home_dir().map(|h| h.join(".codex")))
-        .expect("a Codex folder");
+    let codex_home = live_codex_home(&env);
     let (clock, http, fs, secrets, spawner) = (
         RealClock,
         UreqHttp::new(),
