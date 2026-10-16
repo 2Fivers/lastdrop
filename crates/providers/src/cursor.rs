@@ -15,7 +15,10 @@
 //! meters `auto` and `api`; a plan that reports one total becomes `included`; on-demand spend
 //! against its limit becomes `on_demand`. All reset at the end of the billing cycle.
 
-use std::path::Path;
+use std::collections::HashMap;
+use std::ffi::OsString;
+use std::path::{Path, PathBuf};
+use std::sync::Mutex;
 use std::time::Duration;
 
 use jiff::{SignedDuration, Timestamp};
@@ -86,14 +89,17 @@ pub struct CursorUsage {
     pub pools: Vec<Pool>,
 }
 
-/// The Cursor provider.
-#[derive(Clone, Copy, Debug, Default)]
-pub struct CursorProvider;
+/// The Cursor provider. Remembers the last session fingerprint it read per database, so a read
+/// that fails while Cursor writes keeps the fingerprint an auth stop is waiting on.
+#[derive(Debug, Default)]
+pub struct CursorProvider {
+    fingerprints: Mutex<HashMap<PathBuf, CredentialFingerprint>>,
+}
 
 impl CursorProvider {
     /// The provider.
     pub fn new() -> CursorProvider {
-        CursorProvider
+        CursorProvider::default()
     }
 }
 
@@ -147,7 +153,10 @@ impl Provider for CursorProvider {
     }
 
     /// A hash of the session token itself: `state.vscdb` changes all the time while Cursor runs,
-    /// the token only when Cursor signs in again or renews it, which lifts the auth stop.
+    /// the token only when Cursor signs in again or renews it, which lifts the auth stop. Signed
+    /// out (no session, or Cursor not installed) is `token:none`, so signing in lifts the stop
+    /// too; a read that fails while Cursor writes keeps the last fingerprint read (else
+    /// `token:unreadable`), never none, which would stop the source for good.
     fn credential_fingerprint(
         &self,
         ctx: &FetchContext<'_>,
@@ -156,9 +165,31 @@ impl Provider for CursorProvider {
         let AccountSource::Cursor { state_db, .. } = account else {
             return None;
         };
-        let token = read_token(ctx, state_db).ok()?;
-        let hash = fnv1a64(&["cursor", token.expose()]);
-        Some(CredentialFingerprint(format!("token:{hash:016x}")))
+        let read = match read_token(ctx, state_db) {
+            Ok(token) => {
+                let hash = fnv1a64(&["cursor", token.expose()]);
+                Some(CredentialFingerprint(format!("token:{hash:016x}")))
+            }
+            Err(FetchError::Auth { .. } | FetchError::Unavailable { .. }) => {
+                Some(CredentialFingerprint("token:none".to_owned()))
+            }
+            Err(_) => None,
+        };
+        let mut known = self.fingerprints.lock().ok();
+        match read {
+            Some(fingerprint) => {
+                if let Some(known) = known.as_mut() {
+                    known.insert(state_db.clone(), fingerprint.clone());
+                }
+                Some(fingerprint)
+            }
+            None => Some(
+                known
+                    .as_ref()
+                    .and_then(|k| k.get(state_db).cloned())
+                    .unwrap_or_else(|| CredentialFingerprint("token:unreadable".to_owned())),
+            ),
+        }
     }
 
     /// `cursor`: the Cursor app renews its session when it starts.
@@ -178,11 +209,24 @@ impl Provider for CursorProvider {
 
 // ---- The session --------------------------------------------------------------------------------
 
-/// The session token from `state_db` (read-only):
+/// The session token from `state_db` and its write-ahead log `<state_db>-wal` (read-only):
 /// - no database → [`FetchError::Unavailable`] (Cursor not installed);
-/// - no token in it (signed out) → [`FetchError::Auth`];
-/// - unreadable (Cursor rewriting the page, or a damaged file) → [`FetchError::Transient`].
+/// - no token in it (signed out), twice in a row → [`FetchError::Auth`];
+/// - unreadable, or written while it was read (Cursor at work, or a damaged file) →
+///   [`FetchError::Transient`].
 pub fn read_token(ctx: &FetchContext<'_>, state_db: &Path) -> Result<SecretString, FetchError> {
+    match read_once(ctx, state_db)? {
+        Some(token) => Ok(token),
+        // A row missing for a moment (a checkpoint copying pages back) is read again once.
+        None => read_once(ctx, state_db)?.ok_or_else(|| {
+            log::info!("cursor: not signed in (no session in state.vscdb)");
+            FetchError::Auth { from: SOURCE }
+        }),
+    }
+}
+
+/// One read of the session token: `None` when there is no session row.
+fn read_once(ctx: &FetchContext<'_>, state_db: &Path) -> Result<Option<SecretString>, FetchError> {
     let file = ctx.fs.open_at(state_db).map_err(|e| {
         if e.kind() == std::io::ErrorKind::NotFound {
             FetchError::Unavailable {
@@ -204,13 +248,23 @@ pub fn read_token(ctx: &FetchContext<'_>, state_db: &Path) -> Result<SecretStrin
             retry_after: None,
         }
     };
-    let mut db = Db::open(file).map_err(unreadable)?;
+    let mut wal_path = OsString::from(state_db.as_os_str());
+    wal_path.push("-wal");
+    let wal = match ctx.fs.open_at(Path::new(&wal_path)) {
+        Ok(wal) => Some(wal),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
+        Err(e) => return Err(unreadable(e)),
+    };
+    let mut db = Db::open(file, wal).map_err(unreadable)?;
     let Some(root) = db.table_root(TABLE).map_err(unreadable)? else {
         return Err(unreadable(std::io::Error::other("no ItemTable")));
     };
-    let Some(mut value) = db.lookup(root, TOKEN_KEY).map_err(unreadable)? else {
-        log::info!("cursor: not signed in (no session in state.vscdb)");
-        return Err(FetchError::Auth { from: SOURCE });
+    let value = db.lookup(root, TOKEN_KEY).map_err(unreadable)?;
+    if db.changed().map_err(unreadable)? {
+        return Err(unreadable(std::io::Error::other("written while read")));
+    }
+    let Some(mut value) = value else {
+        return Ok(None);
     };
     let token = value
         .bytes()
@@ -218,10 +272,7 @@ pub fn read_token(ctx: &FetchContext<'_>, state_db: &Path) -> Result<SecretStrin
         // VS Code's storage may keep a string JSON-quoted.
         .map(|t| SecretString::new(t.trim().trim_matches('"').to_owned()));
     value.wipe();
-    match token {
-        Some(token) if !token.is_empty() => Ok(token),
-        _ => Err(FetchError::Auth { from: SOURCE }),
-    }
+    Ok(token.filter(|t| !t.is_empty()))
 }
 
 /// The JWT claims the cookie needs.
@@ -286,13 +337,13 @@ pub fn request(session: &SecretString, timeout: Duration) -> HttpRequest {
     }
 }
 
-/// 200 → [`parse_summary`]; 401/403 → Auth (the session is no longer valid); 429 → RateLimited;
-/// 5xx → Transient; anything else → Parse.
+/// 200 → [`parse_summary`]; 401 → Auth (the session is no longer valid); 403/429 →
+/// RateLimited (ARCHITECTURE "back off on 429/403"); 5xx → Transient; anything else → Parse.
 pub fn interpret(response: &HttpResponse, now: Timestamp) -> Result<CursorUsage, FetchError> {
     match response.status {
         200..=299 => parse_summary(&response.body),
-        401 | 403 => Err(FetchError::Auth { from: SOURCE }),
-        429 => Err(FetchError::RateLimited {
+        401 => Err(FetchError::Auth { from: SOURCE }),
+        403 | 429 => Err(FetchError::RateLimited {
             from: SOURCE,
             retry_after: response.retry_after(now),
         }),

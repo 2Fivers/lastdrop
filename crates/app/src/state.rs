@@ -456,8 +456,13 @@ pub fn lift_sign_in_stop(sources: &mut BTreeMap<SourceKey, SourceRuntime>, provi
 
 /// Applies a worker's result to its source (see [`AppState::apply_result`]). Returns the
 /// snapshot to record in history when a newer reading arrived.
-pub fn apply_to_source(source: &mut SourceRuntime, result: JobResult) -> Option<Snapshot> {
+pub fn apply_to_source(source: &mut SourceRuntime, mut result: JobResult) -> Option<Snapshot> {
     let min_interval = source.provider.min_interval();
+    // A provider that had a fingerprint and could not read one this time (a file being written)
+    // keeps the last one: none would stop an auth-stopped source for good (`Due::Never`).
+    if result.credential.is_none() {
+        result.credential.clone_from(&source.credential);
+    }
     source.credential.clone_from(&result.credential);
     let Some(outcome) = result.outcome else {
         // A probe found the credential unchanged: nothing was attempted.
@@ -663,9 +668,9 @@ impl AppState {
     ///   when `result.internet == Some(false)`), `failure_detail` = `FetchError::detail()`.
     /// - Probe that found the credential unchanged (`outcome: None`): only `credential` and
     ///   `in_flight` change; no attempt is recorded.
-    /// - Always: `credential` = `result.credential`; `refresh` via
-    ///   `lastdrop_core::refresh::record` (not for an unchanged probe), `in_flight` cleared,
-    ///   `status.next_try` from the next plan.
+    /// - Always: `credential` = `result.credential` (the previous one when the job read none);
+    ///   `refresh` via `lastdrop_core::refresh::record` (not for an unchanged probe), `in_flight`
+    ///   cleared, `status.next_try` from the next plan.
     ///
     /// The job's identity reading (accounts-spec §2) is taken first: when the folder is signed in
     /// to another account now (§5), the source starts over, its history is retired and what the
@@ -1691,6 +1696,25 @@ pub(crate) mod tests {
         );
         writer.shutdown();
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_job_that_reads_no_credential_keeps_the_last_one() {
+        let (_, mut sources) = two_codex();
+        let source = sources.get_mut(&codex()).expect("source");
+        apply_to_source(source, result(&codex(), None));
+        assert_eq!(
+            source.credential,
+            Some(CredentialFingerprint("v1".to_owned()))
+        );
+        let mut unreadable = result(&codex(), None);
+        unreadable.credential = None;
+        apply_to_source(source, unreadable);
+        assert_eq!(
+            source.credential,
+            Some(CredentialFingerprint("v1".to_owned())),
+            "an auth-stopped source keeps being probed"
+        );
     }
 
     #[test]

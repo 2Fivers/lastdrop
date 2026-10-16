@@ -98,6 +98,70 @@ pub(crate) fn wipe(bytes: &mut [u8]) {
     std::hint::black_box(&*bytes);
 }
 
+/// A map value that is read as `T` when it is an object and as `None` when it is anything else
+/// (a string, a number, a list), so one odd entry of a credentials file never fails the whole file.
+/// `T`'s own fields must be lenient for an object to always read.
+pub(crate) struct Object<T>(pub(crate) Option<T>);
+
+impl<'de, T: Deserialize<'de>> Deserialize<'de> for Object<T> {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Object<T>, D::Error> {
+        struct ObjectVisitor<T>(std::marker::PhantomData<T>);
+
+        impl<'de, T: Deserialize<'de>> Visitor<'de> for ObjectVisitor<T> {
+            type Value = Object<T>;
+
+            fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                f.write_str("any value")
+            }
+
+            fn visit_map<A: MapAccess<'de>>(self, map: A) -> Result<Object<T>, A::Error> {
+                T::deserialize(de::value::MapAccessDeserializer::new(map)).map(|v| Object(Some(v)))
+            }
+
+            fn visit_seq<A: SeqAccess<'de>>(self, mut seq: A) -> Result<Object<T>, A::Error> {
+                while seq.next_element::<IgnoredAny>()?.is_some() {}
+                Ok(Object(None))
+            }
+
+            fn visit_bool<E: de::Error>(self, _: bool) -> Result<Object<T>, E> {
+                Ok(Object(None))
+            }
+
+            fn visit_i64<E: de::Error>(self, _: i64) -> Result<Object<T>, E> {
+                Ok(Object(None))
+            }
+
+            fn visit_u64<E: de::Error>(self, _: u64) -> Result<Object<T>, E> {
+                Ok(Object(None))
+            }
+
+            fn visit_f64<E: de::Error>(self, _: f64) -> Result<Object<T>, E> {
+                Ok(Object(None))
+            }
+
+            fn visit_str<E: de::Error>(self, _: &str) -> Result<Object<T>, E> {
+                Ok(Object(None))
+            }
+
+            fn visit_unit<E: de::Error>(self) -> Result<Object<T>, E> {
+                Ok(Object(None))
+            }
+        }
+
+        deserializer.deserialize_any(ObjectVisitor(std::marker::PhantomData))
+    }
+}
+
+/// Takes the text out of a field as a trimmed [`SecretString`], overwriting the original string
+/// (`None` when it is missing or blank).
+pub(crate) fn take_secret(text: &mut Text) -> Option<lastdrop_core::secret::SecretString> {
+    let raw = text.0.take()?;
+    let secret = lastdrop_core::secret::SecretString::new(raw.trim().to_owned());
+    // Back into a `Text`, whose drop overwrites it.
+    drop(Text(Some(raw)));
+    (!secret.is_empty()).then_some(secret)
+}
+
 /// The payload of a JWT (`header.payload.signature`, base64url) as bytes: read, not verified.
 /// `None` when it is not a JWT. The caller wipes the bytes once parsed.
 pub(crate) fn jwt_payload(token: &str) -> Option<Vec<u8>> {

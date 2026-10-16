@@ -66,6 +66,76 @@ fn cursor_fakes(db: &[u8]) -> Fakes {
 
 const SIGNED_IN: &[u8] = include_bytes!("fixtures/cursor/state-signed-in.vscdb");
 const SIGNED_OUT: &[u8] = include_bytes!("fixtures/cursor/state-signed-out.vscdb");
+const WAL_DB: &[u8] = include_bytes!("fixtures/cursor/state-wal.vscdb");
+const WAL_LOG: &[u8] = include_bytes!("fixtures/cursor/state-wal.vscdb-wal");
+const CYCLE: &[u8] = include_bytes!("fixtures/cursor/state-cycle.vscdb");
+
+#[test]
+fn cursor_reads_a_session_still_in_the_write_ahead_log() {
+    // Without its log the file has no session yet: signed out.
+    let f = cursor_fakes(WAL_DB);
+    let ctx = f.context(budget());
+    assert!(matches!(
+        cursor::read_token(&ctx, &cursor_db()),
+        Err(FetchError::Auth { .. })
+    ));
+    // With it, the committed frames win over the file's pages.
+    let mut log = cursor_db().into_os_string();
+    log.push("-wal");
+    f.fs.add_file(PathBuf::from(log.clone()), WAL_LOG.to_vec(), now());
+    assert_eq!(
+        cursor::read_token(&ctx, &cursor_db())
+            .expect("token")
+            .expose(),
+        CURSOR_TOKEN
+    );
+    // A log whose last frame is damaged keeps only what was committed before it.
+    let mut torn = WAL_LOG.to_vec();
+    let last = torn.len() - 10;
+    torn[last] ^= 0xff;
+    f.fs.add_file(PathBuf::from(log), torn, now());
+    assert!(cursor::read_token(&ctx, &cursor_db()).is_err());
+}
+
+#[test]
+fn cursor_stops_at_a_page_that_is_reached_twice() {
+    let f = cursor_fakes(CYCLE);
+    let ctx = f.context(budget());
+    assert!(matches!(
+        cursor::read_token(&ctx, &cursor_db()),
+        Err(FetchError::Transient { .. })
+    ));
+}
+
+#[test]
+fn cursor_always_has_a_credential_fingerprint() {
+    let provider = cursor::CursorProvider::new();
+    let signed_in = cursor_fakes(SIGNED_IN);
+    let ctx = signed_in.context(budget());
+    let current = provider
+        .credential_fingerprint(&ctx, &cursor_account())
+        .expect("fingerprint");
+    assert!(current.0.starts_with("token:") && current.0 != "token:none");
+    // Signed out: a fingerprint of its own, so signing in lifts an auth stop.
+    let signed_out = cursor_fakes(SIGNED_OUT);
+    let ctx = signed_out.context(budget());
+    assert_eq!(
+        provider
+            .credential_fingerprint(&ctx, &cursor_account())
+            .map(|f| f.0),
+        Some("token:none".to_owned())
+    );
+    // Unreadable for a moment: the last one read, never none.
+    let provider = cursor::CursorProvider::new();
+    let ctx = signed_in.context(budget());
+    let known = provider.credential_fingerprint(&ctx, &cursor_account());
+    let torn = cursor_fakes(b"SQLite format 3\0 but cut short");
+    let ctx = torn.context(budget());
+    assert_eq!(
+        provider.credential_fingerprint(&ctx, &cursor_account()),
+        known
+    );
+}
 
 #[test]
 fn cursor_reads_its_session_from_the_database_read_only() {
@@ -184,7 +254,7 @@ fn cursor_falls_back_to_one_total_and_maps_errors() {
         cursor::parse_summary(b"{}"),
         Err(FetchError::Parse { .. })
     ));
-    for (status, auth) in [(401, true), (403, true), (429, false)] {
+    for (status, auth) in [(401, true), (403, false), (429, false)] {
         let r = cursor::interpret(&HttpResponse::new(status, "{}"), now());
         assert_eq!(matches!(r, Err(FetchError::Auth { .. })), auth, "{status}");
     }
@@ -303,6 +373,20 @@ fn grok_reads_zero_from_an_empty_period_and_stops_on_a_missing_sign_in() {
         grok::read_sign_in(&ctx, &grok_file()),
         Err(FetchError::Parse { .. })
     ));
+
+    // An expired sign-in never wins over one without an expiry; a value that is not a sign-in
+    // (a version number) is skipped, not fatal.
+    f.fs.add_file(
+        grok_file(),
+        r#"{ "version": 2,
+             "https://auth.x.ai::old": { "key": "test-old-not-real", "auth_mode": "oidc",
+                                        "expires_at": "2026-10-01T00:00:00Z" },
+             "https://accounts.x.ai/sign-in": { "key": "test-legacy-not-real", "user_id": " " } }"#,
+        now(),
+    );
+    let sign_in = grok::read_sign_in(&ctx, &grok_file()).expect("sign-in");
+    assert_eq!(sign_in.token.expose(), "test-legacy-not-real");
+    assert!(sign_in.user_id.is_none(), "a blank user id is none");
 }
 
 // ---- OpenCode Go ----------------------------------------------------------------------------------
@@ -400,6 +484,20 @@ fn opencode_go_takes_opencodes_own_key_and_tells_a_missing_subscription() {
         opencode_go::parse_usage(br#"{ "usage": { "weekly": { "status": "ok" } } }"#),
         Err(FetchError::Parse { .. })
     ));
+
+    // The fingerprint follows the key in use: the stored one when there is one.
+    let provider = opencode_go::OpenCodeGoProvider::new();
+    let from_file = provider.credential_fingerprint(&ctx, &opencode_account());
+    let mut f = Fakes::new(now());
+    f.secrets = f
+        .secrets
+        .with(&opencode_credential(), "test-go-key-not-real");
+    let ctx = f.context(budget());
+    let stored = provider
+        .credential_fingerprint(&ctx, &opencode_account())
+        .expect("fingerprint");
+    assert!(stored.0.starts_with("key:"));
+    assert_ne!(Some(stored), from_file);
 }
 
 // ---- Antigravity ----------------------------------------------------------------------------------
@@ -448,17 +546,7 @@ fn antigravity_runs_agy_in_print_mode_and_reads_its_pools() {
     let spawned = f.spawner.spawned();
     assert_eq!(spawned[0].program, agy());
     assert_eq!(spawned[0].args, ["--version"]);
-    assert_eq!(
-        spawned[1].args,
-        [
-            "-p",
-            "/usage",
-            "--output-format",
-            "json",
-            "--print-timeout",
-            "15s"
-        ]
-    );
+    assert_eq!(spawned[1].args, ["-p", "/usage", "--output-format", "json"]);
     assert!(
         spawned[1]
             .env
@@ -487,6 +575,30 @@ fn antigravity_runs_agy_in_print_mode_and_reads_its_pools() {
 }
 
 #[test]
+fn antigravity_takes_a_complete_report_without_waiting_for_the_pipe_to_close() {
+    let f = agy_fakes();
+    f.spawner.script(vec![
+        FakeLine::Line("agy 1.2.15".to_owned()),
+        FakeLine::Timeout,
+    ]);
+    f.spawner.script(
+        AGY_REPORT
+            .lines()
+            .map(|l| FakeLine::Line(l.to_owned()))
+            .chain([FakeLine::Timeout])
+            .collect(),
+    );
+    let ctx = f.context(budget());
+    let account = AccountSource::Antigravity {
+        account: AccountKey::primary(),
+    };
+    let snap = antigravity::AntigravityProvider::new()
+        .fetch(&ctx, &account)
+        .expect("snapshot");
+    assert_eq!(snap.meters.len(), 3);
+}
+
+#[test]
 fn antigravity_refuses_an_old_agy_and_reads_errors() {
     let f = agy_fakes();
     f.spawner
@@ -504,6 +616,12 @@ fn antigravity_refuses_an_old_agy_and_reads_errors() {
     assert_eq!(antigravity::parse_version("agy 1.2.15"), Some((1, 2, 15)));
     assert_eq!(antigravity::parse_version("v1.1.11"), Some((1, 1, 11)));
     assert_eq!(antigravity::parse_version("1.2"), None);
+    // Another program's version after agy's never counts.
+    assert_eq!(
+        antigravity::parse_version("agy/1.0.3 win32-x64 node-v20.11.1"),
+        Some((1, 0, 3))
+    );
+    assert_eq!(antigravity::parse_version("built with node-v20.11.1"), None);
     assert!(matches!(
         antigravity::parse_report(r#"{"status":"ERROR","message":"Please sign in to continue"}"#),
         Err(FetchError::Auth { .. })

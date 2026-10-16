@@ -25,6 +25,7 @@ use std::time::{Duration, Instant};
 
 use lastdrop_core::grammar::strings::text;
 use lastdrop_core::grammar::{Language, Msg, Strings};
+use lastdrop_core::model::ProviderId;
 use lastdrop_win::single_instance::{self, Instance, InstanceGuard};
 use slint::ComponentHandle;
 use slint::winit_030::WinitWindowAccessor;
@@ -102,16 +103,39 @@ impl DialogKind {
 pub struct Changes {
     /// `settings.json` was written (Apply): re-read and apply it.
     pub settings: bool,
-    /// An API key (Meshy, OpenCode Go) was saved or removed: lift those services' sign-in stop and
-    /// read them again.
-    pub api_key: bool,
+    /// Meshy's API key was saved or removed: lift Meshy's sign-in stop and read it again.
+    pub meshy_key: bool,
+    /// OpenCode Go's API key was saved or removed: the same for OpenCode Go.
+    pub opencode_go_key: bool,
 }
 
 impl Changes {
     /// The flag of [`Changes::settings`].
     const SETTINGS: usize = 1;
-    /// The flag of [`Changes::api_key`] (the bit Meshy's key used before; same meaning).
-    const API_KEY: usize = 2;
+    /// The flag of [`Changes::meshy_key`].
+    const MESHY_KEY: usize = 2;
+    /// The flag of [`Changes::opencode_go_key`].
+    const OPENCODE_GO_KEY: usize = 4;
+
+    /// The change of `provider`'s API key; nothing for a service without one.
+    pub fn key_of(provider: ProviderId) -> Changes {
+        Changes {
+            meshy_key: provider == ProviderId::Meshy,
+            opencode_go_key: provider == ProviderId::OpenCodeGo,
+            ..Changes::default()
+        }
+    }
+
+    /// The services whose API key changed.
+    pub fn keys(self) -> Vec<ProviderId> {
+        [
+            (self.meshy_key, ProviderId::Meshy),
+            (self.opencode_go_key, ProviderId::OpenCodeGo),
+        ]
+        .into_iter()
+        .filter_map(|(changed, p)| changed.then_some(p))
+        .collect()
+    }
 
     /// The flags as a `WPARAM`.
     pub fn to_wparam(self) -> usize {
@@ -119,8 +143,11 @@ impl Changes {
         if self.settings {
             flags |= Changes::SETTINGS;
         }
-        if self.api_key {
-            flags |= Changes::API_KEY;
+        if self.meshy_key {
+            flags |= Changes::MESHY_KEY;
+        }
+        if self.opencode_go_key {
+            flags |= Changes::OPENCODE_GO_KEY;
         }
         flags
     }
@@ -129,7 +156,8 @@ impl Changes {
     pub fn from_wparam(wparam: usize) -> Changes {
         Changes {
             settings: wparam & Changes::SETTINGS != 0,
-            api_key: wparam & Changes::API_KEY != 0,
+            meshy_key: wparam & Changes::MESHY_KEY != 0,
+            opencode_go_key: wparam & Changes::OPENCODE_GO_KEY != 0,
         }
     }
 }
@@ -398,8 +426,12 @@ mod tests {
     #[test]
     fn change_flags_round_trip_and_ignore_unknown_bits() {
         for settings in [false, true] {
-            for api_key in [false, true] {
-                let changes = Changes { settings, api_key };
+            for meshy_key in [false, true] {
+                let changes = Changes {
+                    settings,
+                    meshy_key,
+                    opencode_go_key: !meshy_key,
+                };
                 assert_eq!(Changes::from_wparam(changes.to_wparam()), changes);
             }
         }
@@ -408,15 +440,20 @@ mod tests {
             Changes::from_wparam(1 | 8),
             Changes {
                 settings: true,
-                api_key: false
+                ..Changes::default()
             }
         );
         assert_eq!(
             Changes::from_wparam(2),
             Changes {
-                settings: false,
-                api_key: true
+                meshy_key: true,
+                ..Changes::default()
             }
         );
+        assert_eq!(
+            Changes::key_of(ProviderId::OpenCodeGo).keys(),
+            [ProviderId::OpenCodeGo]
+        );
+        assert_eq!(Changes::key_of(ProviderId::Claude), Changes::default());
     }
 }

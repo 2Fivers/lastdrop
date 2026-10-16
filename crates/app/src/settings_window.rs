@@ -1125,10 +1125,7 @@ fn store_key(session: &Session, row: i32, key: &SharedString) {
     match stored {
         Ok(()) => {
             log::info!("{provider:?} API key stored");
-            dialog::notify(Changes {
-                api_key: true,
-                ..Changes::default()
-            });
+            dialog::notify(Changes::key_of(provider));
             edit(|draft| {
                 if let Some(p) = draft.settings.provider_mut(provider) {
                     p.enabled = true;
@@ -1175,10 +1172,7 @@ fn clear_key(session: &Session, row: i32) {
         Ok(()) => {
             log::info!("{provider:?} API key removed");
             set_key_stored(session, provider, false);
-            dialog::notify(Changes {
-                api_key: true,
-                ..Changes::default()
-            });
+            dialog::notify(Changes::key_of(provider));
             strings.template(Msg::SettingsKeyRemoved).to_owned()
         }
         Err(e) => {

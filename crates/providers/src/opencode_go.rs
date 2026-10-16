@@ -31,7 +31,7 @@ use crate::claude::json::instant_of;
 use crate::error::FetchError;
 use crate::fingerprint::file_fingerprint;
 use crate::io::{HeaderValue, HttpRequest, HttpResponse, Method};
-use crate::lenient::{Text, non_empty, wipe};
+use crate::lenient::{Object, Text, non_empty, take_secret, wipe};
 use crate::{FetchContext, Provider};
 
 /// The usage endpoint (GET).
@@ -151,17 +151,30 @@ impl Provider for OpenCodeGoProvider {
         MIN_INTERVAL
     }
 
-    /// OpenCode's `auth.json`: a key added there (`/connect`) lifts the auth stop. A key stored in
-    /// Lastdrop's settings lifts it through the settings window, as Meshy's does.
+    /// The key in use: a hash of the key stored in Lastdrop's settings when there is one (a new
+    /// key there lifts the auth stop; so does the settings window, as for Meshy), else OpenCode's
+    /// `auth.json` (a key added there with `/connect` lifts it). Other changes to `auth.json`
+    /// (another provider's sign-in) do not lift a stop caused by the stored key.
     fn credential_fingerprint(
         &self,
         ctx: &FetchContext<'_>,
         account: &AccountSource,
     ) -> Option<CredentialFingerprint> {
-        let AccountSource::OpenCodeGo { auth_file, .. } = account else {
+        let AccountSource::OpenCodeGo {
+            credential,
+            auth_file,
+            ..
+        } = account
+        else {
             return None;
         };
-        file_fingerprint(ctx, auth_file)
+        match ctx.secrets.get(credential) {
+            Ok(Some(key)) if !key.is_empty() => {
+                let hash = lastdrop_core::model::fnv1a64(&["opencode_go", key.expose()]);
+                Some(CredentialFingerprint(format!("key:{hash:016x}")))
+            }
+            _ => file_fingerprint(ctx, auth_file),
+        }
     }
 }
 
@@ -178,64 +191,14 @@ struct AuthEntry {
 /// `None` when there is no file, no `opencode-go` API entry, or the file is not understood.
 fn key_of_opencode(ctx: &FetchContext<'_>, auth_file: &Path) -> Option<SecretString> {
     let mut bytes = ctx.fs.read(auth_file, MAX_AUTH_BYTES).ok()?;
-    let parsed = serde_json::from_slice::<BTreeMap<String, Lenient>>(&bytes);
+    let parsed = serde_json::from_slice::<BTreeMap<String, Object<AuthEntry>>>(&bytes);
     wipe(&mut bytes);
     let mut store = parsed.ok()?;
     let mut entry = store.remove(AUTH_ENTRY)?.0?;
     if non_empty(&entry.kind.0) != Some("api") {
         return None;
     }
-    let key = entry.key.0.take()?;
-    let key = SecretString::new(key.trim().to_owned());
-    (!key.is_empty()).then_some(key)
-}
-
-/// An entry of another shape (another provider's OAuth sign-in) reads as `None`, so it never
-/// fails the file.
-struct Lenient(Option<AuthEntry>);
-
-impl<'de> Deserialize<'de> for Lenient {
-    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Lenient, D::Error> {
-        // Every field of `AuthEntry` is lenient, so an object always reads; anything else
-        // (a string, a list) is skipped.
-        struct V;
-        impl<'de> serde::de::Visitor<'de> for V {
-            type Value = Lenient;
-            fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-                f.write_str("an auth entry")
-            }
-            fn visit_map<A: serde::de::MapAccess<'de>>(self, map: A) -> Result<Lenient, A::Error> {
-                AuthEntry::deserialize(serde::de::value::MapAccessDeserializer::new(map))
-                    .map(|e| Lenient(Some(e)))
-            }
-            fn visit_unit<E: serde::de::Error>(self) -> Result<Lenient, E> {
-                Ok(Lenient(None))
-            }
-            fn visit_bool<E: serde::de::Error>(self, _: bool) -> Result<Lenient, E> {
-                Ok(Lenient(None))
-            }
-            fn visit_i64<E: serde::de::Error>(self, _: i64) -> Result<Lenient, E> {
-                Ok(Lenient(None))
-            }
-            fn visit_u64<E: serde::de::Error>(self, _: u64) -> Result<Lenient, E> {
-                Ok(Lenient(None))
-            }
-            fn visit_f64<E: serde::de::Error>(self, _: f64) -> Result<Lenient, E> {
-                Ok(Lenient(None))
-            }
-            fn visit_str<E: serde::de::Error>(self, _: &str) -> Result<Lenient, E> {
-                Ok(Lenient(None))
-            }
-            fn visit_seq<A: serde::de::SeqAccess<'de>>(
-                self,
-                mut seq: A,
-            ) -> Result<Lenient, A::Error> {
-                while seq.next_element::<serde::de::IgnoredAny>()?.is_some() {}
-                Ok(Lenient(None))
-            }
-        }
-        deserializer.deserialize_any(V)
-    }
+    take_secret(&mut entry.key)
 }
 
 /// `GET USAGE_URL` with `Authorization: Bearer <key>` (a secret header).

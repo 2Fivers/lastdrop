@@ -4,3 +4,4 @@
 *.exe binary
 *.br binary
 *.vscdb binary
+*.vscdb-wal binary

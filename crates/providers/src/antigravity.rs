@@ -49,9 +49,6 @@ pub const MIN_VERSION: (u32, u32, u32) = (1, 1, 11);
 /// How long `agy --version` may take.
 pub const VERSION_TIMEOUT: Duration = Duration::from_secs(3);
 
-/// agy's own limit on the print-mode run (`--print-timeout`), inside the fetch's budget.
-pub const PRINT_TIMEOUT: &str = "15s";
-
 /// The most output read (agy's answer is a few kilobytes).
 pub const MAX_OUTPUT: usize = 1 << 20;
 
@@ -204,16 +201,10 @@ pub fn find_agy(ctx: &FetchContext<'_>) -> Option<PathBuf> {
     })
 }
 
-/// The print-mode arguments.
+/// The print-mode arguments. No `--print-timeout`: it may be newer than 1.1.11, and the fetch's
+/// own deadline ends a run that takes too long.
 pub fn usage_args() -> Vec<&'static str> {
-    vec![
-        "-p",
-        "/usage",
-        "--output-format",
-        "json",
-        "--print-timeout",
-        PRINT_TIMEOUT,
-    ]
+    vec!["-p", "/usage", "--output-format", "json"]
 }
 
 /// How agy runs: without the outside sign-in variable, in its own folder (so no project's
@@ -272,6 +263,11 @@ fn run(
                 }
                 output.push_str(&line);
                 output.push('\n');
+                // Done once the answer is complete: an MCP server agy started may hold the pipe
+                // open after agy is done.
+                if complete(&output) {
+                    break Ok(output);
+                }
             }
             Ok(None) => break Ok(output),
             Err(e) if e.kind() == ErrorKind::TimedOut => break Err(timed_out()),
@@ -288,22 +284,49 @@ fn run(
     result
 }
 
-/// `x.y.z` in a line (`agy 1.2.15`, `1.2.15`), strictly three numbers.
+/// Whether `output` holds a whole answer: a version line, or a JSON object that parses.
+fn complete(output: &str) -> bool {
+    let text = output.trim();
+    if text.lines().count() == 1 && parse_version(text).is_some() {
+        return true;
+    }
+    match text.find('{') {
+        Some(start) if text.ends_with('}') => {
+            serde_json::from_str::<serde::de::IgnoredAny>(&text[start..]).is_ok()
+        }
+        _ => false,
+    }
+}
+
+/// agy's own version in a line: the first token that is `x.y.z` (strictly three numbers), alone
+/// or after `agy/`, `agy-` or `v` (`agy 1.2.15`, `v1.2.15`, `agy/1.2.15 win32-x64`). Tokens after
+/// one naming another program (`node-v20.11.1`) are never taken.
 pub fn parse_version(line: &str) -> Option<(u32, u32, u32)> {
-    line.split(|c: char| c.is_whitespace() || c == 'v' || c == ',')
-        .find_map(|token| {
-            let mut parts = token.split('.');
-            let (a, b, c) = (parts.next()?, parts.next()?, parts.next()?);
-            if parts.next().is_some() {
-                return None;
-            }
-            let number = |s: &str| {
-                (!s.is_empty() && s.bytes().all(|b| b.is_ascii_digit()))
-                    .then(|| s.parse::<u32>().ok())
-                    .flatten()
-            };
-            Some((number(a)?, number(b)?, number(c)?))
-        })
+    let number = |s: &str| {
+        (!s.is_empty() && s.bytes().all(|b| b.is_ascii_digit()))
+            .then(|| s.parse::<u32>().ok())
+            .flatten()
+    };
+    for token in line.split(|c: char| c.is_whitespace() || c == ',') {
+        let lower = token.to_ascii_lowercase();
+        if lower.starts_with("node") || lower.starts_with("go") || lower.starts_with("electron") {
+            return None;
+        }
+        let bare = ["agy/", "agy-", "v"]
+            .iter()
+            .find_map(|p| lower.strip_prefix(p))
+            .unwrap_or(&lower);
+        let mut parts = bare.split('.');
+        let (Some(a), Some(b), Some(c), None) =
+            (parts.next(), parts.next(), parts.next(), parts.next())
+        else {
+            continue;
+        };
+        if let (Some(a), Some(b), Some(c)) = (number(a), number(b), number(c)) {
+            return Some((a, b, c));
+        }
+    }
+    None
 }
 
 // ---- The report ---------------------------------------------------------------------------------

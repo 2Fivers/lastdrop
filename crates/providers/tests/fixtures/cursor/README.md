@@ -1,15 +1,17 @@
 # Fixtures: cursor
 
-Two invented copies of the Cursor app's `state.vscdb` (an SQLite database), for the read-only
+Invented copies of the Cursor app's `state.vscdb` (an SQLite database), for the read-only
 reader in `src/sqlite.rs` and `cursor::read_token`:
 
 | File | Shows |
 |---|---|
 | `state-signed-in.vscdb` | `ItemTable(key, value)` with 300 filler rows (so the table has interior pages), a 5,000-byte value (overflow pages), an invented session under `cursorAuth/accessToken` and an invented `cursorAuth/cachedEmail`, plus a `cursorDiskKV` table as noise |
 | `state-signed-out.vscdb` | the same without the `cursorAuth/*` rows |
+| `state-wal.vscdb` + `state-wal.vscdb-wal` | a database in WAL mode whose session is only in the write-ahead log (made with `wal_autocheckpoint = 0`, a `TRUNCATE` checkpoint of the filler rows, then the session committed and both files copied while the connection was open) |
+| `state-cycle.vscdb` | `state-signed-in.vscdb` with `ItemTable`'s interior root page listing itself as its first child (a damaged file the walk must stop on) |
 
 **Every value here is invented.** The files were made with Python's `sqlite3` module (page size
-1024, rollback journal, `VACUUM`ed), never copied from a machine: the session is an unsigned JWT
+1024; the first two in rollback mode and `VACUUM`ed), never copied from a machine: the session is an unsigned JWT
 `{"sub": "github|user_test0000000000000000", "exp": 4102444800, ...}` with the signature
 `test-signature-not-real`, the address is under `example.invalid`. The script, for regenerating
 them:

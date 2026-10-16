@@ -35,7 +35,7 @@ use crate::claude::json::instant_of;
 use crate::error::FetchError;
 use crate::fingerprint::file_fingerprint;
 use crate::io::{HeaderValue, HttpRequest, HttpResponse, Method, TerminalCommand};
-use crate::lenient::{Text, non_empty, wipe};
+use crate::lenient::{Object, Text, non_empty, take_secret, wipe};
 use crate::{FetchContext, Provider};
 
 /// The billing endpoint (GET), as the Grok CLI calls it.
@@ -231,12 +231,17 @@ pub fn read_sign_in(ctx: &FetchContext<'_>, auth_file: &Path) -> Result<SignIn, 
             });
         }
     };
-    let parsed = serde_json::from_slice::<std::collections::BTreeMap<String, Entry>>(&bytes);
+    let parsed =
+        serde_json::from_slice::<std::collections::BTreeMap<String, Object<Entry>>>(&bytes);
     wipe(&mut bytes);
     let store = parsed.map_err(|_| FetchError::Parse {
         from: SOURCE,
         detail: format!("the Grok CLI's {AUTH_FILE} is not understood"),
     })?;
+    let store = store
+        .into_iter()
+        .filter_map(|(scope, entry)| Some((scope, entry.0?)))
+        .collect();
     choose(store, ctx.clock.now())
 }
 
@@ -248,34 +253,36 @@ fn choose(
     let expiry = |e: &Entry| {
         non_empty(&e.expires_at.0).and_then(|t| instant_of(&Value::String(t.to_owned())))
     };
-    let mut best: Option<(Option<Timestamp>, Entry)> = None;
+    // A current sign-in first, then one without an expiry, then an expired one; the latest
+    // expiry within each.
+    let rank = |expires: Option<Timestamp>| match expires {
+        Some(t) if t.duration_since(now) > EXPIRY_MARGIN => (2, Some(t)),
+        None => (1, None),
+        Some(t) => (0, Some(t)),
+    };
+    let mut best: Option<((u8, Option<Timestamp>), Entry)> = None;
     for (scope, entry) in store {
         let api_key = scope == API_KEY_SCOPE || non_empty(&entry.auth_mode.0) == Some("api_key");
         if api_key || non_empty(&entry.key.0).is_none() {
             continue;
         }
-        let expires = expiry(&entry);
-        let better = best.as_ref().is_none_or(|(b, _)| expires > *b);
-        if better {
-            best = Some((expires, entry));
+        let ranked = rank(expiry(&entry));
+        if best.as_ref().is_none_or(|(b, _)| ranked > *b) {
+            best = Some((ranked, entry));
         }
     }
-    let Some((expires, mut entry)) = best else {
+    let Some(((current, _), mut entry)) = best else {
         log::info!("grok: no subscription sign-in in {AUTH_FILE}");
         return Err(FetchError::Auth { from: SOURCE });
     };
-    if expires.is_some_and(|t| t.duration_since(now) <= EXPIRY_MARGIN) {
+    if current == 0 {
         log::info!("grok: the sign-in has expired; the Grok CLI renews it when it next runs");
         return Err(FetchError::Auth { from: SOURCE });
     }
+    let token = take_secret(&mut entry.key).ok_or(FetchError::Auth { from: SOURCE })?;
     Ok(SignIn {
-        token: SecretString::new(entry.key.0.take().unwrap_or_default().trim().to_owned()),
-        user_id: entry
-            .user_id
-            .0
-            .take()
-            .filter(|u| !u.trim().is_empty())
-            .map(SecretString::new),
+        token,
+        user_id: take_secret(&mut entry.user_id),
     })
 }
 

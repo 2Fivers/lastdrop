@@ -75,6 +75,8 @@ of the reference tools was copied, so their notices do not apply to it.
   `cursorAuth/accessToken`, an HS256 JWT that lives 60 days. Nobody renews it but the Cursor app.
   The file can be 1.6 GB: Lastdrop reads it page by page with its own read-only SQLite reader,
   never copies it (CodeZeno copies the whole file to `%TEMP%` on any read error).
+  The database is in WAL mode (header bytes 18–19 = 2): a renewed token can sit in
+  `state.vscdb-wal` until a checkpoint, so the reader takes the log's committed frames too.
 - Answer: `billingCycleStart`, `billingCycleEnd`, `membershipType`, `individualUsage.plan
   {used, limit (cents), autoPercentUsed, apiPercentUsed, totalPercentUsed}`,
   `individualUsage.onDemand {enabled, used, limit}`, `individualUsage.overall` (enterprise
