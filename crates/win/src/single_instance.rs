@@ -24,7 +24,7 @@ use windows::Win32::Foundation::{
     HWND, LPARAM, LRESULT, SetLastError, WIN32_ERROR, WPARAM,
 };
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
-use windows::Win32::System::Threading::CreateMutexW;
+use windows::Win32::System::Threading::{CreateMutexW, OpenMutexW, SYNCHRONIZATION_SYNCHRONIZE};
 use windows::Win32::UI::WindowsAndMessaging::{
     AllowSetForegroundWindow, ChangeWindowMessageFilterEx, CreateWindowExW, DefWindowProcW,
     DestroyWindow, FindWindowExW, GWLP_USERDATA, GetWindowLongPtrW, GetWindowThreadProcessId,
@@ -84,6 +84,21 @@ pub fn acquire() -> std::io::Result<Instance> {
 /// dialog listener ([`InstanceGuard::listen_for`]).
 pub fn acquire_dialog() -> std::io::Result<Instance> {
     acquire_named(DIALOG_MUTEX_NAME, DIALOG_LISTENER_CLASS, DIALOG_MESSAGE)
+}
+
+/// Whether the app (the tray process) runs in this session: its mutex exists. For the installer,
+/// which waits for it to quit before replacing `lastdrop.exe` (updates-spec §2).
+pub fn app_running() -> bool {
+    let name = wide(MUTEX_NAME);
+    // SAFETY: opening a named mutex for synchronization only; the handle is closed at once.
+    match unsafe { OpenMutexW(SYNCHRONIZATION_SYNCHRONIZE, false, PCWSTR(name.as_ptr())) } {
+        Ok(handle) => {
+            // SAFETY: the handle just opened.
+            let _ = unsafe { CloseHandle(handle) };
+            true
+        }
+        Err(_) => false,
+    }
 }
 
 /// From a second instance: asks the first to open its flyout. `Ok(false)` when no listener was

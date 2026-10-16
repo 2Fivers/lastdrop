@@ -65,12 +65,36 @@ pub struct Settings {
     pub hotkey: Option<Hotkey>,
     /// Windows notifications at levels, when used up and on resets (N§2).
     pub notifications: NotificationSettings,
+    /// Updates (updates-spec §1).
+    pub updates: UpdateSettings,
     /// Hide personal info (accounts-spec §4): no e-mail address is shown anywhere; accounts
     /// without an alias are `Account 1`, `Account 2`. Default off.
     pub hide_personal_info: bool,
     /// Unknown fields.
     #[serde(flatten)]
     pub extra: Extra,
+}
+
+/// Updates (updates-spec §1).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct UpdateSettings {
+    /// Ask GitHub once a day whether a newer Lastdrop is out. On by default; it is the only
+    /// request Lastdrop makes that is not to a service whose usage it reads, and it sends
+    /// nothing about the user (the user agent names the version).
+    pub check: bool,
+    /// Unknown fields.
+    #[serde(flatten)]
+    pub extra: Extra,
+}
+
+impl Default for UpdateSettings {
+    fn default() -> UpdateSettings {
+        UpdateSettings {
+            check: true,
+            extra: Extra::new(),
+        }
+    }
 }
 
 /// What Lastdrop notifies about (N§2). Every notice is on by default.
@@ -167,6 +191,7 @@ impl Default for Settings {
             language: None,
             hotkey: None,
             notifications: NotificationSettings::default(),
+            updates: UpdateSettings::default(),
             hide_personal_info: false,
             extra: Extra::new(),
         }

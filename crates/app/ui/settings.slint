@@ -80,6 +80,10 @@ export struct SettingsTexts {
     theme: string,
     theme-studio: string,
     theme-hint: string,
+    updates: string,
+    updates-check: string,
+    updates-now: string,
+    updates-hint: string,
     readout: string,
     readout-show: string,
     readout-every: string,
@@ -200,6 +204,10 @@ export component SettingsWindow inherits Window {
     in-out property <int> theme-index;
     // Theme Studio, starting from the theme at that index.
     callback open-studio(int);
+    // Updates (updates-spec §1): the daily check, and what "Check now" did.
+    in-out property <bool> updates-check;
+    in property <string> updates-status;
+    callback check-updates();
     callback apply();
     // `close` would shadow Window's builtin close() (Slint 1.18), hence `dismiss`.
     callback dismiss();
@@ -473,6 +481,33 @@ export component SettingsWindow inherits Window {
                     }
                     Hint {
                         text: root.texts.theme-hint;
+                    }
+                }
+
+                VerticalLayout {
+                    spacing: 8px;
+                    SectionTitle {
+                        text: root.texts.updates;
+                    }
+                    HorizontalLayout {
+                        spacing: 12px;
+                        Switch {
+                            horizontal-stretch: 1;
+                            text: root.texts.updates-check;
+                            checked <=> root.updates-check;
+                        }
+                        Button {
+                            text: root.texts.updates-now;
+                            clicked => {
+                                root.check-updates();
+                            }
+                        }
+                    }
+                    if root.updates-status != "": Hint {
+                        text: root.updates-status;
+                    }
+                    Hint {
+                        text: root.texts.updates-hint;
                     }
                 }
 

@@ -331,6 +331,7 @@ pub fn run(startup: Startup) -> Result<(), AppError> {
         register_hotkey(&app, &hotkey);
     }
     crate::secondary::sync(&app);
+    crate::updater::plan(&app);
 
     // Keep-alive windows: shown off-screen and inactive so winit creates them, then styled and
     // hidden with Win32 (F§1.1, R§8.1).
@@ -671,6 +672,15 @@ pub struct CardMenu {
 /// Main-thread runtime bookkeeping besides [`AppState`].
 #[derive(Default)]
 pub struct Runtime {
+    /// Updates (updates-spec): what is known, the daily check, the version a notification
+    /// announced (each once), and whether a check runs.
+    pub update: RefCell<crate::updater::UpdateState>,
+    /// See [`Runtime::update`].
+    pub update_timer: slint::Timer,
+    /// See [`Runtime::update`].
+    pub update_announced: RefCell<Option<lastdrop_core::update::Version>>,
+    /// See [`Runtime::update`].
+    pub update_checking: Cell<bool>,
     /// The Lastdrop theme of the settings (themes-spec), applied over Windows' theme.
     pub theme_data: RefCell<lastdrop_core::theme::Theme>,
     /// The flyout's `HWND` (0 until winit created it).
@@ -1256,12 +1266,16 @@ pub fn on_menu_command(app: &App, command: MenuCommand) {
         MenuCommand::History => open_dialog(app, DialogKind::History(None)),
         MenuCommand::Settings => open_dialog(app, DialogKind::Settings),
         MenuCommand::About => open_dialog(app, DialogKind::About),
-        MenuCommand::Quit => {
-            hide_flyout(app, false);
-            hide_hover_card(app);
-            let _ = slint::quit_event_loop();
-        }
+        MenuCommand::Quit => quit(app),
     }
+}
+
+/// Quits: the popups hidden, then the event loop ends and `shutdown` runs (menu "Quit", and the
+/// installer replacing `lastdrop.exe`, updates-spec §2).
+pub fn quit(app: &App) {
+    hide_flyout(app, false);
+    hide_hover_card(app);
+    let _ = slint::quit_event_loop();
 }
 
 /// Ends a pause (menu "Resume updates", the message line's and the footer's `Resume`).
@@ -1332,6 +1346,14 @@ pub fn open_dialog(app: &App, kind: DialogKind) {
 ///   ([`crate::state::lift_sign_in_stop`]) and re-plan; the other's back-off stays.
 pub fn on_settings_changed(app: &App, changes: Changes) {
     log::info!("the dialog process changed {changes:?}");
+    if changes.quit {
+        log::info!("the installer asks to quit");
+        quit(app);
+        return;
+    }
+    if changes.check_updates {
+        crate::updater::check(app, true);
+    }
     if changes.settings {
         let current = app.state.borrow().settings.clone();
         match reloaded_settings(&current, persist::read_settings(&app.paths.settings)) {
@@ -1390,6 +1412,7 @@ fn apply_reloaded(app: &App, previous: &Settings, settings: Settings) {
     set_flyout_labels(&app.windows.flyout, strings);
     app.readout.set_enabled(allowed);
     crate::secondary::sync(app);
+    crate::updater::plan(app);
     // The theme, or its file, may have changed (Theme Studio saves, then applies).
     let theme_data = {
         let st = app.state.borrow();
@@ -1507,7 +1530,8 @@ fn refresh_flyout_content(app: &App, now: Timestamp) {
                 text: st.text_context(now),
                 settings: &st.settings,
             };
-            let model = build_flyout(eval, &st.history, st.refreshing, &cx);
+            let mut model = build_flyout(eval, &st.history, st.refreshing, &cx);
+            crate::updater::footer(app, &mut model, st.strings);
             let (menus, refs) = card_menus(&model, st);
             (model, menus, refs)
         })
@@ -1743,7 +1767,16 @@ fn connect_flyout(window: &ui::Flyout) {
     });
     window.on_refresh(|| with_app(|app| refresh_now(app, None)));
     window.on_open_settings(|| with_app(|app| open_dialog(app, DialogKind::Settings)));
-    window.on_footer_action(|| with_app(resume));
+    // The footer's link: the pause's `Resume`, else the update's `Install` (F§5).
+    window.on_footer_action(|| {
+        with_app(|app| {
+            if app.state.borrow().settings.pause.is_some() {
+                resume(app);
+            } else {
+                crate::updater::install(app);
+            }
+        });
+    });
     window.on_card_refresh(|index| {
         with_app(|app| {
             let source = card_source(app, index);
@@ -1798,6 +1831,7 @@ fn on_card_action(app: &App, index: i32) {
     match card.action {
         Some(CardAction::Retry) => refresh_now(app, Some(&card.source)),
         Some(CardAction::Resume) => resume(app),
+        Some(CardAction::InstallUpdate) => crate::updater::install(app),
         Some(CardAction::OpenSettings) => open_dialog(app, DialogKind::Settings),
         Some(CardAction::OpenSignIn) => {
             let command = {

@@ -48,6 +48,7 @@ pub mod demo;
 pub mod dialog;
 pub mod history;
 pub mod history_window;
+pub mod install;
 pub mod logger;
 pub mod persist;
 pub mod png;
@@ -60,6 +61,7 @@ pub mod state;
 pub mod theme_studio;
 pub mod themes;
 pub mod ui;
+pub mod updater;
 pub mod wiring;
 pub mod writer;
 
@@ -105,6 +107,12 @@ pub struct Args {
     pub preview_theme_studio: Option<PathBuf>,
     /// Windows' (English with `--demo`).
     pub language: Option<String>,
+    /// `--install`: install this executable for the user without asking (updates-spec §2).
+    pub install: bool,
+    /// `--update` (with `--install`): an update of a running Lastdrop; start it again quietly.
+    pub update: bool,
+    /// `--uninstall`: ask, then uninstall (the "Installed apps" entry runs this).
+    pub uninstall: bool,
     /// `--theme <id>`: the preview's theme (a built-in id or a user theme's); default: the
     /// settings' (the Windows theme with `--demo`).
     pub theme: Option<String>,
@@ -134,6 +142,9 @@ impl Args {
                         .and_then(|s| Duration::try_from_secs_f64(s).ok());
                 }
                 Some("--no-readout") => out.no_readout = true,
+                Some("--install") => out.install = true,
+                Some("--update") => out.update = true,
+                Some("--uninstall") => out.uninstall = true,
                 Some("--bench") => out.bench = iter.next().map(PathBuf::from),
                 Some("--preview-flyout") => out.preview_flyout = iter.next().map(PathBuf::from),
                 Some("--preview-hovercard") => {

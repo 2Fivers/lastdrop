@@ -87,6 +87,8 @@ pub enum CardAction {
     /// `Enter key…`: open the settings window at this service's API key (services without a
     /// vendor sign-in, `ProviderId::client_name` is `None`: Meshy). Hides the flyout.
     OpenSettings,
+    /// The footer's `Install`: download and install the available update (updates-spec §3).
+    InstallUpdate,
 }
 
 /// Why a card shows a message line (F§4.3). Slint `CardData.msg-kind` is this enum's position

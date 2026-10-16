@@ -34,6 +34,7 @@ features = [
   "Win32_Networking_NetworkListManager",
   "Win32_Security",
   "Win32_Security_Credentials",
+  "Win32_Security_Cryptography",
   "Win32_System_Com",
   "Win32_System_LibraryLoader",
   "Win32_System_Ole",

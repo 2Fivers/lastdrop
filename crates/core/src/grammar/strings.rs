@@ -32,7 +32,7 @@
 //! `{group}` a model pool as the service names it and `{initial}` its first letter (`meter.group.*`);
 //! `{tokens}`, `{input}`, `{output}`, `{cache}` compact token counts and `{cost}` an amount of money
 //! with its currency code (`history.tokens.*`, tokens-spec §3); `{file}` a theme file's name
-//! (`studio.*`, themes-spec §4).
+//! (`studio.*`, themes-spec §4); `{folder}` a folder's path (`install.*`, updates-spec §2).
 //!
 //! Titles, verdicts, notification titles, "Also tracked" lines and the settings window's meter
 //! rows are capitalised as a whole after filling ([`capitalise`]; Appendix B: `{meter}`
@@ -515,6 +515,25 @@ catalogue! {
         SettingsTheme = "settings.theme",
         SettingsThemeStudio = "settings.theme.studio",
         SettingsThemeHint = "settings.theme.hint",
+        InstallAsk = "install.ask",
+        InstallDone = "install.done",
+        InstallFailed = "install.failed",
+        InstallStillRunning = "install.still_running",
+        InstallShortcut = "install.shortcut",
+        UninstallAsk = "uninstall.ask",
+        UninstallDone = "uninstall.done",
+        UpdateAvailable = "update.available",
+        UpdateAvailableBody = "update.available_body",
+        UpdateInstall = "update.install",
+        UpdateDownloading = "update.downloading",
+        UpdateCurrent = "update.current",
+        UpdateCheckFailed = "update.check_failed",
+        UpdateFailed = "update.failed",
+        SettingsUpdates = "settings.updates",
+        SettingsUpdatesCheck = "settings.updates.check",
+        SettingsUpdatesNow = "settings.updates.now",
+        SettingsUpdatesHint = "settings.updates.hint",
+        SettingsUpdatesAsked = "settings.updates.asked",
         SettingsReadout = "settings.readout",
         SettingsReadoutShow = "settings.readout.show",
         SettingsReadoutEvery = "settings.readout.every",

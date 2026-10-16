@@ -306,7 +306,14 @@ Rules for every provider:
   queued for the writer thread, so the UI thread never waits on the disk. The one later read is
   `settings.json` when the dialog process says it changed (a few kilobytes). The dialog process
   writes `settings.json` itself; it never writes the state file or history.
-- **No telemetry.** The only network traffic is to the services whose usage is being read.
+- **No telemetry.** The only network traffic is to the services whose usage is being read, and
+  the daily update check to GitHub (`lastdrop_providers::release`), which sends nothing about the
+  user and can be turned off ([updates-spec](design/updates-spec.md)).
+- **Installer and updates:** `Lastdrop-Setup.exe` is the app itself: under that name, or with
+  `--install` / `--uninstall`, it installs to `%LOCALAPPDATA%\Programs\Lastdrop` or uninstalls
+  (`crate::install`, message boxes only, no Slint). The tray process checks for updates, downloads
+  and verifies the new installer on threads of its own (`crate::updater`), starts it with
+  `--install --update` and quits.
 
 ## Quality bar
 

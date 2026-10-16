@@ -623,6 +623,7 @@ pub fn fill(
     window.set_providers(ModelRc::new(VecModel::from(rows)));
     window.set_interval_index(i32::try_from(interval_index(s.refresh.interval)).unwrap_or(3));
     window.set_readout_enabled(s.readout.enabled);
+    window.set_updates_check(s.updates.check);
     window.set_readout_every(s.readout.every_taskbar);
     window.set_readout_content_index(i32::from(matches!(
         s.readout.content,
@@ -756,6 +757,10 @@ pub fn texts(strings: &dyn Strings) -> ui::SettingsTexts {
         theme: t(Msg::SettingsTheme),
         theme_studio: t(Msg::SettingsThemeStudio),
         theme_hint: t(Msg::SettingsThemeHint),
+        updates: t(Msg::SettingsUpdates),
+        updates_check: t(Msg::SettingsUpdatesCheck),
+        updates_now: t(Msg::SettingsUpdatesNow),
+        updates_hint: t(Msg::SettingsUpdatesHint),
         readout: t(Msg::SettingsReadout),
         readout_show: t(Msg::SettingsReadoutShow),
         readout_every: t(Msg::SettingsReadoutEvery),
@@ -924,6 +929,18 @@ fn connect(window: &ui::SettingsWindow) {
     window.on_set_api_key(|row, key| with_session(|session| store_key(session, row, &key)));
     window.on_clear_api_key(|row| with_session(|session| clear_key(session, row)));
     window.on_apply(|| with_session(apply));
+    window.on_check_updates(|| {
+        dialog::notify(Changes {
+            check_updates: true,
+            ..Changes::default()
+        });
+        with_session(|session| {
+            let strings = session.wording.borrow().strings();
+            session
+                .window
+                .set_updates_status(strings.template(Msg::SettingsUpdatesAsked).into());
+        });
+    });
     window.on_open_studio(|index| {
         with_session(|session| {
             let id = usize::try_from(index)
@@ -1371,6 +1388,7 @@ fn apply(session: &Session) {
     let mut draft = session.draft.borrow().settings.clone();
     draft.refresh.interval = interval_at(window.get_interval_index());
     draft.readout.enabled = window.get_readout_enabled();
+    draft.updates.check = window.get_updates_check();
     if let Some(id) = usize::try_from(window.get_theme_index())
         .ok()
         .and_then(|i| session.theme_ids.borrow().get(i).cloned())

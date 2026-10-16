@@ -15,7 +15,7 @@
 
 use std::process::ExitCode;
 
-use lastdrop_app::{Args, custom_services, dialog, logger, persist, preview, wiring};
+use lastdrop_app::{Args, custom_services, dialog, install, logger, persist, preview, wiring};
 use lastdrop_win::single_instance::{self, Instance};
 
 fn main() -> ExitCode {
@@ -40,6 +40,20 @@ fn main() -> ExitCode {
                 ExitCode::FAILURE
             }
         };
+    }
+
+    // Installing and uninstalling (updates-spec §2): the release's Lastdrop-Setup.exe is this
+    // program; under that name, or with --install / --uninstall, it installs or uninstalls.
+    if args.uninstall {
+        return install::run(install::Mode::Uninstall);
+    }
+    if args.install {
+        return install::run(install::Mode::Install {
+            update: args.update,
+        });
+    }
+    if std::env::current_exe().is_ok_and(|exe| install::is_setup(&exe)) {
+        return install::run(install::Mode::Setup);
     }
 
     // Settings and About: the short-lived dialog process, before (and without) the app's mutex.
