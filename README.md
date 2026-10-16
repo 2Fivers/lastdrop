@@ -19,12 +19,18 @@ current pace will last until the next reset.
 
 ## Status
 
-Early development. The stack is being chosen by measuring idle memory and flyout latency
-of the candidates on a real machine before the first line of the app is written.
+In development, not yet distributed. Built in Rust with Slint's software renderer, the stack
+the spike picked by measuring idle memory and flyout latency
+([ADR 0001](docs/adr/0001-rust-and-slint-software-renderer.md)).
+
+The first useful build is done: tray icon, taskbar readout, flyout, hover card, settings and
+autostart, reading Claude, Codex, GitHub Copilot and Meshy. Next come more services and
+several accounts per service, then notifications and charts.
 
 ## Plan
 
-See [docs/ROADMAP.md](docs/ROADMAP.md) for providers, features and milestones.
+See [docs/ROADMAP.md](docs/ROADMAP.md) for providers, features, milestones and what is built,
+and [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for how the app is put together.
 
 ## License
 
