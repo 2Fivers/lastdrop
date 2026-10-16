@@ -23,7 +23,8 @@ trade-offs live in [`docs/adr/`](adr); the visual and behavioural spec lives in
 Cargo.toml                 workspace: shared dependency versions, lints, release profile
 crates/
   core/       lastdrop-core        pure: model, pace and forecast, severity, readout and tray
-                                   models, text grammar, settings schema, refresh policy
+                                   models, notices, text grammar, settings schema, refresh
+                                   policy
   providers/  lastdrop-providers   one module per service; I/O behind small traits so tests
                                    run on fixtures; no UI, no Win32 windows
   win/        lastdrop-win         Win32: drawing (Direct2D + DirectWrite), tray icon image,
@@ -125,6 +126,10 @@ Messages between threads: workers send results to the main thread with
 - **ReadoutModel / TrayModel / FlyoutModel** — exactly what each surface draws, including
   every string (already formatted by the text grammar) and the UI Automation name. Surfaces
   contain no formatting or business logic.
+- **Notices** — after each evaluation, what is new to announce: a level reached, a window used
+  up or reset, a balance running low ([`docs/design/notifications-spec.md`](design/notifications-spec.md)).
+  A pure function of the evaluation and the memory of what was announced, worded into one
+  `NotificationModel` per evaluation.
 - **Settings** — versioned `serde` schema with defaults; unknown fields are kept.
 
 ## Providers (`lastdrop-providers`)
@@ -180,6 +185,9 @@ Rules for every provider:
   rebuilt in-process.
 - **Flyout placement:** `Shell_NotifyIconGetRect` → `CalculatePopupWindowPosition` with the
   work area (from the spike).
+- **Notifications:** `NIF_INFO` on our own tray icon, which Windows shows as a toast; selecting
+  one (`NIN_BALLOONUSERCLICK`) opens the flyout (notifications-spec §4). No WinRT toasts: they
+  need a registered AppUserModelID and load WinRT into the tray process.
 - **Theme:** taskbar light/dark (`SystemUsesLightTheme`), app light/dark, accent, transparency,
   high contrast; change notifications re-render.
 - **Autostart:** `HKCU\…\Run\Lastdrop`. **Secrets:** Credential Manager, generic credentials
@@ -206,7 +214,8 @@ Rules for every provider:
   secrets); history in `%LOCALAPPDATA%\Lastdrop\` (thinned to one sample per meter per
   5 minutes, 90 days); `%LOCALAPPDATA%\Lastdrop\state.json` (what the app remembers that is
   not a setting: the meters a source has reported, so their room in the readout survives a
-  restart; meter keys and names only, no secrets); logs in `%LOCALAPPDATA%\Lastdrop\logs`
+  restart, and what notifications announced, so a restart repeats none; meter keys, names,
+  levels and reset times only, no secrets); logs in `%LOCALAPPDATA%\Lastdrop\logs`
   (rotated, local only; `lastdrop.log` for the tray process, `settings.log` for the dialog
   process). Start-up reads them on the main thread before the event loop; every later write is
   queued for the writer thread, so the UI thread never waits on the disk. The one later read is

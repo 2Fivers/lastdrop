@@ -24,8 +24,9 @@ the spike picked by measuring idle memory and flyout latency
 ([ADR 0001](docs/adr/0001-rust-and-slint-software-renderer.md)).
 
 The first useful build is done: tray icon, taskbar readout, flyout, hover card, settings and
-autostart, reading Claude, Codex, GitHub Copilot and Meshy. Next come more services and
-several accounts per service, then notifications and charts.
+autostart, reading Claude, Codex, GitHub Copilot and Meshy, with notifications when a limit
+reaches 80 % or 95 %, is used up or resets. Next come more services and several accounts per
+service, then charts.
 
 ## Plan
 

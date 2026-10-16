@@ -8,6 +8,7 @@
 //! - `R§n` — `docs/design/readout-spec.md`, section n (meter model, statistics, grammar, readout,
 //!   hover card, tray icon). `R§13` holds the test vectors (`tests/readout_spec_13.rs`).
 //! - `F§n` — `docs/design/flyout-spec.md`, section n.
+//! - `N§n` — `docs/design/notifications-spec.md`, section n.
 //! - `ARCHITECTURE` — `docs/ARCHITECTURE.md`.
 //!
 //! Pipeline (one pass per new reading and per minute tick, R§12):
@@ -18,7 +19,9 @@
 //!            ├─ readout::build_readout     ──▶ ReadoutModel   (readout thread draws it)
 //!            ├─ readout::build_hover_card  ──▶ HoverCardModel (Slint hover card)
 //!            ├─ readout::build_tray        ──▶ TrayModel      (tray icon image + tooltip)
-//!            └─ flyout::build_flyout       ──▶ FlyoutModel    (Slint flyout)
+//!            ├─ flyout::build_flyout       ──▶ FlyoutModel    (Slint flyout)
+//!            └─ notify::notices + NotifyMemory
+//!                  └─ notify::build_notification ──▶ NotificationModel (Windows notification)
 //! ```
 //!
 //! Models are DPI-independent: they carry the *inputs* of the pixel algorithms
@@ -33,6 +36,7 @@ pub mod flyout;
 pub mod glyph;
 pub mod grammar;
 pub mod model;
+pub mod notify;
 pub mod readout;
 pub mod refresh;
 pub mod secret;

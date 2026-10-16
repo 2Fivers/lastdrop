@@ -11,6 +11,7 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 
 use lastdrop_core::model::{MeterKey, MeterNames};
+use lastdrop_core::notify::{Announced, NotifyMemory};
 use lastdrop_core::settings::{SETTINGS_VERSION, Settings};
 use serde::{Deserialize, Serialize};
 use windows::Win32::Storage::FileSystem::{
@@ -203,7 +204,8 @@ pub const STATE_VERSION: u32 = 1;
 /// The state file (`%LOCALAPPDATA%\Lastdrop\state.json`): what the app remembers between runs
 /// that is not a setting. A cache: an unreadable file is ignored and rewritten. **No secrets**:
 /// meter keys (service, the account's key — `default` in M1, never an e-mail address or an
-/// account id — and the meter id) and the meters' display names.
+/// account id — and the meter id), the meters' display names and what notifications announced
+/// (levels, severities and reset times).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct SavedState {
@@ -212,6 +214,9 @@ pub struct SavedState {
     /// Every meter a source has reported (`lastdrop_core::stats::EvalMemory::seen`), so a meter
     /// that a later reading lacks still keeps its room in the readout after a restart (R§6.3).
     pub seen: Vec<SeenMeter>,
+    /// What notifications announced per meter (`lastdrop_core::notify::NotifyMemory`), so a
+    /// restart repeats nothing (N§1). Missing in a file of an older build: nothing announced.
+    pub notified: Vec<NotifiedMeter>,
 }
 
 impl Default for SavedState {
@@ -219,8 +224,19 @@ impl Default for SavedState {
         SavedState {
             version: STATE_VERSION,
             seen: Vec::new(),
+            notified: Vec::new(),
         }
     }
+}
+
+/// One entry of [`SavedState::notified`].
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NotifiedMeter {
+    /// The meter.
+    #[serde(flatten)]
+    pub key: MeterKey,
+    /// What was announced.
+    pub announced: Announced,
 }
 
 /// One entry of [`SavedState::seen`].
@@ -240,8 +256,8 @@ pub struct SeenMeter {
 pub type SeenMap = BTreeMap<MeterKey, (MeterNames, bool)>;
 
 impl SavedState {
-    /// The state of `seen`.
-    pub fn from_seen(seen: &SeenMap) -> SavedState {
+    /// The state of `seen` and `notified`.
+    pub fn new(seen: &SeenMap, notified: &NotifyMemory) -> SavedState {
         SavedState {
             version: STATE_VERSION,
             seen: seen
@@ -252,6 +268,13 @@ impl SavedState {
                     balance: *balance,
                 })
                 .collect(),
+            notified: notified
+                .iter()
+                .map(|(key, announced)| NotifiedMeter {
+                    key: key.clone(),
+                    announced: *announced,
+                })
+                .collect(),
         }
     }
 
@@ -260,6 +283,14 @@ impl SavedState {
         self.seen
             .iter()
             .map(|m| (m.key.clone(), (m.names.clone(), m.balance)))
+            .collect()
+    }
+
+    /// [`SavedState::notified`] as kept in memory.
+    pub fn notified_map(&self) -> NotifyMemory {
+        self.notified
+            .iter()
+            .map(|m| (m.key.clone(), m.announced))
             .collect()
     }
 }
@@ -417,15 +448,28 @@ mod tests {
             key(ProviderId::Meshy, "credits"),
             (MeterNames::new("Cr", "credits", "Credits"), true),
         );
-        let state = SavedState::from_seen(&seen);
+        let mut notified = NotifyMemory::new();
+        notified.insert(
+            key(ProviderId::Claude, "weekly"),
+            Announced::Window {
+                instance: Some(jiff::Timestamp::from_second(1_800_000_000).expect("valid")),
+                level: 95,
+            },
+        );
+        let state = SavedState::new(&seen, &notified);
         write_atomic(&path, &state_bytes(&state).expect("encode")).expect("write");
         let back = load_state(&path);
         assert_eq!(back, state);
         assert_eq!(back.seen_map(), seen);
-        // The file holds keys and names only.
+        assert_eq!(back.notified_map(), notified);
+        // The file holds keys, names and what was announced only.
         let text = std::fs::read_to_string(&path).expect("read");
         assert!(text.contains("\"meter\": \"weekly:fable\""), "{text}");
         assert!(text.contains("\"account\": \"default\""), "{text}");
+        assert!(text.contains("\"kind\": \"window\""), "{text}");
+        // An older build's file has no notifications: nothing was announced.
+        std::fs::write(&path, br#"{ "version": 1, "seen": [] }"#).expect("write");
+        assert_eq!(load_state(&path).notified_map(), NotifyMemory::new());
 
         std::fs::write(&path, b"{ not json").expect("damage");
         assert_eq!(load_state(&path), SavedState::default());

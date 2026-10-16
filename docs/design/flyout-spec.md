@@ -382,4 +382,4 @@ export struct CardData { glyph: string, name: string, plan: string, age: string,
 
 Settings window, first-run checklist and account management screens (only their entry points are specified here);
 charts beyond the sparkline (M3); Theme Studio (M4); per-model drill-down; drag to reorder cards; animations;
-notifications.
+notifications ([notifications-spec.md](notifications-spec.md); selecting one opens the flyout).

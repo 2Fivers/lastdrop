@@ -51,6 +51,7 @@ use lastdrop_core::glyph::{Icon, ProviderGlyph, SeverityGlyph, provider_paths};
 use lastdrop_core::grammar::strings::text;
 use lastdrop_core::grammar::{Msg, Strings};
 use lastdrop_core::model::{MeterKey, ProviderId, SourceKey, catalog};
+use lastdrop_core::notify::NotificationModel;
 use lastdrop_core::readout::bar::{BarGeometry, bar_geometry};
 use lastdrop_core::readout::hovercard::{AlsoLine, CardMeter, HoverCardModel};
 use lastdrop_core::readout::{
@@ -69,7 +70,7 @@ use lastdrop_win::readout::{ReadoutConfig, ReadoutEvent, ReadoutHandle, SystemEv
 use lastdrop_win::render::RenderFactory;
 use lastdrop_win::single_instance::{self, InstanceGuard, Listener};
 use lastdrop_win::theme::ThemeInfo;
-use lastdrop_win::tray::{MenuItem, Tray, TrayImage, TrayInput};
+use lastdrop_win::tray::{MenuItem, NoticeIcon, Tray, TrayImage, TrayInput};
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 use slint::winit_030::WinitWindowAccessor;
 use slint::{ComponentHandle, Model, ModelRc, SharedString, TimerMode, VecModel};
@@ -202,7 +203,7 @@ pub fn run(startup: Startup) -> Result<(), AppError> {
     let readout_enabled = settings.readout.enabled && !args.no_readout;
     let hotkey_setting = settings.hotkey.clone();
     let mut state = AppState::new(settings, history, theme, locale);
-    state.restore_seen(&persist::load_state(&paths.state), now);
+    state.restore_saved(&persist::load_state(&paths.state), now);
     let state = Rc::new(RefCell::new(state));
 
     // The Slint backend: winit with the software renderer. Popups get the spike's attributes.
@@ -1040,7 +1041,8 @@ fn apply_theme(app: &App) {
 /// Tray icon input (R§10): `PopupOpen`/`PopupClose` → hover card (`HoverAnchor::TrayIcon`);
 /// `Select` → toggle the flyout (300 ms debounce after a deactivation hide, F§1.4); `KeySelect` →
 /// open with focus on the first card; `ContextMenu` → `Tray::show_menu` at the point, then
-/// [`on_menu_command`]; `Recreated` → re-render and re-apply the icon (the DPI may have changed).
+/// [`on_menu_command`]; `Recreated` → re-render and re-apply the icon (the DPI may have changed);
+/// `NotificationClicked` → open the flyout (N§4).
 pub fn on_tray_input(app: &App, input: TrayInput) {
     match input {
         TrayInput::PopupOpen { pt } => {
@@ -1069,6 +1071,11 @@ pub fn on_tray_input(app: &App, input: TrayInput) {
             show_tray_menu(app, pt);
         }
         TrayInput::Recreated => update_tray(app, true),
+        TrayInput::NotificationClicked => {
+            hide_hover_card(app);
+            let anchor = tray_anchor(app);
+            open_flyout(app, anchor, false);
+        }
     }
 }
 
@@ -1774,12 +1781,14 @@ pub fn set_flyout_labels(window: &ui::Flyout, strings: &dyn Strings) {
 /// Evaluates at `now` and pushes every model: readout (`Arc` to the readout thread), tray icon
 /// image and tooltip (only when changed), hover card and flyout (only while visible).
 pub fn rebuild(app: &App, now: Timestamp) {
-    // Evaluate exactly once per pass: the evaluation's live changes (R§11 announcements, F§10)
-    // are consumed by the surfaces built from it.
-    let readout = {
+    // Evaluate exactly once per pass: the evaluation's live changes (R§11 announcements, F§10,
+    // window resets for notifications, N§1) are consumed by the surfaces built from it.
+    let (readout, notification) = {
         let mut st = app.state.borrow_mut();
         st.evaluate(now);
-        // A meter seen for the first time is remembered across restarts (state file).
+        let notification = st.take_notification(now);
+        // A meter seen for the first time, and what notifications announced, are remembered
+        // across restarts (state file).
         if let Some(bytes) = st.state_to_save() {
             app.writer
                 .handle()
@@ -1793,7 +1802,7 @@ pub fn rebuild(app: &App, now: Timestamp) {
             text: st.text_context(now),
             settings: &st.settings,
         };
-        Arc::new(build_readout(eval, &cx))
+        (Arc::new(build_readout(eval, &cx)), notification)
     };
     let (flyout_open, hover) = {
         let mut st = app.state.borrow_mut();
@@ -1822,6 +1831,25 @@ pub fn rebuild(app: &App, now: Timestamp) {
     }
     if let (Some(model), Some((_, rect))) = (hover, app.rt.hover.get()) {
         place_hover_card(app, &model, rect);
+    }
+    if let Some(notification) = notification {
+        show_notification(app, &notification);
+    }
+}
+
+/// Shows a notification from the tray icon (N§4). A failure (the icon is not in the notification
+/// area yet) is logged; the notice stays announced and is not retried.
+fn show_notification(app: &App, notification: &NotificationModel) {
+    let icon = if notification.warning {
+        NoticeIcon::Warning
+    } else {
+        NoticeIcon::Info
+    };
+    if let Err(e) = app
+        .tray
+        .notify(&notification.title, &notification.body, icon)
+    {
+        log::warn!("notification not shown: {e}");
     }
 }
 

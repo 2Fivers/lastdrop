@@ -53,9 +53,59 @@ pub struct Settings {
     /// The global hotkey that toggles the flyout (R§10 "Global hotkey: optional, off by
     /// default"). `None` = off.
     pub hotkey: Option<Hotkey>,
+    /// Windows notifications at levels, when used up and on resets (N§2).
+    pub notifications: NotificationSettings,
     /// Unknown fields.
     #[serde(flatten)]
     pub extra: Extra,
+}
+
+/// What Lastdrop notifies about (N§2). Every notice is on by default.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct NotificationSettings {
+    /// Notifications at all.
+    pub enabled: bool,
+    /// The levels a window meter's `pct` is announced at (N§1 LEVEL), 1–99; read through
+    /// [`NotificationSettings::levels`], which drops anything else.
+    pub levels: Vec<u8>,
+    /// A window meter is used up (N§1 USED_UP), and a balance is empty (BALANCE_EMPTY).
+    pub used_up: bool,
+    /// A window resets after a level or used up was announced in it (N§1 RESET).
+    pub resets: bool,
+    /// A balance runs low: WARNING or CRITICAL (N§1 BALANCE_LOW).
+    pub low_balance: bool,
+    /// Unknown fields.
+    #[serde(flatten)]
+    pub extra: Extra,
+}
+
+impl Default for NotificationSettings {
+    fn default() -> NotificationSettings {
+        NotificationSettings {
+            enabled: true,
+            levels: consts::NOTIFY_DEFAULT_LEVELS.to_vec(),
+            used_up: true,
+            resets: true,
+            low_balance: true,
+            extra: Extra::new(),
+        }
+    }
+}
+
+impl NotificationSettings {
+    /// The levels in use: 1–99 only, ascending, each once.
+    pub fn levels(&self) -> Vec<u8> {
+        let mut levels: Vec<u8> = self
+            .levels
+            .iter()
+            .copied()
+            .filter(|l| (1..=99).contains(l))
+            .collect();
+        levels.sort_unstable();
+        levels.dedup();
+        levels
+    }
 }
 
 /// A global hotkey (R§10), registered with `RegisterHotKey` by `lastdrop_win::hotkey`. Opening
@@ -82,7 +132,7 @@ impl Default for Settings {
     /// First-run settings: Claude and Codex enabled (they read local files and need no secret),
     /// Copilot present but disabled until the user turns it on (it needs the GitHub CLI signed
     /// in), Meshy present but disabled until the user stores a key; refresh every 5 minutes;
-    /// readout on, auto rows, clock times (R§4.3, R§5.2).
+    /// readout on, auto rows, clock times (R§4.3, R§5.2); every notification on (N§2).
     fn default() -> Settings {
         Settings {
             version: SETTINGS_VERSION,
@@ -100,6 +150,7 @@ impl Default for Settings {
             start_with_windows: false,
             theme_follows_system: true,
             hotkey: None,
+            notifications: NotificationSettings::default(),
             extra: Extra::new(),
         }
     }

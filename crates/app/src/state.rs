@@ -13,6 +13,7 @@ use std::time::Instant;
 use jiff::Timestamp;
 use lastdrop_core::grammar::{English, LocaleFormat, TextContext};
 use lastdrop_core::model::{AccountRef, Health, MeterKey, ProviderId, Snapshot, SourceKey};
+use lastdrop_core::notify::{NotificationModel, NotifyMemory, build_notification, notices};
 use lastdrop_core::readout::ReadoutForm;
 use lastdrop_core::refresh::{Activity, AttemptResult, CredentialFingerprint, SourceState, record};
 use lastdrop_core::settings::{AccountSettings, Settings};
@@ -122,6 +123,10 @@ pub struct AppState {
     pub providers: Vec<Arc<dyn Provider>>,
     /// `memory.seen` as the state file has it ([`AppState::state_to_save`]).
     pub saved_seen: SeenMap,
+    /// What notifications announced (N§1), kept across restarts in the state file.
+    pub notified: NotifyMemory,
+    /// `notified` as the state file has it ([`AppState::state_to_save`]).
+    pub saved_notified: NotifyMemory,
 }
 
 /// The providers for `after`: the existing instance of a provider whose options did not change
@@ -379,6 +384,8 @@ impl AppState {
             readout: ReadoutState::default(),
             refreshing: false,
             saved_seen: SeenMap::new(),
+            notified: NotifyMemory::new(),
+            saved_notified: NotifyMemory::new(),
         }
     }
 
@@ -420,12 +427,13 @@ impl AppState {
         }
     }
 
-    /// Restores the meters earlier runs saw (the state file; `EvalMemory::seen`, so a meter a
-    /// later reading lacks keeps its room in the readout, R§6.3), keeping only those the history
-    /// has a reading of from the last [`IN_MEMORY_SPAN`] (31 days): a meter that no source has
-    /// reported for a month stops holding room. The first evaluation rewrites the file when
-    /// entries were dropped ([`AppState::state_to_save`]).
-    pub fn restore_seen(&mut self, saved: &SavedState, now: Timestamp) {
+    /// Restores what earlier runs remembered (the state file): the meters they saw
+    /// (`EvalMemory::seen`, so a meter a later reading lacks keeps its room in the readout, R§6.3),
+    /// keeping only those the history has a reading of from the last [`IN_MEMORY_SPAN`] (31 days),
+    /// so a meter that no source has reported for a month stops holding room; and what
+    /// notifications announced (N§1). The first evaluation rewrites the file when entries were
+    /// dropped ([`AppState::state_to_save`]).
+    pub fn restore_saved(&mut self, saved: &SavedState, now: Timestamp) {
         let since = now.checked_sub(IN_MEMORY_SPAN).unwrap_or(Timestamp::MIN);
         let all = saved.seen_map();
         self.memory.seen = all
@@ -434,16 +442,19 @@ impl AppState {
             .map(|(key, entry)| (key.clone(), entry.clone()))
             .collect();
         self.saved_seen = all;
+        self.notified = saved.notified_map();
+        self.saved_notified = self.notified.clone();
     }
 
-    /// The state file's new bytes when `EvalMemory::seen` changed since the last save (or the
-    /// restore); `None` otherwise. The caller queues them for the writer thread.
+    /// The state file's new bytes when `EvalMemory::seen` or `notified` changed since the last
+    /// save (or the restore); `None` otherwise. The caller queues them for the writer thread.
     pub fn state_to_save(&mut self) -> Option<Vec<u8>> {
-        if self.memory.seen == self.saved_seen {
+        if self.memory.seen == self.saved_seen && self.notified == self.saved_notified {
             return None;
         }
         self.saved_seen = self.memory.seen.clone();
-        match persist::state_bytes(&SavedState::from_seen(&self.memory.seen)) {
+        self.saved_notified = self.notified.clone();
+        match persist::state_bytes(&SavedState::new(&self.memory.seen, &self.notified)) {
             Ok(bytes) => Some(bytes),
             Err(e) => {
                 log::warn!("cannot encode the state file: {e}");
@@ -462,6 +473,28 @@ impl AppState {
             now,
         );
         self.evaluation.insert(eval)
+    }
+
+    /// The notification for what the latest evaluation raised that `notified` has not announced
+    /// yet (`lastdrop_core::notify::notices`, N§1), worded at `now` (N§3); `notified` takes the
+    /// new notices. `None` when there is nothing new or notifications are off.
+    pub fn take_notification(&mut self, now: Timestamp) -> Option<NotificationModel> {
+        let eval = self.evaluation.as_ref()?;
+        let found = notices(eval, &self.settings.notifications, &mut self.notified);
+        for notice in &found {
+            let key = &notice.key;
+            log::info!(
+                "notify: {:?} {:?}/{}/{}",
+                notice.kind,
+                key.provider,
+                key.account.0,
+                key.meter.0
+            );
+        }
+        if found.is_empty() {
+            return None;
+        }
+        build_notification(&found, eval, &self.text_context(now))
     }
 
     /// The text context at `now` for the surface builders.
@@ -672,6 +705,8 @@ pub(crate) mod tests {
             refreshing: false,
             providers: Vec::new(),
             saved_seen: SeenMap::new(),
+            notified: NotifyMemory::new(),
+            saved_notified: NotifyMemory::new(),
         }
     }
 
@@ -755,7 +790,7 @@ pub(crate) mod tests {
         // Restart: a reading without the per-model weekly (Claude Desktop's history answers).
         let history = HistoryStore::open(&dir.join("history"), now, writer.handle()).expect("open");
         let mut second = app_state(&[ProviderId::Claude], history);
-        second.restore_seen(&persist::load_state(&state_file), now);
+        second.restore_saved(&persist::load_state(&state_file), now);
         assert!(second.memory.seen.contains_key(&key("weekly:fable")));
         assert!(
             !second.memory.seen.contains_key(&key("weekly:retired")),
@@ -777,6 +812,52 @@ pub(crate) mod tests {
         let names: Vec<&str> = pruned.seen.iter().map(|m| m.key.meter.0.as_str()).collect();
         assert_eq!(names, vec!["weekly", "weekly:fable"]);
         assert_eq!(second.state_to_save(), None);
+        writer.shutdown();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_notification_is_announced_once_and_survives_a_restart() {
+        let dir = std::env::temp_dir().join(format!(
+            "lastdrop-notify-test-{}-{}",
+            std::process::id(),
+            Timestamp::now().as_nanosecond()
+        ));
+        let writer = crate::writer::Writer::start().expect("writer");
+        let now = ts("2026-10-10T10:42:00Z");
+        let claude = SourceKey {
+            provider: ProviderId::Claude,
+            account: AccountKey::primary(),
+        };
+        let reading = snapshot(ProviderId::Claude, now, 0.82);
+        let run = |state: &mut AppState| {
+            state.history.record(&reading);
+            if let Some(source) = state.sources.get_mut(&claude) {
+                source.latest = Some(reading.clone());
+                source.status.last_success = Some(now);
+            }
+            state.evaluate(now);
+            state.take_notification(now)
+        };
+
+        let history = HistoryStore::open(&dir.join("history"), now, writer.handle()).expect("open");
+        let mut first = app_state(&[ProviderId::Claude], history);
+        let shown = run(&mut first).expect("a notification");
+        assert_eq!(shown.title, "Claude weekly limit is 82% used");
+        assert_eq!(run(&mut first), None, "announced once");
+        let bytes = first.state_to_save().expect("notified changed");
+        let saved: SavedState = serde_json::from_slice(&bytes).expect("state json");
+
+        // Restart with the state file: nothing new to say.
+        let history = HistoryStore::open(&dir.join("history"), now, writer.handle()).expect("open");
+        let mut second = app_state(&[ProviderId::Claude], history);
+        second.restore_saved(&saved, now);
+        assert_eq!(run(&mut second), None);
+        // Turned off: nothing, and the memory is left alone.
+        second.settings.notifications.enabled = false;
+        second.notified.clear();
+        assert_eq!(run(&mut second), None);
+        assert!(second.notified.is_empty());
         writer.shutdown();
         let _ = std::fs::remove_dir_all(&dir);
     }

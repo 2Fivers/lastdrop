@@ -51,6 +51,15 @@ export component SettingsWindow inherits Window {
     in property <[MeterChoice]> meters;
     // Scroll to and highlight the pins (tray menu "Taskbar readout ▸ Pinned meters…", R§10).
     in property <bool> focus-pins;
+    // Notifications (N§2): on/off, two levels (indices into level-choices: "Off", "50%", …),
+    // used up, resets and low balances.
+    in-out property <bool> notify-enabled;
+    in property <[string]> level-choices;
+    in-out property <int> notify-first-index;
+    in-out property <int> notify-second-index;
+    in-out property <bool> notify-used-up;
+    in-out property <bool> notify-resets;
+    in-out property <bool> notify-low-balance;
     in-out property <bool> start-with-windows;
     in property <bool> meshy-key-stored;
     // The global hotkey (R§10, off by default): modifiers and one key (a letter, a digit or
@@ -251,6 +260,63 @@ export component SettingsWindow inherits Window {
                                 }
                             }
                         }
+                    }
+                }
+
+                VerticalLayout {
+                    spacing: 8px;
+                    SectionTitle {
+                        text: "Notifications";
+                    }
+                    Switch {
+                        text: "Notify me about my limits";
+                        checked <=> root.notify-enabled;
+                    }
+                    HorizontalLayout {
+                        spacing: 12px;
+                        Text {
+                            text: "When a limit reaches";
+                            vertical-alignment: center;
+                            color: Palette.foreground;
+                        }
+                        ComboBox {
+                            width: 96px;
+                            model: root.level-choices;
+                            current-index <=> root.notify-first-index;
+                            enabled: root.notify-enabled;
+                        }
+                        Text {
+                            text: "and";
+                            vertical-alignment: center;
+                            color: Palette.foreground;
+                        }
+                        ComboBox {
+                            width: 96px;
+                            model: root.level-choices;
+                            current-index <=> root.notify-second-index;
+                            enabled: root.notify-enabled;
+                        }
+                        Rectangle {
+                            horizontal-stretch: 1;
+                        }
+                    }
+                    CheckBox {
+                        text: "When a limit or a balance is used up";
+                        checked <=> root.notify-used-up;
+                        enabled: root.notify-enabled;
+                    }
+                    CheckBox {
+                        text: "When a limit resets after a notification";
+                        checked <=> root.notify-resets;
+                        enabled: root.notify-enabled;
+                    }
+                    CheckBox {
+                        text: "When a balance runs low";
+                        checked <=> root.notify-low-balance;
+                        enabled: root.notify-enabled;
+                    }
+                    Hint {
+                        text: "Windows notifications, once per level in each window. Do not disturb holds them back.";
                     }
                 }
 

@@ -300,7 +300,7 @@ fn live_models() -> Result<LiveModels, AppError> {
     let mut state = AppState::new(settings, history, theme, locale);
     // The meters earlier runs saw keep their room, as in the app (read only: a preview never
     // rewrites the state file).
-    state.restore_seen(&persist::load_state(&paths.state), now);
+    state.restore_saved(&persist::load_state(&paths.state), now);
 
     let io = Arc::new(WorkerIo::new());
     let ctx = FetchContext {

@@ -1,6 +1,6 @@
 //! GUI smoke test of `lastdrop_win::tray`: adds a real notification icon for about 12 s, changes
-//! its image and tooltip once, reads its rectangle, then removes it and exits. Nothing takes
-//! focus and nothing else on the desktop is touched.
+//! its image and tooltip once, reads its rectangle, shows one notification from it, then removes
+//! it and exits. Nothing takes focus; the notification stays in the notification centre.
 //!
 //! `cargo run -p lastdrop-win --example tray_smoke` (exit code 0 = every call succeeded).
 #![expect(
@@ -13,7 +13,7 @@ use std::rc::Rc;
 use std::time::{Duration, Instant};
 
 use lastdrop_win::backdrop::allow_dark_menus;
-use lastdrop_win::tray::{Tray, TrayImage, TrayInput};
+use lastdrop_win::tray::{NoticeIcon, Tray, TrayImage, TrayInput};
 use windows::Win32::UI::HiDpi::{
     DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2, SetProcessDpiAwarenessContext,
 };
@@ -101,6 +101,17 @@ fn main() {
             if let Err(e) = tray.set_tooltip(&format!("Lastdrop smoke test {}", "·".repeat(200))) {
                 println!("set_tooltip failed: {e}");
                 ok = false;
+            }
+            match tray.notify(
+                "Lastdrop smoke test",
+                "A notification from the tray icon.\nSelect it within 10 s to see it reported.",
+                NoticeIcon::Info,
+            ) {
+                Ok(()) => println!("notification shown"),
+                Err(e) => {
+                    println!("notify failed: {e}");
+                    ok = false;
+                }
             }
         }
         std::thread::sleep(Duration::from_millis(15));
