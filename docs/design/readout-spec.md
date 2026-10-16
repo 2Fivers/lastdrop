@@ -911,7 +911,8 @@ STALE(SIGN_IN) at once.
 
 ## 14. Out of scope
 
-- Theme Studio, segmented bars and other looks (M4); notifications at thresholds (M3).
+- Theme Studio, segmented bars and other looks (M4); notifications at thresholds (M3,
+  [notifications-spec.md](notifications-spec.md)).
 - Multiple accounts in the readout (M2: same rules, the service name gains the account alias in the card).
 - Left/right (vertical) taskbars: Windows 11 does not support them natively; with a third-party vertical taskbar the
   readout is HIDDEN and the tray icon remains. Top taskbars are supported (card opens below).

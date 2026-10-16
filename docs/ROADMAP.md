@@ -126,7 +126,8 @@ setups.
 - Providers and accounts on/off, order, and which meters each one shows.
 - Refresh interval per provider (manual, 1–30 min, or adaptive: faster while the flyout is in
   use, slower when idle).
-- Notifications at thresholds (for example 80 % and 95 %) and when a window resets.
+- Notifications at thresholds (for example 80 % and 95 %) and when a window resets
+  ([notifications-spec](design/notifications-spec.md)): built, with used up and low balances.
 - Language: English and Swedish to start.
 - Updates: check, download and apply in place (channel to be decided while the app is not
   publicly distributed).
@@ -153,7 +154,7 @@ Status as of 2026-10-16.
 | M0 | **Stack spike** | Same flyout in Rust + Slint and Rust + Tauri; measure idle/open memory, flyout latency, size and look; pick one. | Done: Rust + Slint with the software renderer ([ADR 0001](adr/0001-rust-and-slint-software-renderer.md)) |
 | M1 | **First useful build** | Core, tray icon, taskbar readout, flyout, settings basics, autostart. Claude Code, Codex and Meshy. | Done, plus hover card, global hotkey, pause, and Settings and About in a dialog process of their own |
 | M2 | **More services** | Copilot, Cursor, Antigravity, OpenCode Go, Grok Build; declarative balance providers; multiple accounts for Claude Code and Codex. | Copilot quotas built; everything else left. The settings schema already has room for accounts (alias, tag, source folder) |
-| M3 | **Statistics** | History store, pace, forecasts, charts, threshold and reset notifications. | History store (90 days, one sample per meter per 5 minutes), pace, forecasts and a 14-day sparkline built; charts and notifications left |
+| M3 | **Statistics** | History store, pace, forecasts, charts, threshold and reset notifications. | History store (90 days, one sample per meter per 5 minutes), pace, forecasts, a 14-day sparkline and notifications (levels, used up, resets, low balances) built; charts left |
 | M4 | **Make it yours** | Readout on every taskbar, themes and Theme Studio, languages, adaptive refresh. | Adaptive refresh built, and numbers and times follow the Windows regional format; the readout shows on the primary taskbar only, and themes, Theme Studio and the Swedish strings are left |
 | M5 | **v0.1** | Updates, code signing, installer; decide on distribution and licensing. | Not started |
 

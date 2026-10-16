@@ -23,6 +23,10 @@
 //! - [`Tray::icon_rect`] is `Shell_NotifyIconGetRect` (the flyout anchor, F§1.3). When the icon is
 //!   in the overflow area Windows returns the overflow chevron's rect or fails; callers fall back
 //!   to the cursor position.
+//! - [`Tray::notify`] shows a notification from the icon (`NIF_INFO`, N§4): Windows shows it as a
+//!   toast like any app notification (Do not disturb holds it back; `NIIF_RESPECT_QUIET_TIME`
+//!   also during a new account's quiet time) and reports a click on it as `NIN_BALLOONUSERCLICK`
+//!   ([`TrayInput::NotificationClicked`]); one that times out sends nothing we act on.
 //! - Dropping [`Tray`] sends `NIM_DELETE` and destroys the window.
 //!
 //! Threading: main thread only (the hidden window belongs to it and its messages are pumped by
@@ -44,10 +48,10 @@ use windows::Win32::Graphics::Gdi::{
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::Input::KeyboardAndMouse::GetDoubleClickTime;
 use windows::Win32::UI::Shell::{
-    NIF_ICON, NIF_MESSAGE, NIF_TIP, NIM_ADD, NIM_DELETE, NIM_MODIFY, NIM_SETVERSION,
-    NIN_POPUPCLOSE, NIN_POPUPOPEN, NIN_SELECT, NOTIFY_ICON_DATA_FLAGS, NOTIFY_ICON_MESSAGE,
-    NOTIFYICON_VERSION_4, NOTIFYICONDATAW, NOTIFYICONIDENTIFIER, Shell_NotifyIconGetRect,
-    Shell_NotifyIconW,
+    NIF_ICON, NIF_INFO, NIF_MESSAGE, NIF_TIP, NIIF_INFO, NIIF_RESPECT_QUIET_TIME, NIIF_WARNING,
+    NIM_ADD, NIM_DELETE, NIM_MODIFY, NIM_SETVERSION, NIN_BALLOONUSERCLICK, NIN_POPUPCLOSE,
+    NIN_POPUPOPEN, NIN_SELECT, NOTIFY_ICON_DATA_FLAGS, NOTIFY_ICON_MESSAGE, NOTIFYICON_VERSION_4,
+    NOTIFYICONDATAW, NOTIFYICONIDENTIFIER, Shell_NotifyIconGetRect, Shell_NotifyIconW,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     AppendMenuW, ChangeWindowMessageFilterEx, CreateIconIndirect, CreatePopupMenu, CreateWindowExW,
@@ -88,6 +92,18 @@ pub enum TrayInput {
     /// The taskbar was re-created (Explorer restart) and the icon has been re-added; the app
     /// should re-render the icon in case the DPI changed.
     Recreated,
+    /// `NIN_BALLOONUSERCLICK`: the user selected a notification of ours ([`Tray::notify`]), as a
+    /// toast or in the notification centre: open the flyout (N§4).
+    NotificationClicked,
+}
+
+/// The standard icon of a notification ([`Tray::notify`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum NoticeIcon {
+    /// `NIIF_INFO`.
+    Info,
+    /// `NIIF_WARNING`.
+    Warning,
 }
 
 /// A tray icon image: straight (non-premultiplied) BGRA, top-down rows, `size × size` px
@@ -143,6 +159,10 @@ const RETRY_INTERVAL_MS: u32 = 2_000;
 const MAX_ADD_ATTEMPTS: u32 = 30;
 /// `szTip` holds 128 UTF-16 units including the terminating NUL.
 const TIP_UNITS: usize = 128;
+/// `szInfoTitle` holds 64 UTF-16 units including the terminating NUL.
+const INFO_TITLE_UNITS: usize = 64;
+/// `szInfo` holds 256 UTF-16 units including the terminating NUL.
+const INFO_UNITS: usize = 256;
 
 /// State shared by [`Tray`] and the window procedure (main thread only). The window holds one
 /// strong reference (released on `WM_NCDESTROY`); the procedure takes another while it runs, so
@@ -282,6 +302,30 @@ impl Tray {
             notify(NIM_MODIFY, &nid)?;
         }
         Ok(())
+    }
+
+    /// Shows a notification from the icon (`NIM_MODIFY` with `NIF_INFO`, N§4): `title` (cut to
+    /// 63 UTF-16 units) in bold over `body` (cut to 255; lines separated by `\n`), with the
+    /// standard `icon`. Windows shows it like any app notification (Do not disturb holds it
+    /// back). Fails when the icon is not in the notification area (the shell is not up
+    /// yet): the notice is not kept for later. An empty `body` would remove a showing
+    /// notification instead, so the title stands in for it.
+    pub fn notify(&self, title: &str, body: &str, icon: NoticeIcon) -> windows::core::Result<()> {
+        if !self.shared.added.get() {
+            return Err(Error::new(
+                E_FAIL,
+                "the tray icon is not in the notification area",
+            ));
+        }
+        let mut nid = self.nid(NIF_INFO);
+        nid.szInfoTitle = units::<INFO_TITLE_UNITS>(title);
+        nid.szInfo = units::<INFO_UNITS>(if body.is_empty() { title } else { body });
+        nid.dwInfoFlags = NIIF_RESPECT_QUIET_TIME
+            | match icon {
+                NoticeIcon::Info => NIIF_INFO,
+                NoticeIcon::Warning => NIIF_WARNING,
+            };
+        notify(NIM_MODIFY, &nid)
     }
 
     /// The icon's rectangle on screen in device px (`Shell_NotifyIconGetRect`), or `None` when
@@ -580,24 +624,30 @@ fn decode_callback(wparam: WPARAM, lparam: LPARAM) -> Option<TrayInput> {
         WM_CONTEXTMENU => Some(TrayInput::ContextMenu { pt }),
         NIN_POPUPOPEN => Some(TrayInput::PopupOpen { pt }),
         NIN_POPUPCLOSE => Some(TrayInput::PopupClose),
+        NIN_BALLOONUSERCLICK => Some(TrayInput::NotificationClicked),
         _ => None,
     }
 }
 
-/// `tooltip` as `szTip`: at most 127 UTF-16 units, cut at a grapheme boundary, NUL-terminated.
-/// Embedded NULs are dropped (they would end the string early).
+/// `tooltip` as `szTip`: at most 127 UTF-16 units ([`units`]).
 fn tip_units(tooltip: &str) -> [u16; TIP_UNITS] {
-    let mut out = [0u16; TIP_UNITS];
-    let max = TIP_UNITS - 1;
-    let cleaned: Vec<char> = tooltip.chars().filter(|&c| c != '\0').collect();
+    units::<TIP_UNITS>(tooltip)
+}
+
+/// `text` as a fixed field of `N` UTF-16 units: at most `N − 1` units, cut at a grapheme boundary,
+/// NUL-terminated. Embedded NULs are dropped (they would end the string early).
+fn units<const N: usize>(text: &str) -> [u16; N] {
+    let mut out = [0u16; N];
+    let max = N.saturating_sub(1);
+    let cleaned: Vec<char> = text.chars().filter(|&c| c != '\0').collect();
     // How many chars fit.
-    let mut units = 0;
+    let mut used = 0;
     let mut fit = 0;
     for c in &cleaned {
-        if units + c.len_utf16() > max {
+        if used + c.len_utf16() > max {
             break;
         }
-        units += c.len_utf16();
+        used += c.len_utf16();
         fit += 1;
     }
     if fit < cleaned.len() {
@@ -845,6 +895,19 @@ mod tests {
     }
 
     #[test]
+    fn notification_fields_are_cut_to_their_size() {
+        let title: [u16; INFO_TITLE_UNITS] = units(&"t".repeat(100));
+        assert_eq!(title.iter().position(|&u| u == 0), Some(63));
+        let text = "Back to 0% used.\nClaude weekly limit is 82% used";
+        let body: [u16; INFO_UNITS] = units(text);
+        let len = body.iter().position(|&u| u == 0).unwrap_or(INFO_UNITS);
+        assert_eq!(
+            String::from_utf16(&body[..len]).expect("valid UTF-16"),
+            text
+        );
+    }
+
+    #[test]
     fn decodes_version_4_callbacks() {
         let l = |event: u32, id: u32| LPARAM(((id << 16) | event) as isize);
         let at = |x: i16, y: i16| WPARAM(((y as u16 as usize) << 16) | x as u16 as usize);
@@ -871,6 +934,10 @@ mod tests {
         assert_eq!(
             decode_callback(at(0, 0), l(NIN_POPUPCLOSE, ICON_ID)),
             Some(TrayInput::PopupClose)
+        );
+        assert_eq!(
+            decode_callback(at(0, 0), l(NIN_BALLOONUSERCLICK, ICON_ID)),
+            Some(TrayInput::NotificationClicked)
         );
         // Mouse moves, other icons' ids and unknown events are ignored.
         assert_eq!(decode_callback(at(0, 0), l(0x0200, ICON_ID)), None);

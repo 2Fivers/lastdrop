@@ -286,6 +286,24 @@ messages! {
     TrayLoading = "tray.loading" => "Lastdrop: reading usage…",
     TrayNothing = "tray.nothing" => "Lastdrop",
 
+    // ---- Notifications (N§3)
+    NoticeLevelTitle = "notice.level.title" => "{service} {meter} limit is {pct} used",
+    NoticeUsedUpTitle = "notice.usedup.title" => "{service} {meter} limit is used up",
+    NoticeResetTitle = "notice.reset.title" => "{service} {meter} limit has reset",
+    NoticeBalanceLowTitle = "notice.balance.low.title" => "{service} {meter} running low",
+    NoticeBalanceEmptyTitle = "notice.balance.empty.title" => "{service} {meter} used up",
+    NoticeBodyRunsOut = "notice.body.runsout" => "At your recent pace it runs out at {time}, {duration} before the reset.",
+    NoticeBodyLasts = "notice.body.lasts" => "At your recent pace it lasts until the reset at {time}.",
+    NoticeBodyResets = "notice.body.resets" => "It resets {time}.",
+    NoticeBodyBack = "notice.body.back" => "It is back at {time}, in {duration}.",
+    NoticeBodyNoReset = "notice.body.noreset" => "Select to see the details in Lastdrop.",
+    NoticeBodyReset = "notice.body.reset" => "Back to {pct} used.",
+    NoticeBodyResetUsedUp = "notice.body.reset.usedup" => "Back to {pct} used. You can use it again.",
+    NoticeBodyBalance = "notice.body.balance" => "{amount} {unit} left, about {duration} at your use of the last 7 days.",
+    NoticeBodyBalanceLeft = "notice.body.balance.left" => "{amount} {unit} left.",
+    NoticeBodyBalanceEmpty = "notice.body.balance.empty" => "Top it up to keep using {service}.",
+    NoticeMore = "notice.more" => "+{n} more",
+
     // ---- Context menus (R§10, F§9)
     MenuRefresh = "menu.refresh" => "Refresh now",
     MenuPause = "menu.pause" => "Pause updates",

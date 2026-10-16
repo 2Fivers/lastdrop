@@ -1,6 +1,7 @@
 //! The settings window (ROADMAP M1 "settings basics"; out of both specs' scope, F§12): services
 //! on/off, the Meshy API key (Credential Manager, never echoed back), the refresh interval, the
-//! readout (on/off, auto or pinned meters, time style), the global hotkey and start with Windows.
+//! readout (on/off, auto or pinned meters, time style), notifications (N§2), the global hotkey
+//! and start with Windows.
 //!
 //! It runs in the dialog process ([`crate::dialog`]), not in the tray process. Opening reads
 //! `settings.json` and the meters earlier readings reported (`state.json`); the window edits a
@@ -43,6 +44,53 @@ pub const INTERVALS: [(&str, Option<u16>); 7] = [
     ("15 min", Some(15)),
     ("30 min", Some(30)),
 ];
+
+/// The notification level choices (N§2): label and level (`None` = off).
+pub const LEVELS: [(&str, Option<u8>); 9] = [
+    ("Off", None),
+    ("50%", Some(50)),
+    ("60%", Some(60)),
+    ("70%", Some(70)),
+    ("75%", Some(75)),
+    ("80%", Some(80)),
+    ("85%", Some(85)),
+    ("90%", Some(90)),
+    ("95%", Some(95)),
+];
+
+/// The [`LEVELS`] indices of the first two of `levels` (as `NotificationSettings::levels` gives
+/// them; a missing one is off), each the nearest choice.
+pub fn level_indices(levels: &[u8]) -> (i32, i32) {
+    let index = |level: Option<&u8>| {
+        let Some(&level) = level else {
+            return 0;
+        };
+        LEVELS
+            .iter()
+            .enumerate()
+            .filter_map(|(i, (_, v))| v.map(|v| (i, v.abs_diff(level))))
+            .min_by_key(|(_, d)| *d)
+            .map_or(0, |(i, _)| i32::try_from(i).unwrap_or(0))
+    };
+    (index(levels.first()), index(levels.get(1)))
+}
+
+/// The levels of two [`LEVELS`] indices: the ones that are not off, ascending, each once.
+pub fn levels_at(first: i32, second: i32) -> Vec<u8> {
+    let level = |i: i32| {
+        usize::try_from(i)
+            .ok()
+            .and_then(|i| LEVELS.get(i))
+            .and_then(|(_, v)| *v)
+    };
+    let mut levels: Vec<u8> = [level(first), level(second)]
+        .into_iter()
+        .flatten()
+        .collect();
+    levels.sort_unstable();
+    levels.dedup();
+    levels
+}
 
 /// The settings being edited.
 #[derive(Clone, Debug, PartialEq)]
@@ -325,6 +373,16 @@ pub fn fill(
     )));
     window.set_time_style_index(i32::from(s.readout.time_style == TimeStyle::Relative));
     fill_meters(window, draft, reported);
+    let n = &s.notifications;
+    window.set_notify_enabled(n.enabled);
+    let levels: Vec<SharedString> = LEVELS.iter().map(|(l, _)| (*l).into()).collect();
+    window.set_level_choices(ModelRc::new(VecModel::from(levels)));
+    let (first, second) = level_indices(&n.levels());
+    window.set_notify_first_index(first);
+    window.set_notify_second_index(second);
+    window.set_notify_used_up(n.used_up);
+    window.set_notify_resets(n.resets);
+    window.set_notify_low_balance(n.low_balance);
     window.set_start_with_windows(s.start_with_windows);
     window.set_meshy_key_stored(meshy_key_stored);
     match &s.hotkey {
@@ -630,6 +688,19 @@ fn apply(session: &Session) {
         TimeStyle::Clock
     };
     draft.start_with_windows = window.get_start_with_windows();
+    let n = &mut draft.notifications;
+    n.enabled = window.get_notify_enabled();
+    n.used_up = window.get_notify_used_up();
+    n.resets = window.get_notify_resets();
+    n.low_balance = window.get_notify_low_balance();
+    // Levels the combo boxes cannot show (a hand-edited 83) stay until the user picks others.
+    let picked = (
+        window.get_notify_first_index(),
+        window.get_notify_second_index(),
+    );
+    if picked != level_indices(&n.levels()) {
+        n.levels = levels_at(picked.0, picked.1);
+    }
 
     let (disk, outcome) = persist::load_settings(&session.settings_path);
     if !matches!(outcome, LoadOutcome::Loaded) {
@@ -702,6 +773,23 @@ mod tests {
     use lastdrop_core::settings::{Pause, ProviderSettings};
 
     use crate::persist::SeenMeter;
+
+    #[test]
+    fn notification_levels_round_trip_and_snap_to_the_nearest_choice() {
+        assert_eq!(level_indices(&[80, 95]), (5, 8));
+        assert_eq!(levels_at(5, 8), [80, 95]);
+        assert_eq!(level_indices(&[]), (0, 0));
+        assert_eq!(levels_at(0, 0), Vec::<u8>::new());
+        assert_eq!(level_indices(&[90]), (7, 0));
+        // Picked in either order or twice: ascending, once.
+        assert_eq!(levels_at(8, 5), [80, 95]);
+        assert_eq!(levels_at(7, 7), [90]);
+        // Off for one of them, or an index out of range.
+        assert_eq!(levels_at(0, 6), [85]);
+        assert_eq!(levels_at(-1, 99), Vec::<u8>::new());
+        // A hand-edited 83 shows as the nearest choice.
+        assert_eq!(level_indices(&[83, 99]), (6, 8));
+    }
 
     #[test]
     fn intervals_round_trip_and_snap_to_the_nearest_choice() {

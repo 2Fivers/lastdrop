@@ -198,6 +198,22 @@ pub const DEFAULT_REFRESH_MINUTES: u16 = 5;
 /// Bounds of the refresh interval setting in minutes (ROADMAP "Settings": "1–30 min").
 pub const REFRESH_MINUTES_RANGE: (u16, u16) = (1, 30);
 
+// ---- Notifications (N§) ---------------------------------------------------------------------
+
+/// The default notification levels (N§2; ROADMAP "Notifications at thresholds (for example 80 %
+/// and 95 %)").
+pub const NOTIFY_DEFAULT_LEVELS: [u8; 2] = [80, 95];
+
+/// The level a used-up window is remembered at, above every user level (N§1 USED_UP).
+pub const NOTIFY_USED_UP_LEVEL: u8 = 100;
+
+/// Other notices listed under the first one's text before `+{n} more` (N§3).
+pub const NOTIFY_MAX_LISTED: usize = 2;
+
+/// A window's announced levels are forgotten this long after its reset time, when no evaluation
+/// saw the reset (the meter went away, or stayed stale; N§1).
+pub const NOTIFY_FORGET_AFTER: SignedDuration = SignedDuration::from_hours(24);
+
 /// Layout numbers in logical px at 100 % (R§0). Device px = `round(x × s)` per constant.
 pub mod layout {
     // -- Readout (R§6)
