@@ -15,7 +15,7 @@ use crate::grammar::TextContext;
 use crate::grammar::a11y::{balance_sentence, runout_point, unit_word};
 use crate::grammar::cells::{back_text, course_pct, pct, reason_text, resets_at, t_out};
 use crate::grammar::numbers::{amount, balance_duration_words, percent, share_pct};
-use crate::grammar::strings::{Msg, fill, text};
+use crate::grammar::strings::{Msg, Strings, fill, text};
 use crate::grammar::time::{
     age_long_min1, age_token, card_date, card_time, long_duration, round_min, runout_text,
     shown_age, shown_duration, time_token,
@@ -38,8 +38,9 @@ fn without_sentence(template: &str, placeholder: &str) -> String {
         .to_owned()
 }
 
-/// `s` with its first letter upper-cased (Appendix B: `{meter}` "capitalised at the start of a
-/// sentence").
+/// `s` with its first letter upper-cased: titles, verdicts and "Also tracked" lines, whose
+/// templates may start with `{meter}` or `{label}` (Appendix B: `{meter}` "capitalised at the
+/// start of a sentence").
 pub(crate) fn capitalise(s: &str) -> String {
     let mut chars = s.chars();
     match chars.next() {
@@ -440,14 +441,14 @@ fn also_tracked(
         .iter()
         .map(|(service, a)| AlsoLine {
             glyph: service.source.provider.glyph(),
-            label: text(
+            label: capitalise(&text(
                 s,
                 Msg::CardAlsoLine,
                 &[
                     ("service", &service.display_name()),
                     ("short_name", &a.names.short_name),
                 ],
-            ),
+            )),
             value: match balance(a) {
                 Some(b) => amount(b.amount, cx.locale),
                 None if a.state == RowState::Ended => s.template(Msg::NoReset).to_owned(),
@@ -465,13 +466,21 @@ fn also_tracked(
     })
 }
 
-/// The `{meter}` of a card title: the capitalised `short_name`, or `{service} {short_name}` when
-/// the card shows several services.
-fn title_meter(service: &ServiceEval, a: &Assessment, several: bool) -> String {
+/// The `{meter}` of a card title: the `short_name`, or the meter with its service
+/// (`card.also.line`: `Claude weekly`, `veckogränsen för Claude`) when the card shows several
+/// services. The title is capitalised as a whole ([`trouble_header`]).
+fn title_meter(service: &ServiceEval, a: &Assessment, several: bool, s: &dyn Strings) -> String {
     if several {
-        format!("{} {}", service.display_name(), a.names.short_name)
+        text(
+            s,
+            Msg::CardAlsoLine,
+            &[
+                ("service", &service.display_name()),
+                ("short_name", &a.names.short_name),
+            ],
+        )
     } else {
-        capitalise(&a.names.short_name)
+        a.names.short_name.clone()
     }
 }
 
@@ -570,7 +579,7 @@ fn stale_header(
     (
         CardHeader {
             glyph: Some(glyph),
-            title,
+            title: capitalise(&title),
         },
         sentence,
     )
@@ -655,7 +664,7 @@ fn trouble_header(
     cx: &TextContext<'_>,
 ) -> (CardHeader, String) {
     let s = cx.strings;
-    let meter = title_meter(service, a, several);
+    let meter = title_meter(service, a, several, s);
     let pct_text = percent(pct(a), cx.locale);
     let reset = resets_at(a);
     let w = window(a);
@@ -839,7 +848,7 @@ fn trouble_header(
     (
         CardHeader {
             glyph: Some(glyph),
-            title,
+            title: capitalise(&title),
         },
         sentence,
     )

@@ -130,7 +130,8 @@ impl LocaleFormat {
     }
 
     /// sv-SE: 24 h (`09:00`), lower-case weekdays (`mån`), `42 %` and `1 240` with U+202F
-    /// (R§5.2, R§5.6). Strings stay English until the Swedish table exists (ROADMAP M4).
+    /// (R§5.2, R§5.6). The words come from the language's table, not from here: the regional
+    /// format and the language are separate Windows settings.
     pub fn sv_se(tz: TimeZone) -> LocaleFormat {
         LocaleFormat {
             name: "sv-SE".to_owned(),

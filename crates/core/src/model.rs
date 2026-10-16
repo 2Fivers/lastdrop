@@ -136,6 +136,17 @@ impl MeterId {
     pub const WEEKLY: &'static str = "weekly";
     /// Meshy's credit balance.
     pub const CREDITS: &'static str = "credits";
+    /// Copilot's premium-requests quota (paid plans).
+    pub const PREMIUM: &'static str = "premium";
+    /// Copilot's chat-messages quota (Copilot Free).
+    pub const CHAT: &'static str = "chat";
+    /// Copilot's code-completions quota (Copilot Free).
+    pub const COMPLETIONS: &'static str = "completions";
+
+    /// The prefix of a per-model weekly window id ([`MeterId::weekly_model`]).
+    const WEEKLY_MODEL_PREFIX: &'static str = "weekly:";
+    /// The prefix of a window named by its length ([`MeterId::window`]).
+    const WINDOW_PREFIX: &'static str = "window:";
 
     /// Builds an id from a static name such as [`MeterId::FIVE_HOUR`].
     pub fn new(id: &str) -> MeterId {
@@ -145,7 +156,23 @@ impl MeterId {
     /// The per-model weekly window id `weekly:<model>` (`weekly:fable`); `model` is lower-cased
     /// by the provider before calling this.
     pub fn weekly_model(model: &str) -> MeterId {
-        MeterId(format!("weekly:{model}"))
+        MeterId(format!("{}{model}", MeterId::WEEKLY_MODEL_PREFIX))
+    }
+
+    /// A per-model weekly window ([`MeterId::weekly_model`]).
+    pub fn is_weekly_model(&self) -> bool {
+        self.0.starts_with(MeterId::WEEKLY_MODEL_PREFIX)
+    }
+
+    /// The id `window:<minutes>` of a window outside the catalogue, named by its length (a Codex
+    /// plan with other window lengths).
+    pub fn window(minutes: i64) -> MeterId {
+        MeterId(format!("{}{minutes}", MeterId::WINDOW_PREFIX))
+    }
+
+    /// The length in minutes of a [`MeterId::window`] id; `None` for any other id.
+    pub fn window_minutes(&self) -> Option<i64> {
+        self.0.strip_prefix(MeterId::WINDOW_PREFIX)?.parse().ok()
     }
 }
 
@@ -204,15 +231,25 @@ impl MeterNames {
     }
 
     /// The names of a Claude per-model weekly window (R§2 table): `Fable` / `Fable weekly` /
-    /// `Weekly · Fable`, from the model's display name as the service gives it.
+    /// `Weekly · Fable`, from the model's display name as the service gives it (English; the
+    /// surfaces show [`crate::grammar::meters::localized`]).
     pub fn weekly_model(model: &str) -> MeterNames {
         MeterNames {
             short_label: model.to_owned(),
             short_name: format!("{model} weekly"),
-            name: format!("Weekly · {model}"),
+            name: format!("{WEEKLY_MODEL_NAME_PREFIX}{model}"),
         }
     }
+
+    /// The model's display name of names built by [`MeterNames::weekly_model`]
+    /// (`Weekly · Fable` → `Fable`); `None` for any other names.
+    pub fn weekly_model_name(&self) -> Option<&str> {
+        self.name.strip_prefix(WEEKLY_MODEL_NAME_PREFIX)
+    }
 }
+
+/// The start of a per-model weekly window's `name` ([`MeterNames::weekly_model`]).
+const WEEKLY_MODEL_NAME_PREFIX: &str = "Weekly · ";
 
 /// The kind of a meter definition (R§2 "Two kinds").
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -327,7 +364,7 @@ const MESHY_METERS: [MeterDef; 1] = [MeterDef {
 }];
 
 /// The R§2 definitions of a service's always-present meters, in meter order (English names;
-/// R§5.9 localizes them with the other strings when a second language arrives). Claude's
+/// the surfaces show them in the user's language, [`crate::grammar::meters::localized`]). Claude's
 /// per-model weekly windows come from readings (order 2, 3, … in the service's order). A Codex
 /// plan with other window lengths reports meters outside the catalogue (`codex::meter`). Copilot
 /// has no always-present meter.

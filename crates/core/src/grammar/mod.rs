@@ -7,13 +7,15 @@
 //! - [`cells`]: readout right cells and compact cells by row state (R§5.7, R§5.8).
 //! - [`a11y`]: UI Automation row sentences (R§11) and the tray tooltip (R§9.3).
 //! - [`strings`]: every string as a resource (R§5.9, R Appendix B), with a [`Strings`] table
-//!   per language (English now, Swedish later).
+//!   per [`Language`] (English and Swedish).
+//! - [`meters`]: meter names in the language of the strings (R§2 table).
 //! - [`locale`]: the Windows regional format as data ([`LocaleFormat`]); `lastdrop-win` reads it
 //!   with `GetLocaleInfoEx`.
 
 pub mod a11y;
 pub mod cells;
 pub mod locale;
+pub mod meters;
 pub mod numbers;
 pub mod strings;
 pub mod time;
@@ -22,7 +24,7 @@ use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
 
 pub use locale::LocaleFormat;
-pub use strings::{English, Msg, Strings};
+pub use strings::{English, Language, Msg, Strings, Swedish};
 
 /// How time points are written in the readout (R§5.2; setting "Show times as").
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]

@@ -87,6 +87,9 @@ pub struct Args {
     pub scale: Option<f64>,
     /// `--dark`: the preview in the dark Windows mode.
     pub dark: bool,
+    /// `--language <tag>`: the preview's language (`en`, `sv`); default: the settings' and
+    /// Windows' (English with `--demo`).
+    pub language: Option<String>,
     /// `--settings`, `--settings-pins` or `--about`: run as the dialog process with that dialog
     /// ([`dialog`]) instead of the app. The last one given counts.
     pub dialog: Option<dialog::DialogKind>,
@@ -124,6 +127,9 @@ impl Args {
                     out.demo_scenario = iter.next().and_then(|v| v.to_str().map(str::to_owned));
                 }
                 Some("--dark") => out.dark = true,
+                Some("--language") => {
+                    out.language = iter.next().and_then(|v| v.to_str().map(str::to_owned));
+                }
                 Some(flag @ ("--settings" | "--settings-pins" | "--about")) => {
                     out.dialog = dialog::DialogKind::from_flag(flag);
                 }
@@ -198,10 +204,13 @@ mod tests {
             "--scale",
             "1.5",
             "--dark",
+            "--language",
+            "sv",
         ]);
         assert_eq!(p.preview_flyout, Some(PathBuf::from("f.png")));
         assert!(p.demo && p.dark);
         assert_eq!(p.scale, Some(1.5));
+        assert_eq!(p.language.as_deref(), Some("sv"));
     }
 
     #[test]

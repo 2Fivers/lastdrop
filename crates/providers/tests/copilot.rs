@@ -5,6 +5,8 @@
 use std::path::PathBuf;
 
 use jiff::{SignedDuration, Timestamp};
+use lastdrop_core::grammar::English;
+use lastdrop_core::grammar::meters::localized;
 use lastdrop_core::model::{
     AccountKey, Health, MeterId, MeterNames, ProviderId, Snapshot, SourceKind, WindowLen, catalog,
 };
@@ -373,4 +375,27 @@ fn sign_in_opens_gh_auth_login() {
         CopilotProvider::new().usage_page(),
         Some("https://github.com/settings/copilot")
     );
+}
+
+#[test]
+fn quota_names_are_the_english_meter_names_of_core() {
+    // The surfaces show `grammar::meters::localized` names; in English they must be these.
+    for id in [
+        copilot::PREMIUM,
+        copilot::CHAT,
+        copilot::COMPLETIONS,
+        "agents",
+    ] {
+        let quota = copilot::Quota {
+            id,
+            used: 0.5,
+            limited: false,
+        };
+        let m = copilot::meter(&quota, None);
+        assert_eq!(
+            localized(ProviderId::Copilot, &m.id, &m.names, &English),
+            m.names,
+            "{id}"
+        );
+    }
 }

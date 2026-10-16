@@ -50,6 +50,12 @@ pub struct Settings {
     pub start_with_windows: bool,
     /// Follow the Windows light/dark mode and accent (the only M1 theme; Theme Studio is M4).
     pub theme_follows_system: bool,
+    /// The language of every string (ROADMAP M4 "Language"): a BCP 47 tag (`en`, `sv`), or
+    /// `None` to follow Windows' display language (the first preferred display language with a
+    /// table, else English: [`crate::grammar::Language::resolve`]). A tag without a table (a
+    /// newer build's language) is kept as it is and follows Windows too. Numbers and times
+    /// always follow the regional format.
+    pub language: Option<String>,
     /// The global hotkey that toggles the flyout (R§10 "Global hotkey: optional, off by
     /// default"). `None` = off.
     pub hotkey: Option<Hotkey>,
@@ -132,7 +138,8 @@ impl Default for Settings {
     /// First-run settings: Claude and Codex enabled (they read local files and need no secret),
     /// Copilot present but disabled until the user turns it on (it needs the GitHub CLI signed
     /// in), Meshy present but disabled until the user stores a key; refresh every 5 minutes;
-    /// readout on, auto rows, clock times (R§4.3, R§5.2); every notification on (N§2).
+    /// readout on, auto rows, clock times (R§4.3, R§5.2); every notification on (N§2); the
+    /// language of Windows.
     fn default() -> Settings {
         Settings {
             version: SETTINGS_VERSION,
@@ -149,6 +156,7 @@ impl Default for Settings {
             pause: None,
             start_with_windows: false,
             theme_follows_system: true,
+            language: None,
             hotkey: None,
             notifications: NotificationSettings::default(),
             extra: Extra::new(),
@@ -574,6 +582,32 @@ mod tests {
         assert_eq!(
             out["providers"][0]["interval"]["every_hour"], 2,
             "kept verbatim"
+        );
+    }
+
+    #[test]
+    fn the_language_follows_windows_until_one_is_picked() {
+        use crate::grammar::Language;
+        let windows = ["sv-SE".to_owned()];
+        let s = Settings::default();
+        assert_eq!(s.language, None);
+        assert_eq!(
+            Language::resolve(s.language.as_deref(), &windows),
+            Language::Swedish
+        );
+        // A newer build's language survives a round trip and follows Windows meanwhile.
+        let s: Settings =
+            serde_json::from_str(r#"{ "version": 1, "language": "de" }"#).expect("deserialize");
+        assert_eq!(
+            Language::resolve(s.language.as_deref(), &windows),
+            Language::Swedish
+        );
+        let out = serde_json::to_value(&s).expect("serialize");
+        assert_eq!(out["language"], "de");
+        let s: Settings = serde_json::from_str(r#"{ "language": "en" }"#).expect("deserialize");
+        assert_eq!(
+            Language::resolve(s.language.as_deref(), &windows),
+            Language::English
         );
     }
 

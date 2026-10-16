@@ -130,6 +130,13 @@ Messages between threads: workers send results to the main thread with
   up or reset, a balance running low ([`docs/design/notifications-spec.md`](design/notifications-spec.md)).
   A pure function of the evaluation and the memory of what was announced, worded into one
   `NotificationModel` per evaluation.
+- **Strings** — every user-visible string is a resource (`grammar::strings`), one table per
+  language: English and Swedish. The language is the user's setting, else the first of Windows'
+  display languages that has a table, else English; numbers, dates and times follow the
+  regional format on their own. Providers name meters in English (that is what readings, the
+  history and the state file keep), and the app renames them in the chosen language on every
+  evaluation (`grammar::meters`). The settings and about windows are still English Slint
+  literals.
 - **Settings** — versioned `serde` schema with defaults; unknown fields are kept.
 
 ## Providers (`lastdrop-providers`)
@@ -190,6 +197,9 @@ Rules for every provider:
   need a registered AppUserModelID and load WinRT into the tray process.
 - **Theme:** taskbar light/dark (`SystemUsesLightTheme`), app light/dark, accent, transparency,
   high contrast; change notifications re-render.
+- **Regional format and language:** `GetLocaleInfoEx` for the format and
+  `GetUserPreferredUILanguages` for the display languages, read again on `WM_SETTINGCHANGE`
+  "intl".
 - **Autostart:** `HKCU\…\Run\Lastdrop`. **Secrets:** Credential Manager, generic credentials
   named `Lastdrop:<provider>:<account>:<name>`. **Single instance:** `Local\Lastdrop` mutex; a
   second launch asks the first to open the flyout. The dialog process has its own mutex,

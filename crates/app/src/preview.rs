@@ -9,7 +9,8 @@
 //!
 //! With `--demo` the data is [`crate::demo`]'s: invented, no network, no files, no Windows
 //! settings. Without it, every enabled service is read once with the real providers and the
-//! user's theme, format and history.
+//! user's theme, format, language and history. `--language <tag>` (`en`, `sv`) renders in that
+//! language instead (with `--demo`, in its regional format too).
 
 use std::path::Path;
 use std::rc::Rc;
@@ -19,7 +20,7 @@ use jiff::Timestamp;
 use jiff::tz::TimeZone;
 use lastdrop_core::consts::layout::{CARD_W, FLYOUT_MAX_H, FLYOUT_W};
 use lastdrop_core::flyout::{FlyoutModel, build_flyout};
-use lastdrop_core::grammar::English;
+use lastdrop_core::grammar::{Language, Strings};
 use lastdrop_core::model::MeterKey;
 use lastdrop_core::readout::BuildContext;
 use lastdrop_core::readout::hovercard::{HoverAnchor, HoverCardModel, build_hover_card};
@@ -82,10 +83,17 @@ pub fn run(args: &Args) -> Result<(), AppError> {
             .as_deref()
             .and_then(demo::Scenario::parse)
             .unwrap_or_default();
-        let world = demo::Demo::scenario(args.dark, scenario);
+        let language = args
+            .language
+            .as_deref()
+            .and_then(Language::from_tag)
+            .unwrap_or_default();
+        let world = demo::Demo::scenario(args.dark, scenario).in_language(language);
+        let strings = language.strings();
         if let Some(out) = args.preview_flyout.as_deref() {
             let model = world.flyout();
-            render_flyout(&model, &demo_menus(&model), &world.theme, scale, out)?;
+            let menus = demo_menus(&model, strings);
+            render_flyout(&model, &menus, strings, &world.theme, scale, out)?;
         }
         if let Some(out) = args.preview_hover_card.as_deref() {
             render_hover_card(&world.hover_card(), &world.theme, scale, out)?;
@@ -98,9 +106,16 @@ pub fn run(args: &Args) -> Result<(), AppError> {
         }
         return Ok(());
     }
-    let live = live_models()?;
+    let live = live_models(args.language.as_deref().and_then(Language::from_tag))?;
     if let Some(out) = args.preview_flyout.as_deref() {
-        render_flyout(&live.flyout, &live.menus, &live.theme, scale, out)?;
+        render_flyout(
+            &live.flyout,
+            &live.menus,
+            live.strings,
+            &live.theme,
+            scale,
+            out,
+        )?;
     }
     if let Some(out) = args.preview_hover_card.as_deref() {
         render_hover_card(&live.hover_card, &live.theme, scale, out)?;
@@ -109,11 +124,11 @@ pub fn run(args: &Args) -> Result<(), AppError> {
 }
 
 /// Card menus for the demo (every service has a usage page, nothing pinned).
-fn demo_menus(model: &FlyoutModel) -> Vec<CardMenu> {
+fn demo_menus(model: &FlyoutModel, strings: &dyn Strings) -> Vec<CardMenu> {
     model
         .cards
         .iter()
-        .map(|card| wiring::card_menu(card, &English, &[], true))
+        .map(|card| wiring::card_menu(card, strings, &[], true))
         .collect()
 }
 
@@ -157,10 +172,12 @@ fn snapshot_to_png(
     Ok(())
 }
 
-/// Renders the flyout `model` at `scale` with `theme` and writes the PNG.
+/// Renders the flyout `model` at `scale` with `theme` and the fixed labels of `strings`, and
+/// writes the PNG.
 pub fn render_flyout(
     model: &FlyoutModel,
     menus: &[CardMenu],
+    strings: &dyn Strings,
     theme: &ThemeInfo,
     scale: f64,
     out: &Path,
@@ -169,7 +186,7 @@ pub fn render_flyout(
     let global = flyout.global::<ui::Theme>();
     wiring::set_theme(&global, theme);
     global.set_solid_backdrop(solid_backdrop(theme.taskbar_dark));
-    wiring::set_flyout_labels(&flyout, &English);
+    wiring::set_flyout_labels(&flyout, strings);
     wiring::set_flyout(&flyout, model, scale, menus);
     flyout.show()?;
     snapshot_to_png(
@@ -235,7 +252,7 @@ fn render_settings(world: &demo::Demo, scale: f64, out: &Path) -> Result<(), App
         })
         .collect();
     let draft = crate::settings_window::draft_with(world.settings.clone(), &reported);
-    crate::settings_window::fill(&window, &draft, &reported, true);
+    crate::settings_window::fill(&window, &draft, &reported, true, &[]);
     window.show()?;
     snapshot_to_png(
         window.window(),
@@ -275,11 +292,13 @@ struct LiveModels {
     menus: Vec<CardMenu>,
     hover_card: HoverCardModel,
     theme: ThemeInfo,
+    strings: &'static dyn Strings,
 }
 
 /// The flyout and the hover card from one synchronous read of every enabled service with the
-/// real providers, the user's theme, regional format and history.
-fn live_models() -> Result<LiveModels, AppError> {
+/// real providers, the user's theme, regional format and history, in `language` (else the
+/// language of the settings and Windows).
+fn live_models(language: Option<Language>) -> Result<LiveModels, AppError> {
     // COM for UISettings (theme) and Network List Manager (after a failed read).
     // SAFETY: called once on this thread before any COM object is created on it.
     let _ = unsafe {
@@ -297,7 +316,16 @@ fn live_models() -> Result<LiveModels, AppError> {
     // end of this function (after `state`).
     let writer = Writer::start()?;
     let history = HistoryStore::open(&paths.history, now, writer.handle())?;
-    let mut state = AppState::new(settings, history, theme, locale);
+    let mut state = AppState::new(
+        settings,
+        history,
+        theme,
+        locale,
+        lastdrop_win::locale::ui_languages(),
+    );
+    if let Some(language) = language {
+        state.strings = language.strings();
+    }
     // The meters earlier runs saw keep their room, as in the app (read only: a preview never
     // rewrites the state file).
     state.restore_saved(&persist::load_state(&paths.state), now);
@@ -365,7 +393,7 @@ fn live_models() -> Result<LiveModels, AppError> {
                 .get(&card.source)
                 .and_then(|s| s.provider.usage_page())
                 .is_some();
-            wiring::card_menu(card, &state.strings, &pins, usage)
+            wiring::card_menu(card, state.strings, &pins, usage)
         })
         .collect();
     Ok(LiveModels {
@@ -373,5 +401,6 @@ fn live_models() -> Result<LiveModels, AppError> {
         menus,
         hover_card,
         theme,
+        strings: state.strings,
     })
 }

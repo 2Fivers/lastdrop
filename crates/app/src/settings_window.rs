@@ -1,7 +1,8 @@
 //! The settings window (ROADMAP M1 "settings basics"; out of both specs' scope, F§12): services
 //! on/off, the Meshy API key (Credential Manager, never echoed back), the refresh interval, the
-//! readout (on/off, auto or pinned meters, time style), notifications (N§2), the global hotkey
-//! and start with Windows.
+//! readout (on/off, auto or pinned meters, time style), notifications (N§2), the global hotkey,
+//! the language (ROADMAP M4) and start with Windows. The window's own labels are English in every
+//! language (they are Slint literals; ROADMAP M4 lists translating them).
 //!
 //! It runs in the dialog process ([`crate::dialog`]), not in the tray process. Opening reads
 //! `settings.json` and the meters earlier readings reported (`state.json`); the window edits a
@@ -19,7 +20,7 @@ use std::cell::RefCell;
 use std::path::PathBuf;
 use std::rc::Rc;
 
-use lastdrop_core::grammar::TimeStyle;
+use lastdrop_core::grammar::{Language, TimeStyle};
 use lastdrop_core::model::{AccountKey, MeterKey, MeterNames, ProviderId, catalog};
 use lastdrop_core::secret::SecretString;
 use lastdrop_core::settings::{
@@ -57,6 +58,32 @@ pub const LEVELS: [(&str, Option<u8>); 9] = [
     ("90%", Some(90)),
     ("95%", Some(95)),
 ];
+
+/// The language choices: Windows' display language (with the language it resolves to, from
+/// `ui_languages`), then every language with a table by its own name ([`Language::ALL`]).
+pub fn language_choices(ui_languages: &[String]) -> Vec<String> {
+    let windows = Language::resolve(None, ui_languages);
+    std::iter::once(format!("Same as Windows ({})", windows.native_name()))
+        .chain(Language::ALL.iter().map(|l| l.native_name().to_owned()))
+        .collect()
+}
+
+/// The [`language_choices`] index of a language setting: 0 follows Windows (so does a tag
+/// without a table), else the language's place in [`Language::ALL`] after it.
+pub fn language_index(setting: Option<&str>) -> i32 {
+    setting
+        .and_then(Language::from_tag)
+        .and_then(|l| Language::ALL.iter().position(|a| *a == l))
+        .and_then(|i| i32::try_from(i + 1).ok())
+        .unwrap_or(0)
+}
+
+/// The language setting of a [`language_choices`] index: `None` follows Windows, else the
+/// language's tag.
+pub fn language_at(index: i32) -> Option<String> {
+    let i = usize::try_from(index).ok()?.checked_sub(1)?;
+    Language::ALL.get(i).map(|l| l.tag().to_owned())
+}
 
 /// The [`LEVELS`] indices of the first two of `levels` (as `NotificationSettings::levels` gives
 /// them; a missing one is off), each the nearest choice.
@@ -282,7 +309,13 @@ pub fn open(paths: &Paths, focus_pins: bool) -> Result<(), AppError> {
     let window = wiring::create_window(false, ui::SettingsWindow::new)?;
     connect(&window);
     let stored = meshy_key_stored(&draft.settings);
-    fill(&window, &draft, &reported, stored);
+    fill(
+        &window,
+        &draft,
+        &reported,
+        stored,
+        &lastdrop_win::locale::ui_languages(),
+    );
     window.set_focus_pins(false);
     if focus_pins {
         show_pins(&window);
@@ -343,13 +376,15 @@ fn meshy_key_stored(settings: &Settings) -> bool {
         .is_some()
 }
 
-/// Fills every property of the window from the draft, the meters the readings reported and
-/// whether a Meshy key is stored (no I/O; `--preview-settings` uses it directly).
+/// Fills every property of the window from the draft, the meters the readings reported,
+/// whether a Meshy key is stored and Windows' display languages (no I/O; `--preview-settings`
+/// uses it directly).
 pub fn fill(
     window: &ui::SettingsWindow,
     draft: &Draft,
     reported: &[(MeterKey, String)],
     meshy_key_stored: bool,
+    ui_languages: &[String],
 ) {
     let s = &draft.settings;
     let rows: Vec<ui::ProviderRow> = s
@@ -384,6 +419,12 @@ pub fn fill(
     window.set_notify_resets(n.resets);
     window.set_notify_low_balance(n.low_balance);
     window.set_start_with_windows(s.start_with_windows);
+    let languages: Vec<SharedString> = language_choices(ui_languages)
+        .into_iter()
+        .map(SharedString::from)
+        .collect();
+    window.set_language_choices(ModelRc::new(VecModel::from(languages)));
+    window.set_language_index(language_index(s.language.as_deref()));
     window.set_meshy_key_stored(meshy_key_stored);
     match &s.hotkey {
         Some(h) => {
@@ -688,6 +729,12 @@ fn apply(session: &Session) {
         TimeStyle::Clock
     };
     draft.start_with_windows = window.get_start_with_windows();
+    // A language this build has no table for (a newer build's) shows as "Same as Windows" and
+    // stays until the user picks another choice.
+    let language = window.get_language_index();
+    if language != language_index(draft.language.as_deref()) {
+        draft.language = language_at(language);
+    }
     let n = &mut draft.notifications;
     n.enabled = window.get_notify_enabled();
     n.used_up = window.get_notify_used_up();
@@ -789,6 +836,25 @@ mod tests {
         assert_eq!(levels_at(-1, 99), Vec::<u8>::new());
         // A hand-edited 83 shows as the nearest choice.
         assert_eq!(level_indices(&[83, 99]), (6, 8));
+    }
+
+    #[test]
+    fn languages_round_trip_through_the_choices() {
+        let choices = language_choices(&["sv-SE".to_owned(), "en-US".to_owned()]);
+        assert_eq!(choices, ["Same as Windows (Svenska)", "English", "Svenska"]);
+        assert_eq!(language_choices(&[])[0], "Same as Windows (English)");
+        for setting in [None, Some("en"), Some("sv")] {
+            assert_eq!(
+                language_at(language_index(setting)).as_deref(),
+                setting,
+                "{setting:?}"
+            );
+        }
+        assert_eq!(language_index(Some("sv-SE")), 2);
+        // A newer build's language shows as "Same as Windows".
+        assert_eq!(language_index(Some("de")), 0);
+        assert_eq!(language_at(-1), None);
+        assert_eq!(language_at(9), None);
     }
 
     #[test]

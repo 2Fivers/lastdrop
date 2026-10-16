@@ -61,6 +61,10 @@ export component SettingsWindow inherits Window {
     in-out property <bool> notify-resets;
     in-out property <bool> notify-low-balance;
     in-out property <bool> start-with-windows;
+    // The language of Lastdrop's texts: index into language-choices ("Same as Windows (…)", then
+    // each language by its own name), from Rust.
+    in property <[string]> language-choices;
+    in-out property <int> language-index;
     in property <bool> meshy-key-stored;
     // The global hotkey (R§10, off by default): modifiers and one key (a letter, a digit or
     // F1…F24).
@@ -364,6 +368,26 @@ export component SettingsWindow inherits Window {
                     if root.hotkey-error != "": Hint {
                         text: root.hotkey-error;
                         color: Palette.foreground;
+                    }
+                }
+
+                VerticalLayout {
+                    spacing: 8px;
+                    SectionTitle {
+                        text: "Language";
+                    }
+                    HorizontalLayout {
+                        spacing: 12px;
+                        ComboBox {
+                            model: root.language-choices;
+                            current-index <=> root.language-index;
+                        }
+                        Rectangle {
+                            horizontal-stretch: 1;
+                        }
+                    }
+                    Hint {
+                        text: "For the readout, the flyout, menus and notifications. Numbers and times follow the regional format in Windows.";
                     }
                 }
 

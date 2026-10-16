@@ -8,17 +8,21 @@
 //!
 //! Anything Windows does not answer keeps the en-GB value of [`LocaleFormat::en_gb`].
 //!
+//! [`ui_languages`] reads the display languages, for the language setting's default (ROADMAP
+//! M4): the regional format and the display language are separate Windows settings.
+//!
 //! Threading: main thread.
 
 use lastdrop_core::grammar::LocaleFormat;
 use lastdrop_core::grammar::locale::{ClockFormat, DayMonthOrder, PercentPattern};
 use lastdrop_core::jiff::tz::TimeZone;
 use windows::Win32::Globalization::{
-    GetLocaleInfoEx, LOCALE_IPOSITIVEPERCENT, LOCALE_S1159, LOCALE_S2359, LOCALE_SABBREVDAYNAME1,
-    LOCALE_SABBREVMONTHNAME1, LOCALE_SDAYNAME1, LOCALE_SDECIMAL, LOCALE_SLONGDATE,
-    LOCALE_SMONTHDAY, LOCALE_SNAME, LOCALE_SSHORTDATE, LOCALE_SSHORTTIME, LOCALE_STHOUSAND,
+    GetLocaleInfoEx, GetUserPreferredUILanguages, LOCALE_IPOSITIVEPERCENT, LOCALE_S1159,
+    LOCALE_S2359, LOCALE_SABBREVDAYNAME1, LOCALE_SABBREVMONTHNAME1, LOCALE_SDAYNAME1,
+    LOCALE_SDECIMAL, LOCALE_SLONGDATE, LOCALE_SMONTHDAY, LOCALE_SNAME, LOCALE_SSHORTDATE,
+    LOCALE_SSHORTTIME, LOCALE_STHOUSAND, MUI_LANGUAGE_NAME,
 };
-use windows::core::PCWSTR;
+use windows::core::{PCWSTR, PWSTR};
 
 /// U+202F NARROW NO-BREAK SPACE: the grouping separator R§5.6 draws for space-grouping locales.
 const NNBSP: &str = "\u{202F}";
@@ -93,6 +97,46 @@ fn info(lctype: u32) -> Option<String> {
         buffer.pop();
     }
     String::from_utf16(&buffer).ok()
+}
+
+/// The user's preferred Windows display languages, most preferred first (`sv-SE`, `en-US`):
+/// `GetUserPreferredUILanguages(MUI_LANGUAGE_NAME)`. The language setting follows the first one
+/// with a string table (`lastdrop_core::grammar::Language::resolve`). Empty when Windows does
+/// not answer, which means English.
+pub fn ui_languages() -> Vec<String> {
+    let (mut count, mut len) = (0u32, 0u32);
+    // SAFETY: a size query: no buffer, and both out pointers are valid for the call.
+    let sized =
+        unsafe { GetUserPreferredUILanguages(MUI_LANGUAGE_NAME, &mut count, None, &mut len) };
+    if sized.is_err() || len == 0 {
+        log::debug!("locale: GetUserPreferredUILanguages size query failed");
+        return Vec::new();
+    }
+    let mut buffer = vec![0u16; len as usize];
+    // SAFETY: `buffer` holds the `len` UTF-16 units Windows asked for, and `len` says so.
+    let read = unsafe {
+        GetUserPreferredUILanguages(
+            MUI_LANGUAGE_NAME,
+            &mut count,
+            Some(PWSTR(buffer.as_mut_ptr())),
+            &mut len,
+        )
+    };
+    if read.is_err() {
+        log::debug!("locale: GetUserPreferredUILanguages failed");
+        return Vec::new();
+    }
+    buffer.truncate(len as usize);
+    multi_sz(&buffer)
+}
+
+/// The strings of a NUL-separated list that ends with two NULs (`sv-SE\0en-US\0\0`).
+fn multi_sz(units: &[u16]) -> Vec<String> {
+    units
+        .split(|&u| u == 0)
+        .filter(|s| !s.is_empty())
+        .filter_map(|s| String::from_utf16(s).ok())
+        .collect()
 }
 
 /// A format pattern split into runs: `Field(letter, count)` for unquoted pattern letters, and
@@ -231,6 +275,15 @@ mod tests {
 
     fn clock(pattern: &str) -> ClockFormat {
         parse_short_time(pattern, "AM".to_owned(), "PM".to_owned())
+    }
+
+    #[test]
+    fn display_languages_split_at_each_nul() {
+        let units: Vec<u16> = "sv-SE\0en-US\0\0".encode_utf16().collect();
+        assert_eq!(multi_sz(&units), ["sv-SE", "en-US"]);
+        assert!(multi_sz(&[0, 0]).is_empty());
+        // The machine's own list reads (whatever it holds).
+        let _ = ui_languages();
     }
 
     #[test]

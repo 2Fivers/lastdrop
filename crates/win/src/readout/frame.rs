@@ -383,7 +383,8 @@ fn draw_service_glyph(
 pub(super) mod tests {
     use std::collections::BTreeMap;
 
-    use lastdrop_core::grammar::{English, LocaleFormat, TextContext, TimeStyle};
+    use lastdrop_core::grammar::meters::localize;
+    use lastdrop_core::grammar::{Language, LocaleFormat, TextContext, TimeStyle};
     use lastdrop_core::jiff::tz::{self, TimeZone};
     use lastdrop_core::jiff::{SignedDuration, Timestamp, civil};
     use lastdrop_core::model::{
@@ -465,6 +466,11 @@ pub(super) mod tests {
     /// `reset_in` minutes, and weekly 61 % resetting Mon 09:00. R mock 1a is (0.375, 0.42, 134),
     /// 1d is (0.79, 0.94, 228).
     pub(in crate::readout) fn model(previous: f64, used: f64, reset_in: i64) -> ReadoutModel {
+        model_in(previous, used, reset_in, Language::English)
+    }
+
+    /// [`model`] in `language`, with its regional format (en-GB; sv-SE for Swedish).
+    fn model_in(previous: f64, used: f64, reset_in: i64, language: Language) -> ReadoutModel {
         let now = now();
         let reset = now + mins(reset_in);
         let weekly_reset = now + mins(44 * 60 + 18);
@@ -529,7 +535,7 @@ pub(super) mod tests {
             status: &status,
             fetching: false,
         }];
-        let eval = stats::evaluate(
+        let mut eval = stats::evaluate(
             &EvalInput {
                 now,
                 settings: &settings,
@@ -538,7 +544,11 @@ pub(super) mod tests {
             },
             &mut EvalMemory::default(),
         );
-        let locale = LocaleFormat::en_gb(zone());
+        localize(&mut eval, language.strings());
+        let locale = match language {
+            Language::English => LocaleFormat::en_gb(zone()),
+            Language::Swedish => LocaleFormat::sv_se(zone()),
+        };
         build_readout(
             &eval,
             &BuildContext {
@@ -546,7 +556,7 @@ pub(super) mod tests {
                     now,
                     time_style: TimeStyle::Clock,
                     locale: &locale,
-                    strings: &English,
+                    strings: language.strings(),
                 },
                 settings: &settings,
             },
@@ -614,6 +624,52 @@ pub(super) mod tests {
             false,
         );
         assert_eq!((frame.layout.width_rows, frame.layout.slot_h), (160, 40));
+    }
+
+    #[test]
+    fn swedish_widths_come_from_the_swedish_strings() {
+        // R§5.9, R§6.3: the columns are measured over the Swedish strings and the sv-SE format,
+        // so no Swedish text is cut off; the readout is as wide as its widest Swedish string.
+        let m = model_in(0.375, 0.42, 134, Language::Swedish);
+        assert_eq!(m.content, ContentForm::TwoRows);
+        let labels: Vec<&str> = m.rows.iter().map(|r| r.label.text.as_str()).collect();
+        assert_eq!(labels, ["5h", "Vk"]);
+        assert_eq!(m.rows[0].right.texts(), vec!["42\u{202F}%", "14:56"]);
+        assert_eq!(m.rows[1].right.texts(), vec!["61\u{202F}%", "mån"]);
+        let w = &m.widths;
+        assert!(w.time_tokens.iter().any(|t| t == "idag"));
+        assert!(w.statuses.iter().any(|t| t == "59m sedan"));
+        assert!(w.statuses.iter().any(|t| t == "Logga in"));
+        assert!(w.say_semibold.iter().any(|t| t == "59 min kvar"));
+        assert!(w.say_semibold.iter().any(|t| t == "Åter tors"));
+        assert!(w.compact_semibold.iter().any(|t| t == "99\u{202F}%"));
+
+        let english = render(
+            &model(0.375, 0.42, 134),
+            1.0,
+            ReadoutForm::TwoRows,
+            &theme(true),
+            Plate::None,
+            false,
+        )
+        .layout;
+        let sv = render(
+            &m,
+            1.0,
+            ReadoutForm::TwoRows,
+            &theme(true),
+            Plate::None,
+            false,
+        )
+        .layout;
+        // English is 17 / 79 / 160 / 134 (R§6.3): `Vk` is narrower than `Wk`, and the statuses
+        // `59m sedan` and `Ingen data` widen the right cell from 79 to 90.
+        assert_eq!(
+            (sv.label_w, sv.right_w, sv.width_rows, sv.width_compact),
+            (13, 90, 167, 130)
+        );
+        assert_eq!((english.label_w, english.right_w), (17, 79));
+        assert_eq!(sv.slot_h, english.slot_h);
     }
 
     #[test]

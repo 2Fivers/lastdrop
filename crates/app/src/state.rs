@@ -11,7 +11,8 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use jiff::Timestamp;
-use lastdrop_core::grammar::{English, LocaleFormat, TextContext};
+use lastdrop_core::grammar::meters::localize;
+use lastdrop_core::grammar::{Language, LocaleFormat, Strings, TextContext};
 use lastdrop_core::model::{AccountRef, Health, MeterKey, ProviderId, Snapshot, SourceKey};
 use lastdrop_core::notify::{NotificationModel, NotifyMemory, build_notification, notices};
 use lastdrop_core::readout::ReadoutForm;
@@ -109,8 +110,12 @@ pub struct AppState {
     pub theme: ThemeInfo,
     /// Regional format and time zone.
     pub locale: LocaleFormat,
-    /// Strings (English in M1).
-    pub strings: English,
+    /// Windows' preferred display languages (`lastdrop_win::locale::ui_languages`), which the
+    /// language setting follows by default.
+    pub ui_languages: Vec<String>,
+    /// The strings of the language the settings and `ui_languages` resolve to
+    /// ([`language_of`]).
+    pub strings: &'static dyn Strings,
     /// Flyout bookkeeping.
     pub flyout: FlyoutState,
     /// Readout as reported.
@@ -310,6 +315,12 @@ pub fn apply_to_source(source: &mut SourceRuntime, result: JobResult) -> Option<
     }
 }
 
+/// The language of every string: the setting, else the first of Windows' display languages
+/// with a table, else English (`Language::resolve`).
+pub fn language_of(settings: &Settings, ui_languages: &[String]) -> Language {
+    Language::resolve(settings.language.as_deref(), ui_languages)
+}
+
 /// Evaluates every source of `settings`' enabled services in service order at `now`
 /// (`lastdrop_core::stats::evaluate`), with `paused` from the settings.
 pub fn evaluate_sources(
@@ -361,15 +372,18 @@ pub fn evaluate_sources(
 
 impl AppState {
     /// Builds the sources from settings (enabled providers × accounts, resolved with the real
-    /// environment).
+    /// environment); the strings in the language of the settings and Windows' display languages
+    /// (`ui_languages`).
     pub fn new(
         settings: Settings,
         history: HistoryStore,
         theme: ThemeInfo,
         locale: LocaleFormat,
+        ui_languages: Vec<String>,
     ) -> AppState {
         let providers = lastdrop_providers::providers(&settings);
         let sources = build_sources(&settings, &providers, &resolve_real, BTreeMap::new());
+        let strings = language_of(&settings, &ui_languages).strings();
         AppState {
             providers,
             settings,
@@ -379,7 +393,8 @@ impl AppState {
             history,
             theme,
             locale,
-            strings: English,
+            ui_languages,
+            strings,
             flyout: FlyoutState::default(),
             readout: ReadoutState::default(),
             refreshing: false,
@@ -389,7 +404,8 @@ impl AppState {
         }
     }
 
-    /// Applies new settings: adds and removes sources, keeps readings of sources that remain.
+    /// Applies new settings: adds and removes sources, keeps readings of sources that remain;
+    /// switches the strings when the language changed.
     pub fn apply_settings(&mut self, settings: Settings) {
         let providers = reuse_providers(
             &self.providers,
@@ -399,8 +415,16 @@ impl AppState {
         );
         let existing = std::mem::take(&mut self.sources);
         self.sources = build_sources(&settings, &providers, &resolve_real, existing);
+        self.strings = language_of(&settings, &self.ui_languages).strings();
         self.settings = settings;
         self.providers = providers;
+    }
+
+    /// Takes Windows' display languages anew (after a regional settings change) and the
+    /// strings they resolve to.
+    pub fn set_ui_languages(&mut self, ui_languages: Vec<String>) {
+        self.strings = language_of(&self.settings, &ui_languages).strings();
+        self.ui_languages = ui_languages;
     }
 
     /// Records a worker's result: snapshot → `latest` and history; status and refresh memory via
@@ -463,15 +487,17 @@ impl AppState {
         }
     }
 
-    /// Re-evaluates at `now` (`lastdrop_core::stats::evaluate`) and stores the result.
+    /// Re-evaluates at `now` (`lastdrop_core::stats::evaluate`) and stores the result, with
+    /// every meter named in the language of the strings (`grammar::meters::localize`).
     pub fn evaluate(&mut self, now: Timestamp) -> &Evaluation {
-        let eval = evaluate_sources(
+        let mut eval = evaluate_sources(
             &self.settings,
             &self.sources,
             &self.history,
             &mut self.memory,
             now,
         );
+        localize(&mut eval, self.strings);
         self.evaluation.insert(eval)
     }
 
@@ -503,7 +529,7 @@ impl AppState {
             now,
             time_style: self.settings.readout.time_style,
             locale: &self.locale,
-            strings: &self.strings,
+            strings: self.strings,
         }
     }
 }
@@ -699,7 +725,8 @@ pub(crate) mod tests {
                 high_contrast: None,
             },
             locale: LocaleFormat::en_gb(jiff::tz::TimeZone::UTC),
-            strings: English,
+            ui_languages: Vec::new(),
+            strings: &lastdrop_core::grammar::English,
             flyout: FlyoutState::default(),
             readout: ReadoutState::default(),
             refreshing: false,
@@ -858,6 +885,48 @@ pub(crate) mod tests {
         second.notified.clear();
         assert_eq!(run(&mut second), None);
         assert!(second.notified.is_empty());
+        writer.shutdown();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn strings_and_meter_names_follow_the_setting_then_windows() {
+        let dir = std::env::temp_dir().join(format!(
+            "lastdrop-language-test-{}-{}",
+            std::process::id(),
+            Timestamp::now().as_nanosecond()
+        ));
+        let writer = crate::writer::Writer::start().expect("writer");
+        let now = ts("2026-10-10T10:42:00Z");
+        let history = HistoryStore::open(&dir.join("history"), now, writer.handle()).expect("open");
+        let mut state = app_state(&[ProviderId::Claude], history);
+        assert_eq!(state.strings.language(), "en");
+
+        // Windows in Swedish, no language picked: Swedish, meter names included.
+        state.set_ui_languages(vec!["sv-SE".to_owned(), "en-US".to_owned()]);
+        assert_eq!(state.strings.language(), "sv");
+        let reading = snapshot(ProviderId::Claude, now, 0.82);
+        state.history.record(&reading);
+        if let Some(source) = state.sources.values_mut().next() {
+            source.latest = Some(reading.clone());
+            source.status.last_success = Some(now);
+        }
+        let eval = state.evaluate(now);
+        let names = &eval.services[0].meters[0].names;
+        assert_eq!(
+            (names.short_label.as_str(), names.short_name.as_str()),
+            ("Vk", "veckogränsen")
+        );
+        // Numbers keep the regional format (en-GB here), whatever the language.
+        let notice = state.take_notification(now).expect("a notification");
+        assert_eq!(notice.title, "Veckogränsen för Claude är till 82% använd");
+
+        // English picked: English whatever Windows says.
+        state.settings.language = Some("en".to_owned());
+        state.set_ui_languages(vec!["sv-SE".to_owned()]);
+        assert_eq!(state.strings.language(), "en");
+        let eval = state.evaluate(now);
+        assert_eq!(eval.services[0].meters[0].names.short_name, "weekly");
         writer.shutdown();
         let _ = std::fs::remove_dir_all(&dir);
     }
