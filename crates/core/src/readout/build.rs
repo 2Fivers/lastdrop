@@ -7,6 +7,7 @@ use crate::color::ColorRole;
 use crate::grammar::TextContext;
 use crate::grammar::a11y::{root_name, row_sentence, service_sentence};
 use crate::grammar::cells::{RowPosition, compact_cell, frozen_exhausted, pct, right_cell, run};
+use crate::grammar::meters::localized;
 use crate::grammar::numbers::percent;
 use crate::grammar::strings::{Msg, Strings, text};
 use crate::grammar::{LocaleFormat, TimeStyle};
@@ -105,8 +106,13 @@ struct CanAppear<'a> {
 }
 
 /// What can appear in the readout (R§6.3, R§6.4): the pins in pinned mode; else every
-/// non-hidden catalogue meter of every enabled service plus every meter the evaluation holds.
-fn can_appear<'a>(eval: &'a Evaluation, settings: &Settings) -> Vec<CanAppear<'a>> {
+/// non-hidden catalogue meter of every enabled service (named in the language of `strings`)
+/// plus every meter the evaluation holds.
+fn can_appear<'a>(
+    eval: &'a Evaluation,
+    settings: &Settings,
+    strings: &dyn Strings,
+) -> Vec<CanAppear<'a>> {
     if let ReadoutContent::Pinned(pins) = &settings.readout.content {
         // A pin whose meter the latest reading lacks keeps its room (`ServiceEval::absent`).
         let pinned: Vec<CanAppear<'a>> = pins
@@ -157,7 +163,12 @@ fn can_appear<'a>(eval: &'a Evaluation, settings: &Settings) -> Vec<CanAppear<'a
             if !reported && !hidden.iter().any(|h| h.0 == def.id) {
                 out.push(CanAppear {
                     service,
-                    names: def.names(),
+                    names: localized(
+                        service.source.provider,
+                        &def.meter_id(),
+                        &def.names(),
+                        strings,
+                    ),
                     balance: def.kind == MeterKind::Balance,
                 });
             }
@@ -171,7 +182,7 @@ fn can_appear<'a>(eval: &'a Evaluation, settings: &Settings) -> Vec<CanAppear<'a
 fn width_inputs(eval: &Evaluation, cx: &BuildContext<'_>) -> WidthInputs {
     let t = &cx.text;
     let s = t.strings;
-    let appear = can_appear(eval, cx.settings);
+    let appear = can_appear(eval, cx.settings, s);
     let mut labels: Vec<String> = appear
         .iter()
         .map(|m| row_label(eval, m.service, &m.names))

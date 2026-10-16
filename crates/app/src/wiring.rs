@@ -196,14 +196,17 @@ pub fn run(startup: Startup) -> Result<(), AppError> {
 
     let theme = lastdrop_win::theme::read();
     let locale = lastdrop_win::locale::read(TimeZone::system());
+    let ui_languages = lastdrop_win::locale::ui_languages();
     let now = Timestamp::now();
     // Every file write from here on goes through the writer thread, never the UI thread.
     let writer = Writer::start()?;
     let history = HistoryStore::open(&paths.history, now, writer.handle())?;
     let readout_enabled = settings.readout.enabled && !args.no_readout;
     let hotkey_setting = settings.hotkey.clone();
-    let mut state = AppState::new(settings, history, theme, locale);
+    let mut state = AppState::new(settings, history, theme, locale, ui_languages);
     state.restore_saved(&persist::load_state(&paths.state), now);
+    log::info!("strings: {}", state.strings.language());
+    let strings = state.strings;
     let state = Rc::new(RefCell::new(state));
 
     // The Slint backend: winit with the software renderer. Popups get the spike's attributes.
@@ -213,7 +216,7 @@ pub fn run(startup: Startup) -> Result<(), AppError> {
     let hover_card = create_window(true, ui::HoverCard::new)?;
     set_theme(&flyout.global::<ui::Theme>(), &theme);
     set_theme(&hover_card.global::<ui::Theme>(), &theme);
-    set_flyout_labels(&flyout, &lastdrop_core::grammar::English);
+    set_flyout_labels(&flyout, strings);
     connect_flyout(&flyout);
     hover_card.on_clicked(|| with_app(hide_hover_card));
 
@@ -284,7 +287,7 @@ pub fn run(startup: Startup) -> Result<(), AppError> {
 
     let menu = {
         let st = state.borrow();
-        TrayMenu::build(&st.strings, &MenuState::of(&st.settings, Timestamp::now()))
+        TrayMenu::build(st.strings, &MenuState::of(&st.settings, Timestamp::now()))
     };
     let app = Rc::new(App {
         state,
@@ -989,7 +992,13 @@ fn on_system_event(app: &App, event: SystemEvent) {
         SystemEvent::Theme(_) => apply_theme(app),
         SystemEvent::Locale => {
             let tz = TimeZone::system();
-            app.state.borrow_mut().locale = lastdrop_win::locale::read(tz);
+            let strings = {
+                let mut st = app.state.borrow_mut();
+                st.locale = lastdrop_win::locale::read(tz);
+                st.set_ui_languages(lastdrop_win::locale::ui_languages());
+                st.strings
+            };
+            set_flyout_labels(&app.windows.flyout, strings);
             rebuild(app, Timestamp::now());
         }
         SystemEvent::TimeChanged => {
@@ -1083,7 +1092,7 @@ pub fn on_tray_input(app: &App, input: TrayInput) {
 fn show_tray_menu(app: &App, pt: Point) {
     let menu = {
         let st = app.state.borrow();
-        TrayMenu::build(&st.strings, &MenuState::of(&st.settings, Timestamp::now()))
+        TrayMenu::build(st.strings, &MenuState::of(&st.settings, Timestamp::now()))
     };
     let items = menu.items.clone();
     *app.menu.borrow_mut() = menu;
@@ -1250,7 +1259,13 @@ fn apply_reloaded(app: &App, previous: &Settings, settings: Settings) {
         }
     }
     let allowed = app.readout_allowed(&settings);
-    app.state.borrow_mut().apply_settings(settings);
+    let strings = {
+        let mut st = app.state.borrow_mut();
+        st.apply_settings(settings);
+        st.strings
+    };
+    // The language may have changed; the models follow with the next rebuild.
+    set_flyout_labels(&app.windows.flyout, strings);
     app.readout.set_enabled(allowed);
 }
 
@@ -1721,7 +1736,7 @@ fn card_menus(model: &FlyoutModel, st: &AppState) -> (Vec<CardMenu>, Vec<CardRef
                 .get(&card.source)
                 .and_then(|s| s.provider.usage_page())
                 .is_some();
-            let menu = card_menu(card, &st.strings, pins, usage);
+            let menu = card_menu(card, st.strings, pins, usage);
             let reference = CardRef {
                 source: card.source.clone(),
                 action: card
@@ -1990,11 +2005,7 @@ fn place_hover_card(app: &App, model: &HoverCardModel, anchor: Rect) {
                 let hidden = more + lines.saturating_sub(shown);
                 let words = if hidden > 0 {
                     let st = app.state.borrow();
-                    text(
-                        &st.strings,
-                        Msg::CardAlsoMore,
-                        &[("n", &hidden.to_string())],
-                    )
+                    text(st.strings, Msg::CardAlsoMore, &[("n", &hidden.to_string())])
                 } else {
                     String::new()
                 };

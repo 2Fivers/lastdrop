@@ -66,9 +66,11 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::Duration;
 
 use jiff::{SignedDuration, Timestamp};
+use lastdrop_core::grammar::English;
+use lastdrop_core::grammar::meters::length_names;
 use lastdrop_core::model::{
-    AccountRef, Health, Meter, MeterDef, MeterId, MeterKind, MeterNames, ProviderId, Snapshot,
-    SourceKind, WindowLen, catalog,
+    AccountRef, Health, Meter, MeterDef, MeterId, MeterKind, ProviderId, Snapshot, SourceKind,
+    WindowLen, catalog,
 };
 use lastdrop_core::refresh::CredentialFingerprint;
 use lastdrop_core::settings::CodexOptions;
@@ -714,27 +716,12 @@ fn from_def(def: &MeterDef, window: &CodexWindow) -> Meter {
     }
 }
 
-/// Names of a window outside the catalogue, by its length: whole hours below two days (`24h` /
-/// `24-hour` / `24-hour window`), else whole days (`30d` / `30-day` / `30-day window`).
-fn length_names(minutes: i64) -> MeterNames {
-    const DAY: i64 = 24 * 60;
-    let (n, unit, word) = if minutes < 2 * DAY {
-        ((minutes + 30) / 60, "h", "hour")
-    } else {
-        ((minutes + DAY / 2) / DAY, "d", "day")
-    };
-    let n = n.max(1);
-    MeterNames {
-        short_label: format!("{n}{unit}"),
-        short_name: format!("{n}-{word}"),
-        name: format!("{n}-{word} window"),
-    }
-}
-
+/// A fixed window outside the catalogue, named by its length (`window:<minutes>`, English names
+/// from `lastdrop_core::grammar::meters::length_names`).
 fn by_length(minutes: i64, window: &CodexWindow, secondary: bool) -> Meter {
     Meter {
-        id: MeterId(format!("window:{minutes}")),
-        names: length_names(minutes),
+        id: MeterId::window(minutes),
+        names: length_names(minutes, &English),
         order: OTHER_ORDER + u16::from(secondary),
         used: used_share(window),
         limited: false,

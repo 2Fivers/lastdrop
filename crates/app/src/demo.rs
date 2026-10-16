@@ -5,14 +5,17 @@
 //! Everything here is invented (no account, no token, no file of this machine), and nothing
 //! touches the network, the registry or Windows APIs, so the preview can run anywhere.
 //!
-//! The clock is R§13's: Sat 2026-10-10 12:42 in a fixed UTC+02:00 zone, en-GB format.
+//! The clock is R§13's: Sat 2026-10-10 12:42 in a fixed UTC+02:00 zone, en-GB format and
+//! English; [`Demo::in_language`] shows it in another language with that language's format
+//! (Swedish: sv-SE).
 
 use std::collections::BTreeMap;
 
 use jiff::tz::{self, TimeZone};
 use jiff::{SignedDuration, Timestamp, civil};
 use lastdrop_core::flyout::{FlyoutModel, build_flyout};
-use lastdrop_core::grammar::{English, LocaleFormat, TextContext, TimeStyle};
+use lastdrop_core::grammar::meters::localize;
+use lastdrop_core::grammar::{Language, LocaleFormat, TextContext, TimeStyle};
 use lastdrop_core::model::{
     AccountKey, AccountRef, Balance, Health, Meter, MeterId, MeterKey, MeterNames, ProviderId,
     Snapshot, SourceKind, Unit, WindowLen, catalog,
@@ -81,8 +84,10 @@ pub struct Demo {
     pub now: Timestamp,
     /// Claude, Codex and Meshy enabled, in that order.
     pub settings: Settings,
-    /// en-GB in UTC+02:00.
+    /// en-GB in UTC+02:00 (sv-SE in Swedish).
     pub locale: LocaleFormat,
+    /// The language of the strings (English unless [`Demo::in_language`]).
+    pub language: Language,
     /// Light or dark Windows mode with the owner's accent (R§7: Dark1 `#8E3AA7`, Light2
     /// `#D58AE8`), transparency off.
     pub theme: ThemeInfo,
@@ -358,6 +363,7 @@ impl Demo {
             now,
             settings,
             locale: LocaleFormat::en_gb(zone()),
+            language: Language::English,
             theme: ThemeInfo {
                 taskbar_dark: dark,
                 apps_dark: dark,
@@ -376,7 +382,19 @@ impl Demo {
         }
     }
 
-    /// Runs `stats::evaluate` over the demo services.
+    /// The same world in `language`, with its regional format: sv-SE for Swedish, en-GB
+    /// otherwise.
+    pub fn in_language(mut self, language: Language) -> Demo {
+        self.locale = match language {
+            Language::Swedish => LocaleFormat::sv_se(zone()),
+            Language::English => LocaleFormat::en_gb(zone()),
+        };
+        self.language = language;
+        self
+    }
+
+    /// Runs `stats::evaluate` over the demo services, with every meter named in the demo's
+    /// language (as the app does).
     pub fn evaluate(&self) -> Evaluation {
         let inputs: Vec<ServiceInput<'_>> = self
             .services
@@ -389,7 +407,7 @@ impl Demo {
                 fetching: false,
             })
             .collect();
-        evaluate(
+        let mut eval = evaluate(
             &EvalInput {
                 now: self.now,
                 settings: &self.settings,
@@ -397,7 +415,9 @@ impl Demo {
                 history: &self.history,
             },
             &mut EvalMemory::default(),
-        )
+        );
+        localize(&mut eval, self.language.strings());
+        eval
     }
 
     /// The text and build context at `now`.
@@ -407,7 +427,7 @@ impl Demo {
                 now: self.now,
                 time_style: TimeStyle::Clock,
                 locale: &self.locale,
-                strings: &English,
+                strings: self.language.strings(),
             },
             settings: &self.settings,
         }
@@ -515,5 +535,74 @@ mod tests {
         let card = Demo::new(true).hover_card();
         assert_eq!(card.header.title, "You'll make it to both resets");
         assert!(!card.services.is_empty());
+    }
+
+    #[test]
+    fn the_mock_in_swedish() {
+        // Swedish words with sv-SE numbers and times (`42 %` and `1 240` with U+202F, `mån`);
+        // meter names say "limit" themselves, and a sentence that starts with one is capitalised.
+        let sv = |scenario| Demo::scenario(false, scenario).in_language(Language::Swedish);
+        let flyout = sv(Scenario::Normal).flyout();
+        assert_eq!(
+            flyout.verdict.text,
+            "Alla gränser räcker till återställningen"
+        );
+        assert_eq!(flyout.settings_label, "Inställningar");
+        let claude = &flyout.cards[0];
+        assert_eq!(claude.age, "för 1 min sedan");
+        let CardBody::Meters(rows) = &claude.body else {
+            panic!("Claude has window meters");
+        };
+        let shown: Vec<(&str, &str, &str)> = rows
+            .iter()
+            .map(|r| (r.name.as_str(), r.value.as_str(), r.right.text.as_str()))
+            .collect();
+        assert_eq!(
+            shown,
+            [
+                ("5-timmarssession", "42\u{202F}%", "Återställs 14:56"),
+                (
+                    "Vecka · alla modeller",
+                    "61\u{202F}%",
+                    "Återställs mån 09:00"
+                ),
+                ("Vecka · Fable", "18\u{202F}%", "Återställs mån 09:00"),
+            ]
+        );
+        let CardBody::Balance(b) = &flyout.cards[2].body else {
+            panic!("Meshy is a balance");
+        };
+        assert_eq!(b.amount, "1\u{202F}240");
+        assert_eq!(b.forecast, "≈ 9 dagar kvar");
+        assert_eq!(b.spent, "62\u{202F}% av påfyllningen använt · 136/dag");
+        assert_eq!(b.until.as_deref(), Some("till ≈ mån 19 okt"));
+
+        let warning = sv(Scenario::Warning).flyout();
+        assert_eq!(
+            warning.verdict.text,
+            "5-timmarsgränsen för Claude tar slut 15:18"
+        );
+        let CardBody::Meters(rows) = &warning.cards[0].body else {
+            panic!("Claude has window meters");
+        };
+        assert_eq!(rows[0].right.text, "Slut 15:18");
+        let stale = sv(Scenario::Stale).flyout();
+        assert_eq!(stale.verdict.text, "Claude: ingen avläsning på 47 min");
+
+        let card = sv(Scenario::Normal).hover_card();
+        assert_eq!(card.header.title, "Det räcker till båda återställningarna");
+        let also = card.also.expect("also tracked");
+        assert_eq!(also.header, "Bevakas också");
+        let labels: Vec<&str> = also.lines.iter().map(|l| l.label.as_str()).collect();
+        assert_eq!(
+            labels,
+            [
+                "Fable-veckogränsen för Claude",
+                "Veckogränsen för Codex",
+                "Krediterna för Meshy"
+            ]
+        );
+        let card = sv(Scenario::Warning).hover_card();
+        assert_eq!(card.header.title, "5-timmarsgränsen tar slut 15:18");
     }
 }

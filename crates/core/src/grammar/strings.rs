@@ -2,8 +2,8 @@
 //!
 //! A [`Msg`] names a template; a [`Strings`] table gives the template for one language; [`fill`]
 //! substitutes `{name}` placeholders. Column widths are computed from the localized strings
-//! (R§6.3), so a translation can never be cut off. English is [`English`]; Swedish is a second
-//! table later (ROADMAP "Language: English and Swedish to start").
+//! (R§6.3), so a translation can never be cut off. The tables are [`English`] and [`Swedish`]
+//! (ROADMAP "Language: English and Swedish to start"); [`Language`] picks one.
 //!
 //! Placeholders: `{time}`, `{reset}`, `{since}`, `{next}`, `{until}` are formatted time points
 //! (R§5.2 or R§8.2; in `a11y.*` the spoken form of [`super::time::spoken_time`], `at 2:56 PM`);
@@ -12,13 +12,18 @@
 //! `{course}` bare integers — **spoken percentages are `{n} percent`** (`{course} percent`),
 //! never `{pct}`; `{pct}`, `{e}`,
 //! `{p}`, `{left}` formatted percents (R§5.6, sign included: `42%`, sv-SE `42 %`); `{meter}` a
-//! meter's `short_name` (capitalised at the start of a sentence, Appendix B) except in `a11y.*`
-//! and `flyout.spark.*`, where it is the spoken name ([`super::a11y`]); `{service}` the service
+//! meter's `short_name` as it is, except in `a11y.*`, where it is the spoken name
+//! ([`super::a11y`]); `{service}` the service
 //! name with alias (R§6.4); `{client}` [`crate::model::ProviderId::client_name`]; `{label}` =
 //! `card.also.line`; `{short_name}` the meter's `short_name`; `{amount}`, `{ref}`, `{burn}`
 //! grouped numbers; `{unit}` a unit word; `{window}` `card.window.*`; `{other}` the other
 //! meter's `short_name`; `{detail}` a secret-free failure detail; `{rows}` a joined list;
-//! `{today}`, `{max}`, `{avg}` bare numbers and `{day}` a full weekday (sparkline).
+//! `{today}`, `{max}`, `{avg}` bare numbers and `{day}` a full weekday (sparkline); `{model}` a
+//! model's display name (`meter.*`).
+//!
+//! Titles, verdicts, notification titles and "Also tracked" lines are capitalised as a whole
+//! after filling (Appendix B: `{meter}` "capitalised at the start of a sentence"), so a
+//! template may start with `{meter}` or `{label}` in any language.
 
 macro_rules! messages {
     ($( $name:ident = $key:literal => $en:literal, )*) => {
@@ -304,6 +309,40 @@ messages! {
     NoticeBodyBalanceEmpty = "notice.body.balance.empty" => "Top it up to keep using {service}.",
     NoticeMore = "notice.more" => "+{n} more",
 
+    // ---- Meter names (R§2 table: `short_label` / `short_name` / `name`; [`super::meters`])
+    MeterFiveHourLabel = "meter.five_hour.label" => "5h",
+    MeterFiveHourShort = "meter.five_hour.short" => "5-hour",
+    MeterFiveHourName = "meter.five_hour.name" => "5-hour session",
+    MeterWeeklyLabel = "meter.weekly.label" => "Wk",
+    MeterWeeklyShort = "meter.weekly.short" => "weekly",
+    MeterWeeklyName = "meter.weekly.name" => "Weekly",
+    // Claude's weekly window counts every model; its per-model windows name the model.
+    MeterWeeklyAllName = "meter.weekly.all.name" => "Weekly · all models",
+    MeterWeeklyModelShort = "meter.weekly.model.short" => "{model} weekly",
+    MeterWeeklyModelName = "meter.weekly.model.name" => "Weekly · {model}",
+    // A window outside the catalogue, named by its length (Codex).
+    MeterHoursLabel = "meter.hours.label" => "{n}h",
+    MeterHoursShort = "meter.hours.short" => "{n}-hour",
+    MeterHoursName = "meter.hours.name" => "{n}-hour window",
+    MeterDaysLabel = "meter.days.label" => "{n}d",
+    MeterDaysShort = "meter.days.short" => "{n}-day",
+    MeterDaysName = "meter.days.name" => "{n}-day window",
+    MeterCreditsLabel = "meter.credits.label" => "Cr",
+    MeterCreditsShort = "meter.credits.short" => "credits",
+    MeterCreditsName = "meter.credits.name" => "Credits",
+    MeterPremiumLabel = "meter.premium.label" => "Prem",
+    MeterPremiumShort = "meter.premium.short" => "premium",
+    MeterPremiumName = "meter.premium.name" => "Premium requests",
+    MeterChatLabel = "meter.chat.label" => "Chat",
+    MeterChatShort = "meter.chat.short" => "chat",
+    MeterChatName = "meter.chat.name" => "Chat messages",
+    MeterCompletionsLabel = "meter.completions.label" => "Code",
+    MeterCompletionsShort = "meter.completions.short" => "completions",
+    MeterCompletionsName = "meter.completions.name" => "Code completions",
+    // A Copilot quota this build does not know; its `name` stays the id the service gave.
+    MeterMonthlyLabel = "meter.monthly.label" => "Mo",
+    MeterMonthlyShort = "meter.monthly.short" => "monthly",
+
     // ---- Context menus (R§10, F§9)
     MenuRefresh = "menu.refresh" => "Refresh now",
     MenuPause = "menu.pause" => "Pause updates",
@@ -320,6 +359,408 @@ messages! {
     MenuCardUsage = "menu.card.usage" => "Open usage page",
     MenuCardRefresh = "menu.card.refresh" => "Refresh {service}",
     MenuCardReadout = "menu.card.readout" => "Show in taskbar readout",
+}
+
+/// The Swedish template of every message ([`Swedish`]). The match lists every [`Msg`] with no
+/// fallback arm, so a message without a Swedish text does not compile.
+const fn swedish(msg: Msg) -> &'static str {
+    match msg {
+        // ---- Readout tokens (R§5.1–R§5.5)
+        Msg::ReasonOffline => "Offline",
+        Msg::ReasonSignIn => "Logga in",
+        Msg::ReasonPaused => "Pausad",
+        Msg::ReasonNoData => "Ingen data",
+        Msg::ReasonOldReading => "Ingen ny data",
+        Msg::Loading => "Hämtar…",
+        // Lower-case like the weekday abbreviations it stands with (`↺idag`, `↺mån`, R§5.9).
+        Msg::Today => "idag",
+        Msg::Out => "Slut {time}",
+        Msg::Back => "Åter {time}",
+        Msg::Empty => "Tomt",
+        Msg::CountdownMin => "{n} min kvar",
+        Msg::CountdownHours => "{n} h kvar",
+        Msg::CountdownDays => "{n} d kvar",
+        Msg::CountdownCompactMin => "{n} min",
+        Msg::CountdownCompactHours => "{n} h",
+        Msg::CountdownCompactDays => "{n} d",
+        Msg::NoReset => "–",
+        Msg::AgeMin => "{n}m sedan",
+        Msg::AgeHours => "{n}h sedan",
+        Msg::AgeDays => "{n}d sedan",
+        Msg::TokenDays => "{n}d",
+        Msg::TokenRelMin => "{n}m",
+        Msg::TokenRelHours => "{n}h",
+        Msg::TokenRelDays => "{n}d",
+        Msg::BalanceApprox => "≈",
+        Msg::BalanceHours => "{n}h",
+        Msg::BalanceDays => "{n}d",
+        Msg::BalanceWeeks => "{n}v",
+        Msg::BalanceMax => "9v+",
+
+        // ---- Long durations (R§5.0)
+        Msg::DurationMin => "{n} min",
+        Msg::DurationHours => "{h} h",
+        Msg::DurationHoursMin => "{h} h {m} min",
+        Msg::DurationDays => "{d} d",
+        Msg::DurationDaysHours => "{d} d {h} h",
+
+        // ---- Spoken units with plurals
+        Msg::UnitMinuteOne => "{n} minut",
+        Msg::UnitMinuteOther => "{n} minuter",
+        Msg::UnitHourOne => "{n} timme",
+        Msg::UnitHourOther => "{n} timmar",
+        Msg::UnitDayOne => "{n} dag",
+        Msg::UnitDayOther => "{n} dagar",
+        Msg::UnitWeekOne => "{n} vecka",
+        Msg::UnitWeekOther => "{n} veckor",
+        Msg::UnitCredits => "krediter",
+
+        // ---- Hover card (R§8.2)
+        Msg::CardTitleOkOne => "Det räcker till återställningen",
+        Msg::CardTitleOkTwo => "Det räcker till båda återställningarna",
+        Msg::CardTitleOkMany => "Det räcker till alla återställningar",
+        Msg::CardTitleWarning => "{meter} tar slut {time}",
+        Msg::CardTitleWarningService => "{meter} för {service} tar slut {time}",
+        Msg::CardTitleWarningCourse => "{meter} är på väg mot {p} vid återställningen",
+        Msg::CardTitleWarningCourseService => {
+            "{meter} för {service} är på väg mot {p} vid återställningen"
+        }
+        Msg::CardTitleCriticalRunway => "{meter} tar slut om {duration}",
+        // Also a balance's title (`krediterna`), so no adjective that agrees with the noun.
+        Msg::CardTitleCriticalLevel => "{pct} av {meter} har använts",
+        Msg::CardTitleExhausted => "{meter} är slut till {time}",
+        Msg::CardTitleStale => "Ingen ny avläsning från {service} på {age}",
+        Msg::CardTitleSignIn => "{service} behöver att du loggar in igen",
+        Msg::CardTitleApiKey => "{service} behöver en API-nyckel",
+        Msg::CardSentenceApiKey => {
+            "Lastdrop har ingen fungerande API-nyckel för {service}. Välj visningen i \
+             aktivitetsfältet och sedan Ange nyckel… för att lägga till en."
+        }
+        Msg::CardSentenceOkOne => {
+            "Den används långsammare än tiden går. I din senaste takt finns ungefär {left} av \
+             {window} kvar när den återställs."
+        }
+        Msg::CardSentenceOkMany => {
+            "Alla gränser används långsammare än tiden går. I din senaste takt finns ungefär \
+             {left} kvar när de återställs."
+        }
+        Msg::CardSentenceOkOneAbout => {
+            "Den används ungefär lika snabbt som tiden går. I din senaste takt finns ungefär \
+             {left} av {window} kvar när den återställs."
+        }
+        Msg::CardSentenceOkOneAhead => {
+            "Den används snabbare än tiden går, men i din senaste takt finns ungefär {left} av \
+             {window} kvar när den återställs."
+        }
+        Msg::CardSentenceOkManyMixed => {
+            "I din senaste takt finns ungefär {left} kvar när de återställs."
+        }
+        Msg::CardSentenceOkOnePaceUnder => "Den används långsammare än tiden går.",
+        Msg::CardSentenceOkOnePaceAbout => "Den används ungefär lika snabbt som tiden går.",
+        Msg::CardSentenceOkOnePaceAhead => "Den används snabbare än tiden går.",
+        Msg::CardSentenceOkManyPace => "Alla gränser används långsammare än tiden går.",
+        Msg::CardSentenceOkOneLeft => {
+            "I din senaste takt finns ungefär {left} av {window} kvar när den återställs."
+        }
+        Msg::CardTitleOkNoReset => "Inom dina gränser",
+        // Definite: the templates say `av {window}` ("of the session").
+        Msg::CardWindowSession => "sessionen",
+        Msg::CardWindowWeek => "veckan",
+        Msg::CardWindowMonth => "månaden",
+        Msg::CardSentenceWarning => {
+            "Du använder den snabbare än tiden går: {pct} använt när {e} av perioden har gått. \
+             I takten från de senaste {span} tar den slut {duration} före återställningen \
+             {time}."
+        }
+        Msg::CardSentenceWarningCourse => {
+            "Du använder den snabbare än tiden går: {pct} använt när {e} av perioden har gått. \
+             I takten från de senaste {span} når den ungefär {p} vid återställningen {time}."
+        }
+        Msg::CardSentenceOtherFine => " Det är ingen fara med {other}.",
+        Msg::CardSentenceCritical => {
+            "{pct} använt. I takten från de senaste {span} är den slut ungefär {time}, \
+             {duration} före återställningen {reset}."
+        }
+        Msg::CardSentenceLevel => {
+            "Nästan slut. I din senaste takt räcker den till återställningen {time}."
+        }
+        Msg::CardSentenceExhausted => "Slut sedan {since}. Den är tillbaka {time}, om {duration}.",
+        Msg::CardSentenceExhaustedNoSince => "Slut. Den är tillbaka {time}, om {duration}.",
+        Msg::CardSentenceOffline => {
+            "Lastdrop är offline, så det här är siffrorna från {time}. Staplarna är streckade \
+             och frysta vid den tidpunkten tills en ny avläsning kommer. Nästa försök {next}."
+        }
+        Msg::CardSentenceNoData => {
+            "{service} svarar inte ({detail}), så det här är siffrorna från {time}. Nästa \
+             försök {next}."
+        }
+        Msg::CardSentenceOldReading => {
+            "{service} svarar, men de senaste siffrorna är från {time}. Nästa försök {next}."
+        }
+        Msg::CardSentenceSignIn => {
+            "Inloggningen till {service} har gått ut. Lastdrop loggar aldrig in åt dig: öppna \
+             {client} med det här kontot för att förnya den. Välj visningen i aktivitetsfältet \
+             för att se stegen."
+        }
+        Msg::CardSentencePaused => {
+            "Uppdateringarna är pausade till {until}. Det här är siffrorna från {time}."
+        }
+        Msg::CardSentencePausedOpen => {
+            "Uppdateringarna är pausade. Det här är siffrorna från {time}."
+        }
+        // The card's tick line shares its row with the forecast: short forms.
+        Msg::CardLineElapsed => "{e} av tiden gått",
+        Msg::CardLineElapsedStale => "{e} av tiden hade gått {time}",
+        Msg::CardLineElapsedUnknown => "förfluten tid okänd",
+        Msg::CardForecastCourse => "prognos {p} vid återställning",
+        Msg::CardForecastLasts => "räcker till återställningen",
+        Msg::CardForecastNone => "ingen prognos än",
+        Msg::CardForecastRunsOut => "tar slut ≈ {time}",
+        Msg::CardForecastUsedUp => "slut",
+        Msg::CardLineReset => "Återställs {time}",
+        Msg::CardLineIn => "om {duration}",
+        Msg::CardLineIdle => "Börjar vid nästa användning",
+        Msg::CardLineNotStarted => "perioden har inte börjat",
+        Msg::CardLineNoReset => "Ingen återställningstid angiven",
+        Msg::CardLineNoLength => "periodens längd okänd",
+        Msg::CardLineJustReset => "Återställd {time} · väntar på första avläsningen",
+        Msg::CardLineEnded => "Avslutad senast {time}",
+        Msg::CardValue => "{pct} använt",
+        Msg::CardBalanceValue => "{pct} av påfyllningen använt",
+        Msg::CardBalanceLeft => "{amount} av {ref} {unit} kvar",
+        Msg::CardBalanceRate => "{burn} per dag, senaste 7 dagarna",
+        Msg::CardBalanceLasts => "räcker ≈ {duration}",
+        Msg::CardBalanceRunsOut => "tar slut ≈ {time}",
+        Msg::CardBalanceEmpty => "tomt",
+        Msg::CardBalanceNoUse => "ingen användning på 7 dagar",
+        Msg::CardBalanceNoHistory => "inte tillräckligt med historik än",
+        Msg::CardBalanceUntil => "till ≈ {date}",
+        Msg::CardAge => "Uppdaterad {age}",
+        Msg::CardAgeStale => "Senaste avläsning {time}",
+        Msg::CardAlso => "Bevakas också",
+        Msg::CardAlsoMore => "+{n} till",
+        Msg::CardAlsoLine => "{short_name} för {service}",
+
+        // ---- Flyout (F§3–F§6, F§10)
+        Msg::FlyoutTitle => "Lastdrop",
+        Msg::FlyoutVerdictOk => "Alla gränser räcker till återställningen",
+        Msg::FlyoutVerdictOkNoReset => "Inom dina gränser",
+        Msg::FlyoutVerdictWarning => "{label} tar slut {time}",
+        Msg::FlyoutVerdictWarningCourse => "{label} är på väg mot {p} vid återställningen",
+        Msg::FlyoutVerdictRunway => "{label} tar slut om {countdown}",
+        // Also a balance's verdict, as `card.title.critical.level`.
+        Msg::FlyoutVerdictLevel => "{pct} av {label} har använts",
+        Msg::FlyoutVerdictExhausted => "{label} är slut till {time}",
+        Msg::FlyoutVerdictStale => "{service}: ingen avläsning på {age}",
+        Msg::FlyoutVerdictSignIn => "{service}: logga in igen",
+        Msg::FlyoutVerdictPaused => "Uppdateringar pausade",
+        Msg::FlyoutVerdictLoading => "Hämtar användning…",
+        Msg::FlyoutVerdictMore => " · {n} till",
+        Msg::FlyoutRefreshName => "Uppdatera alla tjänster",
+        Msg::FlyoutRefreshTooltip => "Uppdatera (F5)",
+        Msg::FlyoutSettings => "Inställningar",
+        Msg::FlyoutAgeNow => "Nyss",
+        Msg::FlyoutAgeMin => "för {n} min sedan",
+        Msg::FlyoutAgeHours => "för {n} h sedan",
+        Msg::FlyoutAgeDays => "för {n} d sedan",
+        Msg::FlyoutMsgSep => " · ",
+        Msg::FlyoutMsgOffline => "Offline",
+        Msg::FlyoutMsgNoData => "Svarar inte",
+        Msg::FlyoutMsgOldReading => "Ingen ny avläsning",
+        Msg::FlyoutMsgShowing => "visar {time}",
+        Msg::FlyoutMsgNextTry => "nästa försök {time}",
+        Msg::FlyoutMsgSignInLead => "Inloggningen har gått ut.",
+        Msg::FlyoutMsgSignInText => "Lastdrop loggar aldrig in åt dig.",
+        Msg::FlyoutMsgSignInAction => "Öppna inloggning…",
+        Msg::FlyoutMsgPaused => "Pausad",
+        Msg::FlyoutMsgResume => "Återuppta",
+        Msg::FlyoutMsgFailedLead => "Kunde inte läsa {service}",
+        Msg::FlyoutMsgRetry => "Försök igen",
+        Msg::FlyoutMsgApiKeyLead => "API-nyckeln saknas eller avvisades.",
+        Msg::FlyoutMsgApiKeyAction => "Ange nyckel…",
+        Msg::FlyoutLineWarning => "Tar slut {duration} före återställningen {time}.",
+        Msg::FlyoutLineWarningCourse => "På väg mot {p} vid återställningen {time}.",
+        Msg::FlyoutLineCritical => "Slut ≈ {time}, {duration} före återställningen {reset}.",
+        Msg::FlyoutLineLevel => "Nästan slut. Räcker till återställningen i din senaste takt.",
+        Msg::FlyoutLineExhausted => "Slut sedan {since}. Tillbaka om {duration}.",
+        Msg::FlyoutLineExhaustedNoSince => "Slut. Tillbaka om {duration}.",
+        Msg::FlyoutBalanceLeft => "≈ {duration} kvar",
+        Msg::FlyoutBalanceMax => "Mer än 8 veckor kvar",
+        Msg::FlyoutBalanceNoUse => "Ingen användning på 7 dagar",
+        Msg::FlyoutBalanceNoHistory => "Inte tillräckligt med historik än",
+        // Shares its row with `flyout.balance.until`: short forms.
+        Msg::FlyoutBalanceSpent => "{pct} av påfyllningen använt",
+        Msg::FlyoutBalanceBurn => " · {burn}/dag",
+        Msg::FlyoutBalanceUntil => "till ≈ {date}",
+        Msg::FlyoutFooterPaused => "Uppdateringar pausade",
+        Msg::FlyoutFooterResume => "Återuppta",
+        Msg::FlyoutCardName => "{service}, abonnemang {plan}, uppdaterad {age}",
+        Msg::FlyoutCardNameNoPlan => "{service}, uppdaterad {age}",
+        Msg::FlyoutCardOffline => ", offline",
+        Msg::FlyoutCardSignIn => ", inloggningen har gått ut",
+        Msg::FlyoutBalanceName => {
+            "{amount} {unit} kvar, {n} procent av senaste påfyllningen använt, ungefär \
+             {duration} med {burn} per dag"
+        }
+        Msg::FlyoutSparkWindow => {
+            "Användning av {meter} per dag de senaste 14 dagarna: idag {today} procent, högst \
+             {max} procent ({day}), i genomsnitt {avg} procent."
+        }
+        Msg::FlyoutSparkBalance => {
+            "{unit} använda per dag de senaste 14 dagarna: idag {today}, högst {max} ({day}), \
+             i genomsnitt {avg}."
+        }
+
+        // ---- UI Automation (R§11)
+        Msg::A11yRoot => "Lastdrop. {rows}",
+        Msg::A11yHelp => "Välj för detaljer, högerklicka för alternativ.",
+        Msg::A11yAt => "kl. {time}",
+        Msg::A11yAgo => "för {duration} sedan",
+        Msg::A11yRowOk => "{service} {meter}: i fas, {n} procent använt, återställs {reset}.",
+        Msg::A11yRowWarning => {
+            "{service} {meter}: varning, tar slut ungefär {time}, före återställningen {reset}; \
+             {n} procent använt."
+        }
+        Msg::A11yRowWarningCourse => {
+            "{service} {meter}: varning, på väg mot {course} procent vid återställningen \
+             {reset}; {n} procent använt."
+        }
+        Msg::A11yRowRunway => {
+            "{service} {meter}: kritisk, tar slut om ungefär {duration}; {n} procent använt; \
+             återställs {reset}."
+        }
+        Msg::A11yRowLevel => {
+            "{service} {meter}: kritisk, {n} procent använt, räcker till återställningen \
+             {reset}."
+        }
+        Msg::A11yRowExhausted => "{service} {meter}: slut, tillbaka {time}.",
+        Msg::A11yRowExhaustedNoReset => {
+            "{service} {meter}: slut, {n} procent använt, ingen återställningstid angiven."
+        }
+        Msg::A11yRowIdle => {
+            "{service} {meter}: inte påbörjad, {n} procent använt, börjar med ditt nästa \
+             meddelande."
+        }
+        Msg::A11yRowNoReset => {
+            "{service} {meter}: {n} procent använt, ingen återställningstid angiven."
+        }
+        Msg::A11yRowLoading => "{service} {meter}: hämtar.",
+        Msg::A11yRowEnded => "{service} {meter}: avslutad senast {time}, ingen nyare avläsning.",
+        Msg::A11yServiceOffline => {
+            "{service}: offline, senaste avläsning för {age} sedan. Då: {rows}."
+        }
+        Msg::A11yServiceNoData => {
+            "{service}: svarar inte, senaste avläsning för {age} sedan. Då: {rows}."
+        }
+        Msg::A11yServiceOldReading => {
+            "{service}: ingen ny avläsning, senaste avläsning för {age} sedan. Då: {rows}."
+        }
+        Msg::A11yServicePaused => {
+            "{service}: uppdateringar pausade, senaste avläsning för {age} sedan. Då: {rows}."
+        }
+        Msg::A11yServiceSignIn => {
+            "{service}: inloggningen har gått ut, senaste avläsning för {age} sedan. Välj för \
+             att öppna Lastdrop och se hur du loggar in."
+        }
+        Msg::A11yServiceApiKey => {
+            "{service}: API-nyckeln saknas eller avvisades. Välj för att öppna Lastdrop och \
+             lägga till en."
+        }
+        Msg::A11yStaleRow => "{meter} {n} procent använt",
+        Msg::A11yBalance => "{service}: {amount} {unit} kvar, ungefär {duration} i nuvarande takt.",
+        Msg::A11yBalanceNoForecast => "{service}: {amount} {unit} kvar.",
+        Msg::A11yListSep => ", ",
+
+        // ---- Tray tooltip (R§9.3)
+        Msg::TrayOk => "Lastdrop: {pct} av {meter} för {service} använt, återställs {time}",
+        Msg::TrayNoReset => "Lastdrop: {pct} av {meter} för {service} använt",
+        Msg::TrayWarning => "Lastdrop: {meter} för {service} tar slut {time}",
+        Msg::TrayRunway => "Lastdrop: {meter} för {service} tar slut om {duration}",
+        Msg::TrayLevel => "Lastdrop: {pct} av {meter} för {service} använt",
+        Msg::TrayExhausted => "Lastdrop: {meter} för {service} är slut till {time}",
+        Msg::TrayOffline => "Lastdrop: {service} offline, senaste avläsning för {age} sedan",
+        Msg::TrayNoData => "Lastdrop: {service} svarar inte, senaste avläsning för {age} sedan",
+        Msg::TrayOldReading => {
+            "Lastdrop: {service} har ingen ny avläsning, senaste avläsning för {age} sedan"
+        }
+        Msg::TraySignIn => "Lastdrop: {service} behöver att du loggar in igen",
+        Msg::TrayApiKey => "Lastdrop: {service} behöver en API-nyckel",
+        Msg::TrayPaused => "Lastdrop: uppdateringar pausade",
+        Msg::TrayLoading => "Lastdrop: hämtar användning…",
+        Msg::TrayNothing => "Lastdrop",
+
+        // ---- Notifications (N§3)
+        Msg::NoticeLevelTitle => "{meter} för {service} är till {pct} använd",
+        Msg::NoticeUsedUpTitle => "{meter} för {service} är slut",
+        Msg::NoticeResetTitle => "{meter} för {service} har återställts",
+        Msg::NoticeBalanceLowTitle => "{meter} för {service} börjar ta slut",
+        Msg::NoticeBalanceEmptyTitle => "{meter} för {service} är slut",
+        Msg::NoticeBodyRunsOut => {
+            "I din senaste takt tar den slut {time}, {duration} före återställningen."
+        }
+        Msg::NoticeBodyLasts => "I din senaste takt räcker den till återställningen {time}.",
+        Msg::NoticeBodyResets => "Den återställs {time}.",
+        Msg::NoticeBodyBack => "Den är tillbaka {time}, om {duration}.",
+        Msg::NoticeBodyNoReset => "Välj för att se detaljerna i Lastdrop.",
+        Msg::NoticeBodyReset => "Tillbaka på {pct} använt.",
+        Msg::NoticeBodyResetUsedUp => "Tillbaka på {pct} använt. Du kan använda den igen.",
+        Msg::NoticeBodyBalance => {
+            "{amount} {unit} kvar, ungefär {duration} med din användning de senaste 7 dagarna."
+        }
+        Msg::NoticeBodyBalanceLeft => "{amount} {unit} kvar.",
+        Msg::NoticeBodyBalanceEmpty => "Fyll på för att fortsätta använda {service}.",
+        Msg::NoticeMore => "+{n} till",
+
+        // ---- Meter names (R§2): `short_name` is the definite noun with "limit" in it
+        Msg::MeterFiveHourLabel => "5h",
+        Msg::MeterFiveHourShort => "5-timmarsgränsen",
+        Msg::MeterFiveHourName => "5-timmarssession",
+        Msg::MeterWeeklyLabel => "Vk",
+        Msg::MeterWeeklyShort => "veckogränsen",
+        Msg::MeterWeeklyName => "Vecka",
+        Msg::MeterWeeklyAllName => "Vecka · alla modeller",
+        Msg::MeterWeeklyModelShort => "{model}-veckogränsen",
+        Msg::MeterWeeklyModelName => "Vecka · {model}",
+        Msg::MeterHoursLabel => "{n}h",
+        Msg::MeterHoursShort => "{n}-timmarsgränsen",
+        Msg::MeterHoursName => "{n}-timmarsfönster",
+        Msg::MeterDaysLabel => "{n}d",
+        Msg::MeterDaysShort => "{n}-dagarsgränsen",
+        Msg::MeterDaysName => "{n}-dagarsfönster",
+        // Not `Kr`, which reads as kronor.
+        Msg::MeterCreditsLabel => "Kred",
+        Msg::MeterCreditsShort => "krediterna",
+        Msg::MeterCreditsName => "Krediter",
+        Msg::MeterPremiumLabel => "Prem",
+        Msg::MeterPremiumShort => "premiumgränsen",
+        Msg::MeterPremiumName => "Premiumförfrågningar",
+        Msg::MeterChatLabel => "Chatt",
+        Msg::MeterChatShort => "chattgränsen",
+        Msg::MeterChatName => "Chattmeddelanden",
+        Msg::MeterCompletionsLabel => "Kod",
+        Msg::MeterCompletionsShort => "kompletteringsgränsen",
+        Msg::MeterCompletionsName => "Kodkompletteringar",
+        // Not `Mån`, which reads as Monday next to the weekday tokens.
+        Msg::MeterMonthlyLabel => "Mnd",
+        Msg::MeterMonthlyShort => "månadsgränsen",
+
+        // ---- Context menus (R§10, F§9)
+        Msg::MenuRefresh => "Uppdatera nu",
+        Msg::MenuPause => "Pausa uppdateringar",
+        Msg::MenuPauseHour => "I 1 timme",
+        Msg::MenuPauseUntilResume => "Tills jag återupptar",
+        Msg::MenuResume => "Återuppta uppdateringar",
+        Msg::MenuReadout => "Visning i aktivitetsfältet",
+        Msg::MenuReadoutAuto => "Automatiskt",
+        Msg::MenuReadoutPinned => "Fästa mätare…",
+        Msg::MenuReadoutOff => "Av",
+        Msg::MenuSettings => "Inställningar…",
+        Msg::MenuAbout => "Om Lastdrop",
+        Msg::MenuQuit => "Avsluta Lastdrop",
+        Msg::MenuCardUsage => "Öppna användningssidan",
+        Msg::MenuCardRefresh => "Uppdatera {service}",
+        Msg::MenuCardReadout => "Visa i aktivitetsfältet",
+    }
 }
 
 /// CLDR-style plural category; English uses `One` and `Other`.
@@ -349,7 +790,7 @@ pub struct English;
 
 impl Strings for English {
     fn language(&self) -> &str {
-        "en"
+        Language::English.tag()
     }
 
     fn template(&self, msg: Msg) -> &str {
@@ -358,6 +799,90 @@ impl Strings for English {
 
     fn plural(&self, n: i64) -> Plural {
         if n == 1 { Plural::One } else { Plural::Other }
+    }
+}
+
+/// The Swedish table. Numbers, times and weekday names come from the regional format
+/// ([`super::LocaleFormat`], `sv-SE`: `42 %`, `mån`), so only the words are here.
+///
+/// `short_name` is a definite noun that already says "limit" (`veckogränsen`, `krediterna`),
+/// so the templates do not add it, and a meter with its service reads
+/// `veckogränsen för Claude` (`card.also.line`). Percent is always `använt`/`har använts`, never
+/// `kvar`, except the share left at the reset of an OK card, as in English.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct Swedish;
+
+impl Strings for Swedish {
+    fn language(&self) -> &str {
+        Language::Swedish.tag()
+    }
+
+    fn template(&self, msg: Msg) -> &str {
+        swedish(msg)
+    }
+
+    fn plural(&self, n: i64) -> Plural {
+        // Swedish has the same two forms as English (`1 minut`, `2 minuter`).
+        if n == 1 { Plural::One } else { Plural::Other }
+    }
+}
+
+/// A language with a string table (ROADMAP M4 "Language: English and Swedish to start").
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub enum Language {
+    /// [`English`], and the fallback for every language without a table.
+    #[default]
+    English,
+    /// [`Swedish`].
+    Swedish,
+}
+
+impl Language {
+    /// Every language with a table, in the order a language picker lists them.
+    pub const ALL: [Language; 2] = [Language::English, Language::Swedish];
+
+    /// The BCP 47 language tag (`en`, `sv`): [`Strings::language`] and the value of the
+    /// language setting.
+    pub const fn tag(self) -> &'static str {
+        match self {
+            Language::English => "en",
+            Language::Swedish => "sv",
+        }
+    }
+
+    /// The language's name in itself (`English`, `Svenska`), as language pickers show it.
+    pub const fn native_name(self) -> &'static str {
+        match self {
+            Language::English => "English",
+            Language::Swedish => "Svenska",
+        }
+    }
+
+    /// The string table.
+    pub fn strings(self) -> &'static dyn Strings {
+        match self {
+            Language::English => &English,
+            Language::Swedish => &Swedish,
+        }
+    }
+
+    /// The language of a BCP 47 tag by its primary subtag, in any case (`sv`, `sv-SE` and
+    /// `sv-FI` are Swedish); `None` for a language without a table.
+    pub fn from_tag(tag: &str) -> Option<Language> {
+        let primary = tag.split(['-', '_']).next().unwrap_or_default();
+        Language::ALL
+            .into_iter()
+            .find(|l| l.tag().eq_ignore_ascii_case(primary))
+    }
+
+    /// The language to show: `chosen` (the setting) when it has a table; otherwise the first of
+    /// Windows' preferred display languages (`ui_languages`, most preferred first) that has one;
+    /// otherwise English. A tag without a table (a newer build's setting) follows Windows too.
+    pub fn resolve(chosen: Option<&str>, ui_languages: &[String]) -> Language {
+        chosen
+            .and_then(Language::from_tag)
+            .or_else(|| ui_languages.iter().find_map(|tag| Language::from_tag(tag)))
+            .unwrap_or_default()
     }
 }
 
@@ -429,6 +954,119 @@ mod tests {
                 "{}",
                 m.key()
             );
+            assert!(
+                !Swedish.template(*m).contains("{pct} procent"),
+                "{}",
+                m.key()
+            );
         }
+    }
+
+    /// The `{name}` placeholders of a template, sorted, each once.
+    fn placeholders(template: &str) -> Vec<&str> {
+        let mut names: Vec<&str> = template
+            .split('{')
+            .skip(1)
+            .filter_map(|part| part.split_once('}').map(|(name, _)| name))
+            .collect();
+        names.sort_unstable();
+        names.dedup();
+        names
+    }
+
+    #[test]
+    fn every_message_has_a_swedish_template_with_the_english_placeholders() {
+        for m in Msg::ALL {
+            let sv = Swedish.template(*m);
+            assert!(!sv.is_empty(), "{}", m.key());
+            assert_eq!(
+                placeholders(sv),
+                placeholders(English.template(*m)),
+                "{}: {sv}",
+                m.key()
+            );
+        }
+    }
+
+    #[test]
+    fn swedish_keeps_the_shape_of_each_english_template() {
+        // Fragments joined to other text keep their leading space or separator, sentences
+        // their full stop, so a joined Swedish line reads as the English one does.
+        for m in Msg::ALL {
+            let (en, sv) = (English.template(*m), Swedish.template(*m));
+            assert_eq!(
+                en.starts_with(' '),
+                sv.starts_with(' '),
+                "{}: {sv:?}",
+                m.key()
+            );
+            assert_eq!(en.starts_with(", "), sv.starts_with(", "), "{}", m.key());
+            assert_eq!(en.ends_with('.'), sv.ends_with('.'), "{}: {sv:?}", m.key());
+            assert_eq!(en.ends_with('…'), sv.ends_with('…'), "{}: {sv:?}", m.key());
+        }
+    }
+
+    #[test]
+    fn swedish_never_says_percent_left() {
+        // R§5: percent is always used. The only share left is the OK card's `{left}` at the
+        // reset, as in English.
+        for m in Msg::ALL {
+            let sv = Swedish.template(*m);
+            for pct in ["{pct}", "{p}", "{e}", "{n} procent"] {
+                assert!(!sv.contains(&format!("{pct} kvar")), "{}: {sv}", m.key());
+            }
+        }
+    }
+
+    #[test]
+    fn languages_resolve_from_the_setting_then_windows_then_english() {
+        let ui = |tags: &[&str]| tags.iter().map(|t| (*t).to_owned()).collect::<Vec<_>>();
+        assert_eq!(Language::from_tag("sv-SE"), Some(Language::Swedish));
+        assert_eq!(Language::from_tag("SV"), Some(Language::Swedish));
+        assert_eq!(Language::from_tag("sv-FI"), Some(Language::Swedish));
+        assert_eq!(Language::from_tag("en_GB"), Some(Language::English));
+        assert_eq!(Language::from_tag("de-DE"), None);
+        assert_eq!(Language::from_tag(""), None);
+
+        assert_eq!(
+            Language::resolve(None, &ui(&["sv-SE", "en-US"])),
+            Language::Swedish
+        );
+        assert_eq!(
+            Language::resolve(Some("en"), &ui(&["sv-SE"])),
+            Language::English
+        );
+        assert_eq!(
+            Language::resolve(Some("sv"), &ui(&["en-US"])),
+            Language::Swedish
+        );
+        // A display language without a table falls through to the next one, then to English.
+        assert_eq!(
+            Language::resolve(None, &ui(&["de-DE", "sv-SE"])),
+            Language::Swedish
+        );
+        assert_eq!(Language::resolve(None, &ui(&["de-DE"])), Language::English);
+        assert_eq!(Language::resolve(None, &[]), Language::English);
+        // A newer build's language follows Windows.
+        assert_eq!(
+            Language::resolve(Some("de"), &ui(&["sv-SE"])),
+            Language::Swedish
+        );
+
+        for l in Language::ALL {
+            assert_eq!(l.strings().language(), l.tag());
+            assert_eq!(Language::from_tag(l.tag()), Some(l));
+        }
+    }
+
+    #[test]
+    fn swedish_plurals_are_one_and_other() {
+        assert_eq!(Swedish.plural(1), Plural::One);
+        assert_eq!(Swedish.plural(0), Plural::Other);
+        assert_eq!(Swedish.plural(2), Plural::Other);
+        assert_eq!(
+            text(&Swedish, Msg::UnitMinuteOther, &[("n", "5")]),
+            "5 minuter"
+        );
     }
 }

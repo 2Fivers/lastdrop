@@ -16,6 +16,7 @@ use crate::glyph::{ProviderGlyph, SeverityGlyph};
 use crate::grammar::TextContext;
 use crate::grammar::a11y::{row_sentence, runout_point, unit_word};
 use crate::grammar::cells::{course_pct, pct, resets_at, t_out};
+use crate::grammar::meters::localized;
 use crate::grammar::numbers::{amount, balance_forecast_long, percent};
 use crate::grammar::strings::{Msg, text};
 use crate::grammar::time::{
@@ -461,16 +462,17 @@ fn spark_model(
                 .meters
                 .iter()
                 .find(|a| a.key == key)
-                .map(|a| capitalise(&a.names.short_name))
+                .map(|a| a.names.short_name.clone())
                 .or_else(|| {
                     catalog(key.provider)
                         .iter()
                         .find(|d| d.id == key.meter.0)
-                        .map(|d| capitalise(d.short_name))
+                        .map(|d| localized(key.provider, &key.meter, &d.names(), cx.strings))
+                        .map(|names| names.short_name)
                 })
                 .unwrap_or_default();
             refs.push(("meter", &meter));
-            text(cx.strings, Msg::FlyoutSparkWindow, &refs)
+            capitalise(&text(cx.strings, Msg::FlyoutSparkWindow, &refs))
         }
         SparkKind::Balance => {
             let unit = service
@@ -658,9 +660,10 @@ fn verdict(eval: &Evaluation, cx: &TextContext<'_>) -> Verdict {
             &[("n", &(items.len() - 1).to_string())],
         ));
     }
+    // Templates may start with `{label}` (`veckogränsen för Claude tar slut 15:20`).
     Verdict {
         glyph: Some(glyph),
-        text: words,
+        text: capitalise(&words),
     }
 }
 

@@ -7,6 +7,8 @@ use std::sync::Mutex;
 use std::time::Duration;
 
 use jiff::{SignedDuration, Timestamp};
+use lastdrop_core::grammar::English;
+use lastdrop_core::grammar::meters::localized;
 use lastdrop_core::model::{
     AccountKey, AccountRef, Health, MeterId, ProviderId, SourceKind, WindowLen,
 };
@@ -785,6 +787,11 @@ fn other_lengths_are_fixed_windows_named_by_their_length() {
     assert_eq!(hour.names.short_label, "1h");
     for m in [daily, monthly, hour] {
         assert!(m.names.short_label.chars().count() <= 5);
+        // The surfaces show `grammar::meters::localized` names; in English they are these.
+        assert_eq!(
+            localized(ProviderId::Codex, &m.id, &m.names, &English),
+            m.names
+        );
     }
 }
 

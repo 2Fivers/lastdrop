@@ -18,7 +18,7 @@ use crate::grammar::strings::text;
 use crate::grammar::time::{card_time, long_duration, shown_duration};
 use crate::grammar::{Msg, TextContext};
 use crate::model::MeterKey;
-use crate::readout::hovercard::before_reset;
+use crate::readout::hovercard::{before_reset, capitalise};
 use crate::settings::NotificationSettings;
 use crate::stats::{
     AssessedMeter, Assessment, Evaluation, Freshness, LiveChange, ResetView, ServiceEval, Severity,
@@ -306,7 +306,8 @@ fn title(kind: NoticeKind, service: &ServiceEval, a: &Assessment, cx: &TextConte
         AssessedMeter::Balance(b) => b.pct,
         AssessedMeter::Loading => 0,
     };
-    text(
+    // Templates may start with `{meter}` (`veckogränsen för Claude …`).
+    capitalise(&text(
         cx.strings,
         msg,
         &[
@@ -314,7 +315,7 @@ fn title(kind: NoticeKind, service: &ServiceEval, a: &Assessment, cx: &TextConte
             ("meter", &a.names.short_name),
             ("pct", &percent(pct, cx.locale)),
         ],
-    )
+    ))
 }
 
 /// A notice's sentence (N§3).

@@ -448,6 +448,11 @@ countdown in the two-row form (§5.3) ▲/● + COUNTDOWN without "left" (`12 mi
 All strings are resources (Appendix B). Column widths are computed from the localized strings (§6.3), so a
 translation can never be cut off. Swedish weekday abbreviations are lower-case by convention; keep them.
 
+Meter names are localized with the other strings. A language's `short_name` may hold the word for "limit" itself
+(Swedish `veckogränsen`, `5-timmarsgränsen`), so each language words its templates around it, and a title or
+verdict that starts with `{meter}` is capitalised as a whole. Numbers and times follow the regional format, not the
+language (Swedish words with en-GB numbers are possible).
+
 ## 6. Readout layout and drawing
 
 ### 6.1 Window

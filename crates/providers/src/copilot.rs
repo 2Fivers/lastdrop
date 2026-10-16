@@ -64,11 +64,11 @@ pub const HOSTS_FILE: &str = "hosts.yml";
 pub const INSTALL_DIR: &str = "GitHub CLI";
 
 /// The premium-requests quota (paid plans).
-pub const PREMIUM: &str = "premium";
+pub const PREMIUM: &str = MeterId::PREMIUM;
 /// The chat-messages quota (Copilot Free).
-pub const CHAT: &str = "chat";
+pub const CHAT: &str = MeterId::CHAT;
 /// The code-completions quota (Copilot Free).
-pub const COMPLETIONS: &str = "completions";
+pub const COMPLETIONS: &str = MeterId::COMPLETIONS;
 
 /// The source every Copilot reading and error carries.
 const SOURCE: SourceKind = SourceKind::CopilotApi;
@@ -80,8 +80,8 @@ const QUOTAS: [(&str, &str); 3] = [
     ("completions", COMPLETIONS),
 ];
 
-/// The names and order of a Copilot meter (R§2 table), `None` for an id this build does not
-/// know.
+/// The names and order of a Copilot meter (R§2 table, English; the surfaces show
+/// `lastdrop_core::grammar::meters::localized`), `None` for an id this build does not know.
 pub fn meter_names(id: &str) -> Option<(MeterNames, u16)> {
     match id {
         PREMIUM => Some((MeterNames::new("Prem", "premium", "Premium requests"), 0)),
