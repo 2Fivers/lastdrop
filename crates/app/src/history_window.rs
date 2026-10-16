@@ -2,22 +2,30 @@
 //! with history, a range, and the charts `lastdrop_core::charts` builds from the history files of
 //! the selected service, read when the window opens and when the service or range changes.
 //!
-//! Threading: the main thread runs the window; the files are read on it (a few megabytes at
-//! most, charts-spec §8).
+//! For Claude and Codex the window also shows tokens and cost per day and model
+//! (docs/design/tokens-spec.md) from the tools' own session logs.
+//!
+//! Threading: the main thread runs the window; the history files are read on it (a few megabytes
+//! at most, charts-spec §8). The session logs can be hundreds of megabytes: they are read on a
+//! `tokens` thread, one source at a time, and the result comes back through
+//! `slint::invoke_from_event_loop` (tokens-spec §4).
 
 use std::cell::RefCell;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
 use jiff::{SignedDuration, Timestamp};
-use lastdrop_core::charts::{self, ChartMeter, HistoryInput, HistoryModel, Range};
+use lastdrop_core::charts::{self, ChartMeter, HistoryInput, HistoryModel, Period, Range};
 use lastdrop_core::flyout::SparkKind;
 use lastdrop_core::grammar::strings::text;
 use lastdrop_core::grammar::{LocaleFormat, Msg, Strings};
-use lastdrop_core::model::{MeterKey, MeterKind, SourceKey, catalog, fnv1a64};
+use lastdrop_core::model::{MeterKey, MeterKind, ProviderId, SourceKey, catalog, fnv1a64};
 use lastdrop_core::settings::Settings;
 use lastdrop_core::stats::Sample;
+use lastdrop_core::tokens::{self, ModelRow, PriceTable, TokenLog, TokensInput, TokensModel};
+use lastdrop_providers::AccountSource;
+use lastdrop_providers::real::{RealEnv, RealFs};
 use slint::{ComponentHandle, ModelRc, SharedString, VecModel};
 
 use crate::persist::{self, Paths, SavedState};
@@ -138,6 +146,7 @@ fn texts(strings: &dyn Strings) -> ui::HistoryTexts {
         over_time: t(Msg::HistoryOverTime),
         per_day: t(Msg::HistoryPerDay),
         hours: t(Msg::HistoryHours),
+        tokens: t(Msg::HistoryTokens),
         close: t(Msg::HistoryClose),
     }
 }
@@ -254,6 +263,98 @@ pub fn fill_model(window: &ui::HistoryWindow, model: &HistoryModel) {
     }
 }
 
+/// How much earlier than the period's start the session logs are read: a file changed then can
+/// hold the period's first requests (tokens-spec §1).
+const TOKENS_MARGIN: SignedDuration = SignedDuration::from_hours(24);
+
+/// The largest `prices.json` the user's file may be.
+const MAX_PRICES_FILE: u64 = 1 << 20;
+
+/// Sets the tokens section from `section`; `None` hides it (a service without session logs).
+pub fn fill_tokens(window: &ui::HistoryWindow, section: Option<&TokensModel>) {
+    let Some(section) = section else {
+        window.set_has_tokens(false);
+        return;
+    };
+    let row = |r: &ModelRow| ui::TokenRow {
+        name: r.name.as_str().into(),
+        split: r.split.as_str().into(),
+        tokens: r.tokens.as_str().into(),
+        cost: r.cost.as_str().into(),
+    };
+    window.set_has_tokens(true);
+    window.set_tokens_message(section.empty.as_deref().unwrap_or_default().into());
+    window.set_token_days(model(
+        section
+            .columns
+            .iter()
+            .map(|c| ui::DayData {
+                height: c.height,
+                today: c.today,
+            })
+            .collect(),
+    ));
+    window.set_tokens_top(section.top.as_str().into());
+    window.set_tokens_summary(section.summary.as_str().into());
+    window.set_tokens_a11y(section.a11y.as_str().into());
+    window.set_token_rows(model(section.rows.iter().map(row).collect()));
+    window.set_tokens_total(section.total.as_ref().map(row).unwrap_or_default());
+    window.set_tokens_note(section.note.as_str().into());
+}
+
+/// The session-log folder of every Claude and Codex account in `settings` (tokens-spec §1).
+pub(crate) fn log_folders(settings: &Settings) -> HashMap<SourceKey, PathBuf> {
+    let mut out = HashMap::new();
+    for p in settings.providers.iter().filter_map(|e| e.known()) {
+        if !matches!(p.id, ProviderId::Claude | ProviderId::Codex) {
+            continue;
+        }
+        for account in &p.accounts {
+            let folder = AccountSource::resolve(p.id, account, &RealEnv)
+                .ok()
+                .and_then(|s| s.folder().map(Path::to_path_buf));
+            if let Some(folder) = folder {
+                let key = SourceKey {
+                    provider: p.id,
+                    account: account.key.clone(),
+                };
+                out.insert(key, folder);
+            }
+        }
+    }
+    out
+}
+
+/// The bundled prices with the user's `prices.json` over them, when it is there and readable
+/// (tokens-spec §2).
+pub fn load_prices(path: &Path) -> PriceTable {
+    let bundled = PriceTable::bundled();
+    if std::fs::metadata(path).is_ok_and(|m| m.len() > MAX_PRICES_FILE) {
+        log::warn!("history window: prices.json is larger than 1 MB; ignored");
+        return bundled;
+    }
+    match std::fs::read_to_string(path) {
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => bundled,
+        Err(e) => {
+            log::warn!("history window: prices.json not read: {e}");
+            bundled
+        }
+        Ok(json) => match PriceTable::parse(&json) {
+            Ok(user) => {
+                log::info!(
+                    "history window: prices.json adds {} models",
+                    user.models.len()
+                );
+                bundled.with(user)
+            }
+            Err(e) => {
+                log::warn!("history window: prices.json ignored: {e}");
+                bundled
+            }
+        },
+    }
+}
+
 /// Sets the texts and the choices: the services' names and the ranges.
 pub fn fill_choices(window: &ui::HistoryWindow, sources: &[Source], strings: &dyn Strings) {
     window.set_texts(texts(strings));
@@ -300,6 +401,14 @@ struct Session {
     range: RefCell<Range>,
     history_dir: PathBuf,
     wording: Wording,
+    /// The session-log folders of the Claude and Codex sources.
+    folders: HashMap<SourceKey, PathBuf>,
+    /// The session logs read so far, with the time they were read from, kept while the window
+    /// is open.
+    logs: RefCell<HashMap<SourceKey, (Timestamp, Rc<TokenLog>)>>,
+    /// The sources whose logs are being read, with the time they are read from.
+    reading: RefCell<HashMap<SourceKey, Timestamp>>,
+    prices: PriceTable,
 }
 
 impl Session {
@@ -327,6 +436,117 @@ impl Session {
         let strings = self.wording.strings();
         let model = build(source, &history, range, now, &self.wording.locale, strings);
         fill_model(&self.window, &model);
+        self.show_tokens();
+    }
+
+    /// Shows the selected source's tokens and cost, starting to read its logs if they are not
+    /// read back far enough for the period yet; hides the section for a source without session
+    /// logs.
+    fn show_tokens(&self) {
+        let selected = *self.selected.borrow();
+        let source = self
+            .sources
+            .get(selected)
+            .filter(|s| self.folders.contains_key(&s.key));
+        let Some(source) = source else {
+            fill_tokens(&self.window, None);
+            return;
+        };
+        let strings = self.wording.strings();
+        let range = *self.range.borrow();
+        let now = Timestamp::now();
+        let since = Period::of(range, now, &self.wording.locale.tz)
+            .from
+            .checked_sub(TOKENS_MARGIN)
+            .unwrap_or(Timestamp::MIN);
+        let log = self
+            .logs
+            .borrow()
+            .get(&source.key)
+            .filter(|(from, _)| *from <= since)
+            .map(|(_, log)| Rc::clone(log));
+        let section = match log {
+            Some(log) => tokens::build(&TokensInput {
+                log: &log,
+                prices: &self.prices,
+                client: source.key.provider.client_name().unwrap_or_default(),
+                range,
+                now,
+                locale: &self.wording.locale,
+                strings,
+            }),
+            None => {
+                self.start_reading(&source.key, since);
+                TokensModel {
+                    empty: Some(strings.template(Msg::HistoryTokensReading).to_owned()),
+                    ..TokensModel::default()
+                }
+            }
+        };
+        fill_tokens(&self.window, Some(&section));
+    }
+
+    /// Reads the session logs of `key` from `since` on a thread of their own, unless a read from
+    /// that far back is under way.
+    fn start_reading(&self, key: &SourceKey, since: Timestamp) {
+        let Some(folder) = self.folders.get(key).cloned() else {
+            return;
+        };
+        if self
+            .reading
+            .borrow()
+            .get(key)
+            .is_some_and(|from| *from <= since)
+        {
+            return;
+        }
+        self.reading.borrow_mut().insert(key.clone(), since);
+        let thread_key = key.clone();
+        let spawned = std::thread::Builder::new()
+            .name("tokens".to_owned())
+            .spawn(move || {
+                let started = std::time::Instant::now();
+                let log = match thread_key.provider {
+                    ProviderId::Claude => {
+                        lastdrop_providers::tokens::read_claude(&RealFs, &folder, since)
+                    }
+                    _ => lastdrop_providers::tokens::read_codex(&RealFs, &folder, since),
+                };
+                log::info!(
+                    "history window: {} {} session logs read in {} ms: {} requests, {} models",
+                    log.files,
+                    thread_key.provider.display_name(),
+                    started.elapsed().as_millis(),
+                    log.requests.len(),
+                    log.models.len()
+                );
+                let _ = slint::invoke_from_event_loop(move || {
+                    with_session(|s| s.logs_read(thread_key, since, log));
+                });
+            });
+        if let Err(e) = spawned {
+            log::warn!("history window: no thread to read session logs: {e}");
+            self.reading.borrow_mut().remove(key);
+        }
+    }
+
+    /// Keeps the logs of `key` read from `since`, unless logs from further back are kept already,
+    /// and shows the selected source's again.
+    fn logs_read(&self, key: SourceKey, since: Timestamp, log: TokenLog) {
+        {
+            let mut reading = self.reading.borrow_mut();
+            if reading.get(&key).is_some_and(|from| *from >= since) {
+                reading.remove(&key);
+            }
+        }
+        {
+            let mut logs = self.logs.borrow_mut();
+            let older = logs.get(&key).is_some_and(|(from, _)| *from <= since);
+            if !older {
+                logs.insert(key, (since, Rc::new(log)));
+            }
+        }
+        self.show_tokens();
     }
 
     /// Selects the source of `tag`, if one has it.
@@ -366,6 +586,8 @@ pub fn open(paths: &Paths, tag: Option<u32>) -> Result<(), AppError> {
     let all = sources(&settings, &persist::load_state(&paths.state), strings);
     let sources = with_history(all, &paths.history);
     log::info!("history window: {} services with history", sources.len());
+    let folders = log_folders(&settings);
+    let prices = load_prices(&paths.prices);
     let window = wiring::create_window(false, ui::HistoryWindow::new)?;
     fill_choices(&window, &sources, strings);
     let range = Range::default();
@@ -400,6 +622,10 @@ pub fn open(paths: &Paths, tag: Option<u32>) -> Result<(), AppError> {
         range: RefCell::new(range),
         history_dir: paths.history.clone(),
         wording,
+        folders,
+        logs: RefCell::new(HashMap::new()),
+        reading: RefCell::new(HashMap::new()),
+        prices,
     });
     session.select_tag(tag);
     session.show_selected();

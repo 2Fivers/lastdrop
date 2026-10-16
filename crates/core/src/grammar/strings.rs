@@ -29,7 +29,9 @@
 //! model's display name (`meter.*`); `{language}` a language's own name ([`Language::native_name`])
 //! and `{version}` the app's version (`settings.*`, `about.*`); `{email}` the e-mail address an
 //! account is signed in with and `{name}` an account's name (accounts-spec §4, `settings.accounts.*`);
-//! `{group}` a model pool as the service names it and `{initial}` its first letter (`meter.group.*`).
+//! `{group}` a model pool as the service names it and `{initial}` its first letter (`meter.group.*`);
+//! `{tokens}`, `{input}`, `{output}`, `{cache}` compact token counts and `{cost}` an amount of money
+//! with its currency code (`history.tokens.*`, tokens-spec §3).
 //!
 //! Titles, verdicts, notification titles, "Also tracked" lines and the settings window's meter
 //! rows are capitalised as a whole after filling ([`capitalise`]; Appendix B: `{meter}`
@@ -539,6 +541,20 @@ catalogue! {
         HistoryHoursSummary = "history.hours.summary",
         HistoryEmpty = "history.empty",
         HistoryEmptyRange = "history.empty.range",
+        HistoryTokens = "history.tokens",
+        HistoryTokensReading = "history.tokens.reading",
+        HistoryTokensNone = "history.tokens.none",
+        HistoryTokensEmpty = "history.tokens.empty",
+        HistoryTokensSummary = "history.tokens.summary",
+        HistoryTokensSummaryNoCost = "history.tokens.summary.nocost",
+        HistoryTokensSplit = "history.tokens.split",
+        HistoryTokensCost = "history.tokens.cost",
+        HistoryTokensTotal = "history.tokens.total",
+        HistoryTokensTotalPartial = "history.tokens.total.partial",
+        HistoryTokensNote = "history.tokens.note",
+        HistoryTokensCountK = "history.tokens.count.k",
+        HistoryTokensCountM = "history.tokens.count.m",
+        HistoryTokensCountB = "history.tokens.count.b",
         HistoryClose = "history.close",
         A11yHistorySpan = "a11y.history.span",
         A11yHistoryPercent = "a11y.history.percent",
@@ -546,6 +562,7 @@ catalogue! {
         A11yHistoryBalance = "a11y.history.balance",
         A11yHistoryPerDay = "a11y.history.per_day",
         A11yHistoryHours = "a11y.history.hours",
+        A11yHistoryTokens = "a11y.history.tokens",
 
         // ---- About window (R§10 "About Lastdrop")
         AboutTitle = "about.title",

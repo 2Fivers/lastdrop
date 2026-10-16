@@ -136,8 +136,10 @@ attaches its thread's input queue to Explorer's, which in the reference tool fro
 input (its issues #22 and #92). The readout thread does nothing but draw a small model and handle
 a handful of messages.
 
-The dialog process has only its main thread (Slint event loop, settings, usage history and about
-windows) and the log's writer thread. As a dialog it may wait on the disk: it reads and writes
+The dialog process has its main thread (Slint event loop, settings, usage history and about
+windows), the log's writer thread and, while the usage history window reads Claude Code's or
+Codex's session logs for tokens and cost, a `tokens` thread that reads up to four files at once
+([tokens-spec](design/tokens-spec.md) §4). As a dialog it may wait on the disk: it reads and writes
 `settings.json` on its main thread, and the usage history window reads the selected service's
 history files there (read-only, while the tray process may append to them; a line still being
 written does not parse and is skipped).
@@ -287,7 +289,9 @@ Rules for every provider:
   time; one job per credential source in flight.
 - **Persistence:** settings in `%APPDATA%\Lastdrop\settings.json` (atomic write, no
   secrets); the user's described services in `%APPDATA%\Lastdrop\providers\*.json`
-  (only read, by both processes at start-up); history in `%LOCALAPPDATA%\Lastdrop\` (thinned to one sample per meter per
+  (only read, by both processes at start-up); the user's token prices in
+  `%APPDATA%\Lastdrop\prices.json` (only read, by the usage history window, over the bundled
+  `crates/core/prices.json`); history in `%LOCALAPPDATA%\Lastdrop\` (thinned to one sample per meter per
   5 minutes, 90 days); `%LOCALAPPDATA%\Lastdrop\state.json` (what the app remembers that is
   not a setting: the meters a source has reported, so their room in the readout survives a
   restart, what notifications announced, so a restart repeats none, and the hash of who each

@@ -519,6 +519,35 @@ impl Demo {
     }
 }
 
+/// Invented Claude Code requests for the usage history window's tokens and cost
+/// (tokens-spec §3): the 14 days of [`CLAUDE_WEEKLY_DAYS`] before `now`, a few requests a day
+/// on two models, sized by that day's use.
+pub fn claude_tokens(now: Timestamp) -> lastdrop_core::tokens::TokenLog {
+    use lastdrop_core::tokens::{Request, TokenLog};
+    let mut log = TokenLog {
+        models: vec!["claude-opus-5-5".to_owned(), "claude-haiku-5-5".to_owned()],
+        requests: Vec::new(),
+        files: 9,
+    };
+    for (i, used) in CLAUDE_WEEKLY_DAYS.iter().enumerate() {
+        let days_back = (CLAUDE_WEEKLY_DAYS.len() - 1 - i) as i64;
+        let scale = (*used as u64).max(1);
+        for n in 0..(*used as i64) {
+            let at = plus(now, -(days_back * 24 * 60) - 30 - n * 17);
+            log.requests.push(Request {
+                at,
+                model: u16::from(n % 4 == 3),
+                input: 1_200 * scale,
+                output: 9_000 * scale,
+                cache_read: 310_000 * scale,
+                cache_write_5m: 18_000 * scale,
+                cache_write_1h: 0,
+            });
+        }
+    }
+    log
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

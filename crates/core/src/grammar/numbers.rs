@@ -56,6 +56,74 @@ pub fn amount(value: f64, locale: &LocaleFormat) -> String {
     out
 }
 
+/// `value` with one decimal in the locale's decimal separator (`4.2`, sv-SE `4,2`), rounded half
+/// up; a whole number without it (`5`).
+fn one_decimal(value: f64, locale: &LocaleFormat) -> String {
+    let tenths = round_half_up(value * 10.0);
+    // `as` saturates; counts and prices never come near the i64 range.
+    let tenths = tenths as i64;
+    if tenths % 10 == 0 {
+        return (tenths / 10).to_string();
+    }
+    format!(
+        "{}{}{}",
+        tenths / 10,
+        locale.decimal_separator,
+        (tenths % 10).unsigned_abs()
+    )
+}
+
+/// A token count, compact (tokens-spec §3): `950`, `12K`, `4.2M`, `5M`, `1.3B`; one decimal below
+/// 10 unless it is 0, none from 10, the suffixes from the strings (Swedish `12 tn`).
+pub fn token_count(n: u64, locale: &LocaleFormat, strings: &dyn Strings) -> String {
+    const UNITS: [(f64, Msg); 3] = [
+        (1e3, Msg::HistoryTokensCountK),
+        (1e6, Msg::HistoryTokensCountM),
+        (1e9, Msg::HistoryTokensCountB),
+    ];
+    // Precision is irrelevant at these magnitudes: the result is rounded to two digits.
+    let value = n as f64;
+    if value < 1e3 {
+        return amount(value, locale);
+    }
+    let mut unit = 0;
+    while unit + 1 < UNITS.len() && round_half_up(value / UNITS[unit].0) >= 1e3 {
+        unit += 1;
+    }
+    let (size, msg) = UNITS[unit];
+    let scaled = value / size;
+    let shown = if round_half_up(scaled * 10.0) < 100.0 {
+        one_decimal(scaled, locale)
+    } else {
+        amount(scaled, locale)
+    };
+    text(strings, msg, &[("n", &shown)])
+}
+
+/// An amount of money (tokens-spec §3): two decimals below 100, whole and grouped from 100, the
+/// ISO 4217 code after it: `12.40 USD`, `1,240 USD`; sv-SE `12,40 USD`.
+pub fn money(value: f64, code: &str, locale: &LocaleFormat) -> String {
+    let value = if value.is_finite() {
+        value.max(0.0)
+    } else {
+        0.0
+    };
+    let cents = round_half_up(value * 100.0);
+    let number = if cents < 10_000.0 {
+        // `as` is exact: below 10,000.
+        let cents = cents as i64;
+        format!(
+            "{}{}{:02}",
+            cents / 100,
+            locale.decimal_separator,
+            cents % 100
+        )
+    } else {
+        amount(value, locale)
+    };
+    format!("{number} {code}")
+}
+
 /// A balance duration in one unit, floored: hours below 2 days (≥ 1), days below 14, weeks
 /// below 63 days; `None` from 63 days (R§5.5).
 enum BalanceSpan {

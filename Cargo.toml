@@ -66,6 +66,10 @@ ruzstd = { version = "=0.9.1" }
 brotli-decompressor = { version = "=6.0.1", default-features = false, features = ["std"] }
 flate2 = { version = "=1.1.10", default-features = false, features = ["rust_backend"] }
 
+# Fast byte search for the session-log readers (tokens-spec §4); already in the tree through
+# other crates.
+memchr = { version = "=2.8.3" }
+
 # Errors and logging (our own tiny file logger lives in crates/app/src/logger.rs).
 thiserror = "=2.0.21"
 log = { version = "=0.4.34", features = ["std"] }
