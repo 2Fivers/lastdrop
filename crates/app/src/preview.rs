@@ -1,8 +1,9 @@
 //! `--preview-flyout <png>` and `--preview-hovercard <png>` (with `--demo`, `--scale <s>`,
 //! `--dark`): render the flyout and the hover card without a window and save them as PNGs, so the
 //! UI can be compared with `docs/design/final/flyout-100.png` and `readout-100.png` §5.
-//! `--preview-settings <png>` and `--preview-about <png>` (with `--demo` only) render the dialog
-//! process's windows the same way.
+//! `--preview-settings <png>` and `--preview-about <png>` (with `--demo` only) and
+//! `--preview-history <png>` (the demo's history, or without `--demo` the user's) render the
+//! dialog process's windows the same way.
 //!
 //! The render uses Slint's software renderer through a headless platform
 //! (`MinimalSoftwareWindow`s): no window is created, nothing appears on the desktop and nothing
@@ -49,6 +50,10 @@ const SETTINGS_PREVIEW_W: f32 = 480.0;
 const SETTINGS_PREVIEW_H: f32 = 1500.0;
 /// The about window's preferred width.
 const ABOUT_PREVIEW_W: f32 = 420.0;
+/// The usage history window's preview size: its preferred width, tall enough for the page.
+const HISTORY_PREVIEW_W: f32 = 640.0;
+/// See [`HISTORY_PREVIEW_W`].
+const HISTORY_PREVIEW_H: f32 = 1100.0;
 
 /// The headless platform: software-rendered windows without an OS window or an event loop.
 struct Headless;
@@ -75,6 +80,7 @@ pub fn run(args: &Args) -> Result<(), AppError> {
         && args.preview_hover_card.is_none()
         && args.preview_settings.is_none()
         && args.preview_about.is_none()
+        && args.preview_history.is_none()
     {
         return Ok(());
     }
@@ -107,6 +113,9 @@ pub fn run(args: &Args) -> Result<(), AppError> {
         if let Some(out) = args.preview_about.as_deref() {
             render_about(strings, scale, out)?;
         }
+        if let Some(out) = args.preview_history.as_deref() {
+            render_history(&world, scale, out)?;
+        }
         return Ok(());
     }
     let live = live_models(args.language.as_deref().and_then(Language::from_tag))?;
@@ -123,6 +132,67 @@ pub fn run(args: &Args) -> Result<(), AppError> {
     if let Some(out) = args.preview_hover_card.as_deref() {
         render_hover_card(&live.hover_card, &live.theme, scale, out)?;
     }
+    if let Some(out) = args.preview_history.as_deref() {
+        render_live_history(
+            args.language.as_deref().and_then(Language::from_tag),
+            scale,
+            out,
+        )?;
+    }
+    Ok(())
+}
+
+/// Renders the usage history window with the user's history: the first service that has any,
+/// over the last 30 days, in `language` (else the settings' and Windows').
+fn render_live_history(language: Option<Language>, scale: f64, out: &Path) -> Result<(), AppError> {
+    use crate::history_window::{build, fill_choices, fill_model, sources, with_history};
+    let paths = persist::Paths::from_env()?;
+    crate::custom_services::load(&paths.providers);
+    let (settings, _) = persist::load_settings(&paths.settings);
+    let mut wording = Wording::read(&settings);
+    if let Some(language) = language {
+        wording.language = language;
+    }
+    let strings = wording.strings();
+    let all = sources(&settings, &persist::load_state(&paths.state), strings);
+    let found = with_history(all, &paths.history);
+    let now = Timestamp::now();
+    let history: std::collections::BTreeMap<MeterKey, Vec<lastdrop_core::stats::Sample>> = found
+        .first()
+        .map(|s| {
+            s.meters
+                .iter()
+                .map(|m| {
+                    let samples = crate::history::read_meter(&paths.history, &m.key, now);
+                    (m.key.clone(), samples)
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    let window = ui::HistoryWindow::new()?;
+    fill_choices(&window, &found, strings);
+    window.set_service_index(0);
+    window.set_range_index(1);
+    let model = build(
+        found.first(),
+        &history,
+        lastdrop_core::charts::Range::Month,
+        now,
+        &wording.locale,
+        strings,
+    );
+    fill_model(&window, &model);
+    window.show()?;
+    snapshot_to_png(
+        window.window(),
+        scale,
+        HISTORY_PREVIEW_W,
+        HISTORY_PREVIEW_H,
+        &|| HISTORY_PREVIEW_H,
+        &|_| {},
+        out,
+    )?;
+    window.hide()?;
     Ok(())
 }
 
@@ -274,6 +344,78 @@ fn render_settings(world: &demo::Demo, scale: f64, out: &Path) -> Result<(), App
         SETTINGS_PREVIEW_W,
         SETTINGS_PREVIEW_H,
         &|| SETTINGS_PREVIEW_H,
+        &|_| {},
+        out,
+    )?;
+    window.hide()?;
+    Ok(())
+}
+
+/// The demo's services as the usage history window lists them: each with the meters and
+/// balances of its reading.
+fn demo_sources(world: &demo::Demo) -> Vec<crate::history_window::Source> {
+    use lastdrop_core::charts::ChartMeter;
+    use lastdrop_core::flyout::SparkKind;
+    world
+        .services
+        .iter()
+        .map(|s| {
+            let key = |id: &lastdrop_core::model::MeterId| MeterKey {
+                provider: s.snapshot.provider,
+                account: s.account.key.clone(),
+                meter: id.clone(),
+            };
+            let windows = s.snapshot.meters.iter().map(|m| ChartMeter {
+                key: key(&m.id),
+                names: m.names.clone(),
+                kind: SparkKind::Window,
+                window: Some(m.window),
+                unit: None,
+            });
+            let balances = s.snapshot.balances.iter().map(|b| ChartMeter {
+                key: key(&b.id),
+                names: b.names.clone(),
+                kind: SparkKind::Balance,
+                window: None,
+                unit: Some(b.unit.clone()),
+            });
+            crate::history_window::Source {
+                key: lastdrop_core::model::SourceKey {
+                    provider: s.snapshot.provider,
+                    account: s.account.key.clone(),
+                },
+                label: s.snapshot.provider.display_name().to_owned(),
+                meters: windows.chain(balances).collect(),
+            }
+        })
+        .collect()
+}
+
+/// Renders the usage history window with the demo's first service over the last 30 days.
+fn render_history(world: &demo::Demo, scale: f64, out: &Path) -> Result<(), AppError> {
+    use crate::history_window::{build, fill_choices, fill_model};
+    let window = ui::HistoryWindow::new()?;
+    let strings = world.language.strings();
+    let sources = demo_sources(world);
+    fill_choices(&window, &sources, strings);
+    window.set_service_index(0);
+    window.set_range_index(1);
+    let model = build(
+        sources.first(),
+        &world.history,
+        lastdrop_core::charts::Range::Month,
+        world.now,
+        &world.locale,
+        strings,
+    );
+    fill_model(&window, &model);
+    window.show()?;
+    snapshot_to_png(
+        window.window(),
+        scale,
+        HISTORY_PREVIEW_W,
+        HISTORY_PREVIEW_H,
+        &|| HISTORY_PREVIEW_H,
         &|_| {},
         out,
     )?;

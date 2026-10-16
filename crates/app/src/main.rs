@@ -27,6 +27,7 @@ fn main() -> ExitCode {
         .or_else(|| args.preview_hover_card.clone())
         .or_else(|| args.preview_settings.clone())
         .or_else(|| args.preview_about.clone())
+        .or_else(|| args.preview_history.clone())
     {
         return match preview::run(&args) {
             Ok(()) => ExitCode::SUCCESS,

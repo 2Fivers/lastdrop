@@ -10,7 +10,7 @@ use std::ffi::OsString;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
-use lastdrop_core::model::{AccountIdentity, MeterKey, MeterNames, SourceKey};
+use lastdrop_core::model::{AccountIdentity, MeterKey, MeterNames, SourceKey, Unit};
 use lastdrop_core::notify::{Announced, NotifyMemory};
 use lastdrop_core::settings::{SETTINGS_VERSION, Settings};
 use serde::{Deserialize, Serialize};
@@ -275,14 +275,25 @@ pub struct SeenMeter {
     /// It is a balance meter.
     #[serde(default)]
     pub balance: bool,
+    /// A balance's unit (charts-spec §4). Missing in a file of an older build: not known.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub unit: Option<Unit>,
 }
+
+/// `EvalMemory::units` as kept in memory.
+pub type UnitMap = BTreeMap<MeterKey, Unit>;
 
 /// `EvalMemory::seen` as kept in memory.
 pub type SeenMap = BTreeMap<MeterKey, (MeterNames, bool)>;
 
 impl SavedState {
-    /// The state of `seen`, `notified` and `identities`.
-    pub fn new(seen: &SeenMap, notified: &NotifyMemory, identities: &IdentityMap) -> SavedState {
+    /// The state of `seen` (with the `units` of its balances), `notified` and `identities`.
+    pub fn new(
+        seen: &SeenMap,
+        units: &UnitMap,
+        notified: &NotifyMemory,
+        identities: &IdentityMap,
+    ) -> SavedState {
         SavedState {
             version: STATE_VERSION,
             seen: seen
@@ -291,6 +302,7 @@ impl SavedState {
                     key: key.clone(),
                     names: names.clone(),
                     balance: *balance,
+                    unit: units.get(key).filter(|_| *balance).cloned(),
                 })
                 .collect(),
             notified: notified
@@ -326,6 +338,14 @@ impl SavedState {
         self.seen
             .iter()
             .map(|m| (m.key.clone(), (m.names.clone(), m.balance)))
+            .collect()
+    }
+
+    /// The units of [`SavedState::seen`]'s balances, as kept in memory.
+    pub fn units_map(&self) -> UnitMap {
+        self.seen
+            .iter()
+            .filter_map(|m| Some((m.key.clone(), m.unit.clone()?)))
             .collect()
     }
 
@@ -508,7 +528,14 @@ mod tests {
             },
             identity.clone(),
         );
-        let state = SavedState::new(&seen, &notified, &identities);
+        let mut units = UnitMap::new();
+        units.insert(
+            seen.keys().next().cloned().expect("a meter"),
+            Unit::Currency {
+                code: "USD".to_owned(),
+            },
+        );
+        let state = SavedState::new(&seen, &units, &notified, &identities);
         write_atomic(&path, &state_bytes(&state).expect("encode")).expect("write");
         let back = load_state(&path);
         assert_eq!(back, state);

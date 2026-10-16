@@ -430,11 +430,13 @@ catalogue! {
         MenuReadoutAuto = "menu.readout.auto",
         MenuReadoutPinned = "menu.readout.pinned",
         MenuReadoutOff = "menu.readout.off",
+        MenuHistory = "menu.history",
         MenuSettings = "menu.settings",
         MenuAbout = "menu.about",
         MenuQuit = "menu.quit",
         MenuCardUsage = "menu.card.usage",
         MenuCardRefresh = "menu.card.refresh",
+        MenuCardHistory = "menu.card.history",
         MenuCardReadout = "menu.card.readout",
 
         // ---- Settings window (ROADMAP M1 "settings basics"; out of both specs, F§12)
@@ -525,6 +527,26 @@ catalogue! {
         SettingsAccountsNoSignIn = "settings.accounts.nosignin",
         SettingsPrivacyHide = "settings.privacy.hide",
 
+        // ---- Usage history window (charts-spec)
+        HistoryTitle = "history.title",
+        HistoryService = "history.service",
+        HistoryRange = "history.range",
+        HistoryRangeDays = "history.range.days",
+        HistoryOverTime = "history.over_time",
+        HistoryPerDay = "history.per_day",
+        HistoryPerDaySummary = "history.per_day.summary",
+        HistoryHours = "history.hours",
+        HistoryHoursSummary = "history.hours.summary",
+        HistoryEmpty = "history.empty",
+        HistoryEmptyRange = "history.empty.range",
+        HistoryClose = "history.close",
+        A11yHistorySpan = "a11y.history.span",
+        A11yHistoryPercent = "a11y.history.percent",
+        A11yHistoryWindow = "a11y.history.window",
+        A11yHistoryBalance = "a11y.history.balance",
+        A11yHistoryPerDay = "a11y.history.per_day",
+        A11yHistoryHours = "a11y.history.hours",
+
         // ---- About window (R§10 "About Lastdrop")
         AboutTitle = "about.title",
         AboutHeading = "about.heading",
@@ -543,6 +565,8 @@ catalogue! {
         UnitMinute = "unit.minute",
         UnitHour = "unit.hour",
         UnitDay = "unit.day",
+        // ---- Usage history window (charts-spec §5)
+        A11yHistoryUsedUp = "a11y.history.used_up",
         UnitWeek = "unit.week",
     }
 }

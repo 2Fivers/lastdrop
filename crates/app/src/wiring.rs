@@ -522,6 +522,8 @@ pub enum MenuCommand {
     ReadoutPinned,
     /// Taskbar readout ▸ Off.
     ReadoutOff,
+    /// Usage history… (charts-spec §1; the dialog process).
+    History,
     /// Settings… (the dialog process).
     Settings,
     /// About Lastdrop (required by Slint's licence; the dialog process).
@@ -621,6 +623,7 @@ impl TrayMenu {
             items: vec![auto, pinned, off],
         });
         items.push(MenuItem::Separator);
+        items.push(command(MenuCommand::History, Msg::MenuHistory, false));
         items.push(command(MenuCommand::Settings, Msg::MenuSettings, false));
         items.push(command(MenuCommand::About, Msg::MenuAbout, false));
         items.push(MenuItem::Separator);
@@ -1233,6 +1236,7 @@ pub fn on_menu_command(app: &App, command: MenuCommand) {
             rebuild(app, now);
         }
         MenuCommand::ReadoutPinned => open_dialog(app, DialogKind::SettingsPins),
+        MenuCommand::History => open_dialog(app, DialogKind::History(None)),
         MenuCommand::Settings => open_dialog(app, DialogKind::Settings),
         MenuCommand::About => open_dialog(app, DialogKind::About),
         MenuCommand::Quit => {
@@ -1719,6 +1723,12 @@ fn connect_flyout(window: &ui::Flyout) {
         });
     });
     window.on_open_service_dashboard(|index| with_app(|app| open_usage_page(app, index)));
+    window.on_card_history(|index| {
+        with_app(|app| {
+            let tag = card_source(app, index).map(|s| crate::history_window::source_tag(&s));
+            open_dialog(app, DialogKind::History(tag));
+        });
+    });
     window.on_message_action(|index| with_app(|app| on_card_action(app, index)));
     window.on_card_toggle_pin(|card, meter| with_app(|app| toggle_pin(app, card, meter)));
 }
@@ -1891,6 +1901,7 @@ pub fn card_menu(
 /// Sets the flyout's fixed labels (`Msg::MenuCard*`).
 pub fn set_flyout_labels(window: &ui::Flyout, strings: &dyn Strings) {
     window.set_menu_usage_label(strings.template(Msg::MenuCardUsage).into());
+    window.set_menu_history_label(strings.template(Msg::MenuCardHistory).into());
     window.set_menu_readout_label(strings.template(Msg::MenuCardReadout).into());
 }
 
@@ -2634,6 +2645,7 @@ mod tests {
                 "Pause updates",
                 "Taskbar readout",
                 "-",
+                "Usage history…",
                 "Settings…",
                 "About Lastdrop",
                 "-",

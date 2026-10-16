@@ -47,6 +47,7 @@ pub mod custom_services;
 pub mod demo;
 pub mod dialog;
 pub mod history;
+pub mod history_window;
 pub mod logger;
 pub mod persist;
 pub mod png;
@@ -84,6 +85,8 @@ pub struct Args {
     pub preview_settings: Option<PathBuf>,
     /// `--preview-about <png>`: the about window (`--demo`).
     pub preview_about: Option<PathBuf>,
+    /// `--preview-history <png>`: the usage history window with the demo's history (`--demo`).
+    pub preview_history: Option<PathBuf>,
     /// `--demo`: with `--preview-flyout` / `--preview-hovercard`, use the built-in demo data ([`demo`]): no network, no
     /// files, no Windows settings.
     pub demo: bool,
@@ -96,8 +99,9 @@ pub struct Args {
     /// `--language <tag>`: the preview's language (`en`, `sv`); default: the settings' and
     /// Windows' (English with `--demo`).
     pub language: Option<String>,
-    /// `--settings`, `--settings-pins` or `--about`: run as the dialog process with that dialog
-    /// ([`dialog`]) instead of the app. The last one given counts.
+    /// `--settings`, `--settings-pins`, `--settings-accounts`, `--history[=<tag>]` or `--about`:
+    /// run as the dialog process with that dialog ([`dialog`]) instead of the app. The last one
+    /// given counts.
     pub dialog: Option<dialog::DialogKind>,
 }
 
@@ -128,6 +132,7 @@ impl Args {
                 }
                 Some("--preview-settings") => out.preview_settings = iter.next().map(PathBuf::from),
                 Some("--preview-about") => out.preview_about = iter.next().map(PathBuf::from),
+                Some("--preview-history") => out.preview_history = iter.next().map(PathBuf::from),
                 Some("--demo") => out.demo = true,
                 Some("--demo-scenario") => {
                     out.demo_scenario = iter.next().and_then(|v| v.to_str().map(str::to_owned));
@@ -137,8 +142,15 @@ impl Args {
                     out.language = iter.next().and_then(|v| v.to_str().map(str::to_owned));
                 }
                 Some(
-                    flag @ ("--settings" | "--settings-pins" | "--settings-accounts" | "--about"),
+                    flag @ ("--settings"
+                    | "--settings-pins"
+                    | "--settings-accounts"
+                    | "--about"
+                    | "--history"),
                 ) => {
+                    out.dialog = dialog::DialogKind::from_flag(flag);
+                }
+                Some(flag) if flag.starts_with("--history=") => {
                     out.dialog = dialog::DialogKind::from_flag(flag);
                 }
                 Some("--scale") => {
@@ -231,6 +243,18 @@ mod tests {
         assert_eq!(
             args(&["lastdrop.exe", "--settings-pins"]).dialog,
             Some(DialogKind::SettingsPins)
+        );
+        assert_eq!(
+            args(&["lastdrop.exe", "--history"]).dialog,
+            Some(DialogKind::History(None))
+        );
+        assert_eq!(
+            args(&["lastdrop.exe", "--history=00ff10"]).dialog,
+            Some(DialogKind::History(Some(0xff10)))
+        );
+        assert_eq!(
+            args(&["x", "--preview-history", "h.png"]).preview_history,
+            Some(PathBuf::from("h.png"))
         );
         assert_eq!(
             args(&["lastdrop.exe", "--about"]).dialog,

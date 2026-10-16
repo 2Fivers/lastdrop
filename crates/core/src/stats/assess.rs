@@ -279,6 +279,9 @@ pub struct EvalMemory {
     /// ([`ServiceEval::absent`]): in this run, plus what the app restored from its state file
     /// (earlier runs, R§6.3).
     pub seen: BTreeMap<MeterKey, (MeterNames, bool)>,
+    /// The unit of every balance a source has reported (the usage history window shows it,
+    /// charts-spec §4); kept like [`EvalMemory::seen`].
+    pub units: BTreeMap<MeterKey, Unit>,
 }
 
 impl EvalMemory {
@@ -605,6 +608,12 @@ fn evaluate_service(
             None => {
                 memory.seen.insert(probe.clone(), (names.clone(), balance));
             }
+        }
+    }
+    for b in &snapshot.balances {
+        probe.meter.0.clone_from(&b.id.0);
+        if memory.units.get(&probe) != Some(&b.unit) {
+            memory.units.insert(probe.clone(), b.unit.clone());
         }
     }
     let absent = absent_meters(memory, &source, &meters, hidden);

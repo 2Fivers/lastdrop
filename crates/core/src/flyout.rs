@@ -37,10 +37,10 @@ use crate::util::{duration_from_hours, round_i32, sub};
 /// Days before today in the sparkline (14 days ending today).
 const SPARK_DAYS_BEFORE_TODAY: i64 = SPARK_DAYS as i64 - 1;
 
-/// Index of `date` among the sparkline days that start at `first`, if it is one of them.
-fn day_index(first: Date, date: Date) -> Option<usize> {
-    let days = first.duration_until(date).as_hours().div_euclid(24);
-    usize::try_from(days).ok().filter(|&i| i < SPARK_DAYS)
+/// Index of `date` among the `days` local days that start at `first`, if it is one of them.
+fn day_index(first: Date, days: usize, date: Date) -> Option<usize> {
+    let index = first.duration_until(date).as_hours().div_euclid(24);
+    usize::try_from(index).ok().filter(|&i| i < days)
 }
 
 /// The first of the sparkline's local days (today − 13).
@@ -340,7 +340,27 @@ pub fn spark_values(
         .unwrap_or_else(|_| sub(now, SignedDuration::from_hours(24 * SPARK_DAYS as i64)));
     // One day more, for the reading before the first one of the first day.
     let samples = history.samples(key, sub(start, SignedDuration::from_hours(24)));
-    let index = |t: Timestamp| day_index(first, t.to_zoned(tz.clone()).date());
+    let daily = daily_values(samples, kind, first, SPARK_DAYS, start, now, tz);
+    for (value, daily) in values.iter_mut().zip(daily) {
+        *value = daily;
+    }
+    values
+}
+
+/// The use of each of the `days` local days from `first` (which starts at `start`), as the
+/// sparkline counts it (F§6), from `samples` (ascending; the reading before `start` included,
+/// when there is one). Readings after `now` are left out.
+pub(crate) fn daily_values(
+    samples: &[Sample],
+    kind: SparkKind,
+    first: Date,
+    days: usize,
+    start: Timestamp,
+    now: Timestamp,
+    tz: &TimeZone,
+) -> Vec<Option<f64>> {
+    let mut values = vec![None; days];
+    let index = |t: Timestamp| day_index(first, days, t.to_zoned(tz.clone()).date());
     for sample in samples.iter().filter(|s| s.t >= start && s.t <= now) {
         if let Some(i) = index(sample.t) {
             values[i].get_or_insert(0.0);

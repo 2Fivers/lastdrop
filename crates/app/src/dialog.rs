@@ -1,6 +1,7 @@
 //! The dialog process (ARCHITECTURE "Processes"): `lastdrop.exe --settings`, `--settings-pins`,
-//! `--settings-accounts` and `--about` show the settings window or the about window in a
-//! short-lived process of their own, which ends when its last window closes.
+//! `--settings-accounts`, `--history` and `--about` show the settings window, the usage history
+//! window or the about window in a short-lived process of their own, which ends when its last
+//! window closes.
 //!
 //! Why a process: the tray process measured 10.1–10.3 MB private working set fresh and
 //! 11.9–12.25 MB once Settings had been opened. Slint's own caches kept only about 0.2 MB of
@@ -37,7 +38,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
 
 use crate::persist::Paths;
 use crate::settings_window::Focus;
-use crate::{AppError, logger, settings_window, ui, wiring};
+use crate::{AppError, history_window, logger, settings_window, ui, wiring};
 
 /// How long a second launch keeps trying to reach a dialog process that is just starting (no
 /// listener yet) or just ending (listener gone, mutex not yet released).
@@ -56,29 +57,51 @@ pub enum DialogKind {
     SettingsAccounts,
     /// `--about`: the about window (R§10 "About Lastdrop", Slint licence).
     About,
+    /// `--history`: the usage history window (charts-spec §1); `--history=<tag>` opens it at the
+    /// service of that tag ([`crate::history_window::source_tag`]).
+    History(Option<u32>),
 }
 
 impl DialogKind {
-    /// Every dialog.
-    pub const ALL: [DialogKind; 4] = [
+    /// Every dialog (the usage history without a service).
+    pub const ALL: [DialogKind; 5] = [
         DialogKind::Settings,
         DialogKind::SettingsPins,
         DialogKind::SettingsAccounts,
         DialogKind::About,
+        DialogKind::History(None),
     ];
 
-    /// Its command-line flag.
+    /// The `WPARAM` of the usage history; its tag is in bits 8–31.
+    const HISTORY: usize = 5;
+
+    /// Its command-line flag, without a tag.
     pub fn flag(self) -> &'static str {
         match self {
             DialogKind::Settings => "--settings",
             DialogKind::SettingsPins => "--settings-pins",
             DialogKind::SettingsAccounts => "--settings-accounts",
             DialogKind::About => "--about",
+            DialogKind::History(_) => "--history",
         }
     }
 
-    /// The dialog of a command-line flag.
+    /// Its command-line argument: the flag, with the usage history's tag (`--history=0a1b2c`).
+    pub fn arg(self) -> String {
+        match self {
+            DialogKind::History(Some(tag)) => format!("--history={tag:06x}"),
+            _ => self.flag().to_owned(),
+        }
+    }
+
+    /// The dialog of a command-line argument ([`DialogKind::arg`]).
     pub fn from_flag(flag: &str) -> Option<DialogKind> {
+        if let Some(tag) = flag.strip_prefix("--history=") {
+            let tag = u32::from_str_radix(tag, 16)
+                .ok()
+                .filter(|t| *t <= 0xFF_FFFF);
+            return Some(DialogKind::History(tag));
+        }
         DialogKind::ALL.into_iter().find(|k| k.flag() == flag)
     }
 
@@ -89,11 +112,19 @@ impl DialogKind {
             DialogKind::SettingsPins => 2,
             DialogKind::About => 3,
             DialogKind::SettingsAccounts => 4,
+            DialogKind::History(tag) => {
+                let tag = tag.map_or(0, |t| usize::try_from(t & 0xFF_FFFF).unwrap_or(0));
+                DialogKind::HISTORY | tag << 8
+            }
         }
     }
 
     /// The dialog of a posted `WPARAM`; `None` for anything else.
     pub fn from_wparam(wparam: usize) -> Option<DialogKind> {
+        if wparam & 0xFF == DialogKind::HISTORY {
+            let tag = u32::try_from(wparam >> 8).ok().filter(|t| *t != 0);
+            return Some(DialogKind::History(tag));
+        }
         DialogKind::ALL
             .into_iter()
             .find(|k| k.to_wparam() == wparam)
@@ -203,7 +234,7 @@ impl Changes {
 pub fn spawn(kind: DialogKind) -> std::io::Result<()> {
     let exe = std::env::current_exe()?;
     let child = std::process::Command::new(exe)
-        .arg(kind.flag())
+        .arg(kind.arg())
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
@@ -309,6 +340,7 @@ fn run_dialogs(guard: &InstanceGuard, paths: &Paths, kind: DialogKind) -> Result
     drop(listener);
     // Every window is dropped here, before `main` returns, not by thread-local teardown at exit.
     settings_window::release();
+    history_window::release();
     release_about();
     drop_closed();
     ran
@@ -321,6 +353,7 @@ fn open(paths: &Paths, kind: DialogKind) -> Result<(), AppError> {
         DialogKind::SettingsPins => settings_window::open(paths, Focus::Pins),
         DialogKind::SettingsAccounts => settings_window::open(paths, Focus::Accounts),
         DialogKind::About => open_about(paths),
+        DialogKind::History(tag) => history_window::open(paths, tag),
     }
 }
 
@@ -456,6 +489,19 @@ mod tests {
         assert_eq!(DialogKind::from_wparam(0), None);
         assert_eq!(DialogKind::from_wparam(99), None);
         assert_eq!(DialogKind::from_flag("--autostart"), None);
+
+        // The usage history at a service: its tag rides along on the command line and the
+        // message.
+        let at = DialogKind::History(Some(0x0a_1b2c));
+        assert_eq!(at.arg(), "--history=0a1b2c");
+        assert_eq!(DialogKind::from_flag(&at.arg()), Some(at));
+        assert_eq!(DialogKind::from_wparam(at.to_wparam()), Some(at));
+        assert_eq!(
+            DialogKind::from_flag("--history=zz"),
+            Some(DialogKind::History(None)),
+            "an unreadable tag opens it without one"
+        );
+        assert_eq!(DialogKind::from_wparam(5), Some(DialogKind::History(None)));
     }
 
     #[test]

@@ -325,6 +325,7 @@ component ServiceCard inherits Rectangle {
     in property <CardData> data;
     in property <int> index;
     in property <string> menu-usage-label;
+    in property <string> menu-history-label;
     in property <string> menu-readout-label;
     // Programmatic focus (Up/Down, keyboard open, sign-in card, F§9): focuses when the token
     // changes and the target is this card.
@@ -332,6 +333,7 @@ component ServiceCard inherits Rectangle {
     in property <int> focus-token: 0;
     callback message-action(int);
     callback open-usage(int);
+    callback open-history(int);
     callback refresh-service(int);
     callback toggle-pin(int, int);
     callback move-focus(int);
@@ -355,6 +357,12 @@ component ServiceCard inherits Rectangle {
                 enabled: root.data.has-usage-page;
                 activated => {
                     root.open-usage(root.index);
+                }
+            }
+            MenuItem {
+                title: root.menu-history-label;
+                activated => {
+                    root.open-history(root.index);
                 }
             }
             MenuItem {
@@ -549,6 +557,7 @@ export component Flyout inherits Window {
     in property <string> footer-text;
     in property <string> footer-link;
     in property <string> menu-usage-label: "Open usage page";
+    in property <string> menu-history-label: "Usage history…";
     in property <string> menu-readout-label: "Show in taskbar readout";
     // Header 40 + list + footer 48 (F§1.2), for Rust to size the window.
     out property <length> content-height: 40px + list.preferred-height + 48px;
@@ -567,6 +576,7 @@ export component Flyout inherits Window {
     callback message-action(int);
     callback footer-action();
     callback card-refresh(int);
+    callback card-history(int);
     callback card-toggle-pin(int, int);
 
     property <int> focus-target: -1;
@@ -722,6 +732,7 @@ export component Flyout inherits Window {
                         data: card;
                         index: i;
                         menu-usage-label: root.menu-usage-label;
+                        menu-history-label: root.menu-history-label;
                         menu-readout-label: root.menu-readout-label;
                         focus-target: root.focus-target;
                         focus-token: root.focus-token;
@@ -730,6 +741,9 @@ export component Flyout inherits Window {
                         }
                         open-usage(index) => {
                             root.open-service-dashboard(index);
+                        }
+                        open-history(index) => {
+                            root.card-history(index);
                         }
                         refresh-service(index) => {
                             root.card-refresh(index);
