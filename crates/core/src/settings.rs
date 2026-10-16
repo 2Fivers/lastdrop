@@ -597,13 +597,13 @@ mod tests {
         );
         // A newer build's language survives a round trip and follows Windows meanwhile.
         let s: Settings =
-            serde_json::from_str(r#"{ "version": 1, "language": "de" }"#).expect("deserialize");
+            serde_json::from_str(r#"{ "version": 1, "language": "qaa" }"#).expect("deserialize");
         assert_eq!(
             Language::resolve(s.language.as_deref(), &windows),
             Language::Swedish
         );
         let out = serde_json::to_value(&s).expect("serialize");
-        assert_eq!(out["language"], "de");
+        assert_eq!(out["language"], "qaa");
         let s: Settings = serde_json::from_str(r#"{ "language": "en" }"#).expect("deserialize");
         assert_eq!(
             Language::resolve(s.language.as_deref(), &windows),

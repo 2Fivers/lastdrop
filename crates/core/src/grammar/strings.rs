@@ -1,9 +1,16 @@
 //! Every string is a resource (R§5.9, R Appendix B, flyout-spec texts, R§10 menu, R§11 UIA).
 //!
-//! A [`Msg`] names a template; a [`Strings`] table gives the template for one language; [`fill`]
-//! substitutes `{name}` placeholders. Column widths are computed from the localized strings
-//! (R§6.3), so a translation can never be cut off. The tables are [`English`] and [`Swedish`]
-//! (ROADMAP "Language: English and Swedish to start"); [`Language`] picks one.
+//! A [`Msg`] names a template and a [`PluralMsg`] a template with plural forms; a [`Strings`]
+//! table gives the templates of one language; [`fill`] substitutes `{name}` placeholders. Column
+//! widths are computed from the localized strings (R§6.3), so a translation can never be cut off.
+//!
+//! The texts live in `crates/core/locales`, one TOML file per language, with `en.toml` as the
+//! source (ROADMAP M4 "Language"). The build script checks every file (each key of `en.toml`, the
+//! English placeholders, the forms of the language's [`PluralRule`]) and turns them into the
+//! [`Language`] enum, a table struct per language ([`English`], [`Swedish`]) and arrays of
+//! `&'static str`. Each message finds its place in those arrays at compile time: a key the files
+//! lack does not compile, and nothing is parsed or allocated at run time. Adding a language is
+//! adding a file (`crates/core/locales/README.md`).
 //!
 //! Placeholders: `{time}`, `{reset}`, `{since}`, `{next}`, `{until}` are formatted time points
 //! (R§5.2 or R§8.2; in `a11y.*` the spoken form of [`super::time::spoken_time`], `at 2:56 PM`);
@@ -27,921 +34,467 @@
 //! "capitalised at the start of a sentence"), so a template may start with `{meter}`, `{label}`
 //! or `{short_name}` in any language.
 
-macro_rules! messages {
-    ($( $name:ident = $key:literal => $en:literal, )*) => {
-        /// A string resource. The doc of each variant is its key (Appendix B style) and its
-        /// English template.
+use std::cmp::Ordering;
+
+pub use super::plural::{Plural, PluralRule};
+
+/// Declares a catalogue of string resources: the enum, each one's key in the locale files and its
+/// place in the generated tables (`$keys`, every key of that kind, sorted by bytes).
+macro_rules! catalogue {
+    ($(#[$meta:meta])* $enum:ident in $keys:ident { $( $name:ident = $key:literal, )* }) => {
+        $(#[$meta])*
         #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
-        pub enum Msg {
+        pub enum $enum {
             $(
-                #[doc = concat!("`", $key, "`: \"", $en, "\"")]
+                #[doc = concat!("`", $key, "`")]
                 $name,
             )*
         }
 
-        impl Msg {
+        impl $enum {
             /// Every message, in declaration order (for completeness tests of a language table).
-            pub const ALL: &'static [Msg] = &[$(Msg::$name,)*];
+            pub const ALL: &'static [$enum] = &[$($enum::$name,)*];
 
-            /// The resource key (`reason.offline`).
+            /// The resource key (`reason.offline`), as the locale files name it.
             pub const fn key(self) -> &'static str {
-                match self { $(Msg::$name => $key,)* }
+                match self { $($enum::$name => $key,)* }
+            }
+
+            /// The message's place in every language's table, found at compile time.
+            const fn index(self) -> usize {
+                match self { $($enum::$name => const { index_of(&$keys, $key) },)* }
             }
         }
 
-        const fn english(msg: Msg) -> &'static str {
-            match msg { $(Msg::$name => $en,)* }
-        }
+        // Every key of that kind in the files belongs to exactly one message.
+        const _: () = {
+            let mut seen = [false; $keys.len()];
+            let mut i = 0;
+            while i < $enum::ALL.len() {
+                let at = $enum::ALL[i].index();
+                assert!(!seen[at], concat!("two ", stringify!($enum), "s share a key"));
+                seen[at] = true;
+                i += 1;
+            }
+            assert!(
+                $enum::ALL.len() == $keys.len(),
+                concat!(
+                    "crates/core/locales/en.toml has a key that no ",
+                    stringify!($enum),
+                    " declares (grammar/strings.rs)"
+                )
+            );
+        };
     };
 }
 
-messages! {
-    // ---- Readout tokens (R§5.1–R§5.5, Appendix B)
-    ReasonOffline = "reason.offline" => "Offline",
-    ReasonSignIn = "reason.signin" => "Sign in",
-    ReasonPaused = "reason.paused" => "Paused",
-    ReasonNoData = "reason.nodata" => "No data",
-    // Never drawn in the readout (an old reading shows AGE on every row); for completeness.
-    ReasonOldReading = "reason.oldreading" => "No new data",
-    Loading = "loading" => "Reading…",
-    Today = "today" => "Today",
-    Out = "out" => "Out {time}",
-    Back = "back" => "Back {time}",
-    Empty = "empty" => "Empty",
-    CountdownMin = "countdown.min" => "{n} min left",
-    CountdownHours = "countdown.h" => "{n} h left",
-    CountdownDays = "countdown.d" => "{n} d left",
-    CountdownCompactMin = "countdown.compact.min" => "{n} min",
-    CountdownCompactHours = "countdown.compact.h" => "{n} h",
-    CountdownCompactDays = "countdown.compact.d" => "{n} d",
-    NoReset = "noreset" => "–",
-    AgeMin = "age.m" => "{n}m ago",
-    AgeHours = "age.h" => "{n}h ago",
-    AgeDays = "age.d" => "{n}d ago",
-    TokenDays = "token.days" => "{n}d",
-    TokenRelMin = "token.rel.m" => "{n}m",
-    TokenRelHours = "token.rel.h" => "{n}h",
-    TokenRelDays = "token.rel.d" => "{n}d",
-    BalanceApprox = "balance.approx" => "≈",
-    BalanceHours = "balance.h" => "{n}h",
-    BalanceDays = "balance.d" => "{n}d",
-    BalanceWeeks = "balance.w" => "{n}w",
-    BalanceMax = "balance.max" => "9w+",
-
-    // ---- Long durations (R§5.0)
-    DurationMin = "duration.min" => "{n} min",
-    DurationHours = "duration.h" => "{h} h",
-    DurationHoursMin = "duration.hmin" => "{h} h {m} min",
-    DurationDays = "duration.d" => "{d} d",
-    DurationDaysHours = "duration.dh" => "{d} d {h} h",
-
-    // ---- Spoken units with plurals (R§11 sentences, F§4.5 balance forecast)
-    UnitMinuteOne = "unit.minute.one" => "{n} minute",
-    UnitMinuteOther = "unit.minute.other" => "{n} minutes",
-    UnitHourOne = "unit.hour.one" => "{n} hour",
-    UnitHourOther = "unit.hour.other" => "{n} hours",
-    UnitDayOne = "unit.day.one" => "{n} day",
-    UnitDayOther = "unit.day.other" => "{n} days",
-    UnitWeekOne = "unit.week.one" => "{n} week",
-    UnitWeekOther = "unit.week.other" => "{n} weeks",
-    UnitCredits = "unit.credits" => "credits",
-
-    // ---- Hover card (R§8.2, Appendix B)
-    CardTitleOkOne = "card.title.ok.1" => "You'll make it to the reset",
-    CardTitleOkTwo = "card.title.ok.2" => "You'll make it to both resets",
-    CardTitleOkMany = "card.title.ok.n" => "You'll make it to every reset",
-    CardTitleWarning = "card.title.warning" => "{meter} limit runs out at {time}",
-    CardTitleWarningService = "card.title.warning.service" => "{service} {meter} limit runs out at {time}",
-    // A WARNING that hysteresis holds although the run-out moved past the reset (R§5.3): the
-    // projection instead of a run-out time.
-    CardTitleWarningCourse = "card.title.warning.course" => "{meter} limit is on course for {p} at the reset",
-    CardTitleWarningCourseService = "card.title.warning.course.service" => "{service} {meter} limit is on course for {p} at the reset",
-    CardTitleCriticalRunway = "card.title.critical.runway" => "{meter} limit runs out in {duration}",
-    CardTitleCriticalLevel = "card.title.critical.level" => "{meter} limit is {pct} used",
-    CardTitleExhausted = "card.title.exhausted" => "{meter} limit is used up until {time}",
-    CardTitleStale = "card.title.stale" => "No new reading from {service} for {age}",
-    CardTitleSignIn = "card.title.signin" => "{service} needs you to sign in again",
-    CardTitleApiKey = "card.title.apikey" => "{service} needs an API key",
-    CardSentenceApiKey = "card.sentence.apikey" => "Lastdrop has no working {service} API key. Select the readout and choose Enter key… to add one.",
-    CardSentenceOkOne = "card.sentence.ok.1" => "It is being used more slowly than time passes. At your recent pace about {left} of the {window} will be left when it resets.",
-    CardSentenceOkMany = "card.sentence.ok.n" => "All limits are being used more slowly than time passes. At your recent pace about {left} will be left when they reset.",
-    // R§3.4's other two pace wordings for an OK card ("about as fast as" / "faster than time
-    // passes"); Appendix B only lists the "more slowly" sentence.
-    CardSentenceOkOneAbout = "card.sentence.ok.1.about" => "It is being used about as fast as time passes. At your recent pace about {left} of the {window} will be left when it resets.",
-    CardSentenceOkOneAhead = "card.sentence.ok.1.ahead" => "It is being used faster than time passes, but at your recent pace about {left} of the {window} will be left when it resets.",
-    CardSentenceOkManyMixed = "card.sentence.ok.n.mixed" => "At your recent pace about {left} will be left when they reset.",
-    // The OK sentence in parts, for windows without `e` (no pace, R§3.4) or without a valid
-    // forecast (no "at your recent pace", R§3.5): only what is known is said.
-    CardSentenceOkOnePaceUnder = "card.sentence.ok.1.pace.under" => "It is being used more slowly than time passes.",
-    CardSentenceOkOnePaceAbout = "card.sentence.ok.1.pace.about" => "It is being used about as fast as time passes.",
-    CardSentenceOkOnePaceAhead = "card.sentence.ok.1.pace.ahead" => "It is being used faster than time passes.",
-    CardSentenceOkManyPace = "card.sentence.ok.n.pace" => "All limits are being used more slowly than time passes.",
-    CardSentenceOkOneLeft = "card.sentence.ok.1.left" => "At your recent pace about {left} of the {window} will be left when it resets.",
-    // OK while no shown window has a reset time (Claude Desktop's history alone): no claim about
-    // making it to a reset.
-    CardTitleOkNoReset = "card.title.ok.noreset" => "Within your limits",
-    CardWindowSession = "card.window.session" => "session",
-    CardWindowWeek = "card.window.week" => "week",
-    CardWindowMonth = "card.window.month" => "month",
-    CardSentenceWarning = "card.sentence.warning" => "You're using it faster than time passes: {pct} used with {e} of the window gone. At the pace of the last {span} it runs out {duration} before the {time} reset.",
-    CardSentenceWarningCourse = "card.sentence.warning.course" => "You're using it faster than time passes: {pct} used with {e} of the window gone. At the pace of the last {span} it reaches about {p} by the {time} reset.",
-    CardSentenceOtherFine = "card.sentence.other" => " The {other} limit is fine.",
-    CardSentenceCritical = "card.sentence.critical" => "{pct} used. At the pace of the last {span} it is empty at about {time}, {duration} before the reset at {reset}.",
-    CardSentenceLevel = "card.sentence.level" => "Nearly used up. At your recent pace it lasts until the reset at {time}.",
-    CardSentenceExhausted = "card.sentence.exhausted" => "Used up since {since}. It is back at {time}, in {duration}.",
-    CardSentenceExhaustedNoSince = "card.sentence.exhausted.nosince" => "Used up. It is back at {time}, in {duration}.",
-    CardSentenceOffline = "card.sentence.offline" => "Lastdrop is offline, so these are the numbers from {time}. Bars are dashed and frozen at that moment until a new reading arrives. Next try at {next}.",
-    CardSentenceNoData = "card.sentence.nodata" => "{service} isn't answering ({detail}), so these are the numbers from {time}. Next try at {next}.",
-    CardSentenceOldReading = "card.sentence.oldreading" => "{service} answers, but its newest numbers are from {time}. Next try at {next}.",
-    CardSentenceSignIn = "card.sentence.signin" => "{service}'s sign-in has expired. Lastdrop never signs in for you: open {client} in this account to renew it. Select the readout for the steps.",
-    CardSentencePaused = "card.sentence.paused" => "Updates are paused until {until}. These are the numbers from {time}.",
-    CardSentencePausedOpen = "card.sentence.paused.open" => "Updates are paused. These are the numbers from {time}.",
-    CardLineElapsed = "card.line.elapsed" => "{e} of time gone",
-    CardLineElapsedStale = "card.line.elapsed.stale" => "{e} of time gone at {time}",
-    // The tick line of a window without a reset time that is not IDLE (R§8.2 names only its
-    // reset line).
-    CardLineElapsedUnknown = "card.line.elapsed.unknown" => "time gone unknown",
-    CardForecastCourse = "card.line.forecast.course" => "on course for {p} at reset",
-    CardForecastLasts = "card.line.forecast.lasts" => "lasts to the reset",
-    CardForecastNone = "card.line.forecast.none" => "no forecast yet",
-    CardForecastRunsOut = "card.line.forecast.runsout" => "runs out ≈ {time}",
-    CardForecastUsedUp = "card.line.forecast.usedup" => "used up",
-    CardLineReset = "card.line.reset" => "Resets {time}",
-    CardLineIn = "card.line.in" => "in {duration}",
-    CardLineIdle = "card.line.idle" => "Starts with your next use",
-    CardLineNotStarted = "card.line.notstarted" => "window not started",
-    CardLineNoReset = "card.line.noreset" => "No reset time given",
-    CardLineNoLength = "card.line.nolength" => "window length unknown",
-    CardLineJustReset = "card.line.justreset" => "Reset at {time} · waiting for the first reading",
-    // R§3.9 ENDED: the hover card's reset line and the flyout row's right cluster.
-    CardLineEnded = "card.line.ended" => "Ended by {time}",
-    CardValue = "card.value" => "{pct} used",
-    CardBalanceValue = "card.balance.value" => "{pct} of top-up used",
-    CardBalanceLeft = "card.balance.left" => "{amount} of {ref} {unit} left",
-    CardBalanceRate = "card.balance.rate" => "{burn} a day, last 7 days",
-    CardBalanceLasts = "card.balance.forecast.lasts" => "lasts ≈ {duration}",
-    CardBalanceRunsOut = "card.balance.forecast.runsout" => "runs out ≈ {time}",
-    CardBalanceEmpty = "card.balance.forecast.empty" => "empty",
-    CardBalanceNoUse = "card.balance.forecast.nouse" => "no use in 7 days",
-    CardBalanceNoHistory = "card.balance.forecast.nohistory" => "not enough history yet",
-    CardBalanceUntil = "card.balance.until" => "until ≈ {date}",
-    CardAge = "card.age" => "Updated {age}",
-    CardAgeStale = "card.age.stale" => "Last reading {time}",
-    CardAlso = "card.also" => "Also tracked",
-    CardAlsoMore = "card.also.more" => "+{n} more",
-    CardAlsoLine = "card.also.line" => "{service} {short_name}",
-
-    // ---- Flyout (F§3–F§6, F§10)
-    FlyoutTitle = "flyout.title" => "Lastdrop",
-    FlyoutVerdictOk = "flyout.verdict.ok" => "All limits last until their reset",
-    FlyoutVerdictOkNoReset = "flyout.verdict.ok.noreset" => "Within your limits",
-    FlyoutVerdictWarning = "flyout.verdict.warning" => "{label} runs out at {time}",
-    FlyoutVerdictWarningCourse = "flyout.verdict.warning.course" => "{label} is on course for {p} at the reset",
-    FlyoutVerdictRunway = "flyout.verdict.critical.runway" => "{label} runs out in {countdown}",
-    FlyoutVerdictLevel = "flyout.verdict.critical.level" => "{label} is {pct} used",
-    FlyoutVerdictExhausted = "flyout.verdict.exhausted" => "{label} is used up until {time}",
-    FlyoutVerdictStale = "flyout.verdict.stale" => "{service}: no reading for {age}",
-    FlyoutVerdictSignIn = "flyout.verdict.signin" => "{service}: sign in again",
-    FlyoutVerdictPaused = "flyout.verdict.paused" => "Updates paused",
-    FlyoutVerdictLoading = "flyout.verdict.loading" => "Reading usage…",
-    FlyoutVerdictMore = "flyout.verdict.more" => " · {n} more",
-    FlyoutRefreshName = "flyout.refresh.a11y" => "Refresh all services",
-    FlyoutRefreshTooltip = "flyout.refresh.tooltip" => "Refresh (F5)",
-    FlyoutSettings = "flyout.settings" => "Settings",
-    FlyoutAgeNow = "flyout.age.now" => "Just now",
-    FlyoutAgeMin = "flyout.age.min" => "{n} min ago",
-    FlyoutAgeHours = "flyout.age.h" => "{n} h ago",
-    FlyoutAgeDays = "flyout.age.d" => "{n} d ago",
-    FlyoutMsgSep = "flyout.msg.sep" => " · ",
-    FlyoutMsgOffline = "flyout.msg.offline" => "Offline",
-    FlyoutMsgNoData = "flyout.msg.nodata" => "Not answering",
-    FlyoutMsgOldReading = "flyout.msg.oldreading" => "No new reading",
-    FlyoutMsgShowing = "flyout.msg.showing" => "showing {time}",
-    FlyoutMsgNextTry = "flyout.msg.nexttry" => "next try {time}",
-    FlyoutMsgSignInLead = "flyout.msg.signin.lead" => "Sign-in expired.",
-    FlyoutMsgSignInText = "flyout.msg.signin.text" => "Lastdrop never signs in for you.",
-    FlyoutMsgSignInAction = "flyout.msg.signin.action" => "Open sign-in…",
-    FlyoutMsgPaused = "flyout.msg.paused" => "Paused",
-    FlyoutMsgResume = "flyout.msg.resume" => "Resume",
-    FlyoutMsgFailedLead = "flyout.msg.failed.lead" => "Couldn't read {service}",
-    FlyoutMsgRetry = "flyout.msg.retry" => "Retry",
-    FlyoutMsgApiKeyLead = "flyout.msg.apikey.lead" => "API key missing or rejected.",
-    FlyoutMsgApiKeyAction = "flyout.msg.apikey.action" => "Enter key…",
-    FlyoutLineWarning = "flyout.line.warning" => "Runs out {duration} before the reset at {time}.",
-    FlyoutLineWarningCourse = "flyout.line.warning.course" => "On course for {p} at the {time} reset.",
-    FlyoutLineCritical = "flyout.line.critical" => "Empty ≈ {time}, {duration} before the {reset} reset.",
-    FlyoutLineLevel = "flyout.line.level" => "Nearly used up. Lasts until the reset at your recent pace.",
-    FlyoutLineExhausted = "flyout.line.exhausted" => "Used up since {since}. Back in {duration}.",
-    FlyoutLineExhaustedNoSince = "flyout.line.exhausted.nosince" => "Used up. Back in {duration}.",
-    FlyoutBalanceLeft = "flyout.balance.left" => "≈ {duration} left",
-    FlyoutBalanceMax = "flyout.balance.max" => "More than 8 weeks left",
-    FlyoutBalanceNoUse = "flyout.balance.nouse" => "No use in 7 days",
-    FlyoutBalanceNoHistory = "flyout.balance.nohistory" => "Not enough history yet",
-    FlyoutBalanceSpent = "flyout.balance.spent" => "{pct} of last top-up used",
-    FlyoutBalanceBurn = "flyout.balance.burn" => " · {burn} a day",
-    FlyoutBalanceUntil = "flyout.balance.until" => "until ≈ {date}",
-    FlyoutFooterPaused = "flyout.footer.paused" => "Updates paused",
-    FlyoutFooterResume = "flyout.footer.resume" => "Resume",
-    FlyoutCardName = "flyout.card.a11y" => "{service}, {plan} plan, updated {age}",
-    FlyoutCardNameNoPlan = "flyout.card.a11y.noplan" => "{service}, updated {age}",
-    FlyoutCardOffline = "flyout.card.a11y.offline" => ", offline",
-    FlyoutCardSignIn = "flyout.card.a11y.signin" => ", sign-in expired",
-    FlyoutBalanceName = "flyout.balance.a11y" => "{amount} {unit} left, {n} percent of the last top-up used, about {duration} at {burn} a day",
-    FlyoutSparkWindow = "flyout.spark.a11y.window" => "{meter} limit used per day, last 14 days: today {today} percent, highest {max} percent on {day}, average {avg} percent.",
-    FlyoutSparkBalance = "flyout.spark.a11y.balance" => "{unit} used per day, last 14 days: today {today}, highest {max} on {day}, average {avg}.",
-
-    // ---- UI Automation (R§11)
-    A11yRoot = "a11y.root" => "Lastdrop. {rows}",
-    A11yHelp = "a11y.help" => "Select for details, right-click for options.",
-    A11yAt = "a11y.at" => "at {time}",
-    A11yAgo = "a11y.ago" => "{duration} ago",
-    A11yRowOk = "a11y.row.ok" => "{service} {meter}: on track, {n} percent used, resets {reset}.",
-    A11yRowWarning = "a11y.row.warning" => "{service} {meter}: warning, runs out at about {time}, before the reset {reset}; {n} percent used.",
-    A11yRowWarningCourse = "a11y.row.warning.course" => "{service} {meter}: warning, on course for {course} percent at the reset {reset}; {n} percent used.",
-    A11yRowRunway = "a11y.row.critical.runway" => "{service} {meter}: critical, runs out in about {duration}; {n} percent used; resets {reset}.",
-    A11yRowLevel = "a11y.row.critical.level" => "{service} {meter}: critical, {n} percent used, lasts until the reset {reset}.",
-    A11yRowExhausted = "a11y.row.exhausted" => "{service} {meter}: empty, back {time}.",
-    A11yRowExhaustedNoReset = "a11y.row.exhausted.noreset" => "{service} {meter}: empty, {n} percent used, no reset time given.",
-    A11yRowIdle = "a11y.row.idle" => "{service} {meter}: not started, {n} percent used, starts with your next message.",
-    A11yRowNoReset = "a11y.row.noreset" => "{service} {meter}: {n} percent used, no reset time given.",
-    A11yRowLoading = "a11y.row.loading" => "{service} {meter}: reading.",
-    A11yRowEnded = "a11y.row.ended" => "{service} {meter}: ended by {time}, no newer reading.",
-    A11yServiceOffline = "a11y.service.offline" => "{service}: offline, last reading {age} ago. Then: {rows}.",
-    A11yServiceNoData = "a11y.service.nodata" => "{service}: not answering, last reading {age} ago. Then: {rows}.",
-    A11yServiceOldReading = "a11y.service.oldreading" => "{service}: no new reading, last reading {age} ago. Then: {rows}.",
-    A11yServicePaused = "a11y.service.paused" => "{service}: updates paused, last reading {age} ago. Then: {rows}.",
-    A11yServiceSignIn = "a11y.service.signin" => "{service}: sign-in expired, last reading {age} ago. Select to open Lastdrop and see how to sign in.",
-    A11yServiceApiKey = "a11y.service.apikey" => "{service}: API key missing or rejected. Select to open Lastdrop and add one.",
-    A11yStaleRow = "a11y.stale.row" => "{meter} {n} percent used",
-    A11yBalance = "a11y.balance" => "{service}: {amount} {unit} left, about {duration} at the current rate.",
-    A11yBalanceNoForecast = "a11y.balance.noforecast" => "{service}: {amount} {unit} left.",
-    A11yListSep = "a11y.list.sep" => ", ",
-
-    // ---- Tray tooltip (R§9.3)
-    TrayOk = "tray.ok" => "Lastdrop: {service} {meter} {pct} used, resets {time}",
-    TrayNoReset = "tray.noreset" => "Lastdrop: {service} {meter} {pct} used",
-    TrayWarning = "tray.warning" => "Lastdrop: {service} {meter} runs out at {time}",
-    TrayRunway = "tray.runway" => "Lastdrop: {service} {meter} runs out in {duration}",
-    TrayLevel = "tray.level" => "Lastdrop: {service} {meter} {pct} used",
-    TrayExhausted = "tray.exhausted" => "Lastdrop: {service} {meter} used up until {time}",
-    TrayOffline = "tray.offline" => "Lastdrop: {service} offline, last reading {age} ago",
-    TrayNoData = "tray.nodata" => "Lastdrop: {service} not answering, last reading {age} ago",
-    TrayOldReading = "tray.oldreading" => "Lastdrop: {service} has no new reading, last reading {age} ago",
-    TraySignIn = "tray.signin" => "Lastdrop: {service} needs you to sign in again",
-    TrayApiKey = "tray.apikey" => "Lastdrop: {service} needs an API key",
-    TrayPaused = "tray.paused" => "Lastdrop: updates paused",
-    TrayLoading = "tray.loading" => "Lastdrop: reading usage…",
-    TrayNothing = "tray.nothing" => "Lastdrop",
-
-    // ---- Notifications (N§3)
-    NoticeLevelTitle = "notice.level.title" => "{service} {meter} limit is {pct} used",
-    NoticeUsedUpTitle = "notice.usedup.title" => "{service} {meter} limit is used up",
-    NoticeResetTitle = "notice.reset.title" => "{service} {meter} limit has reset",
-    NoticeBalanceLowTitle = "notice.balance.low.title" => "{service} {meter} running low",
-    NoticeBalanceEmptyTitle = "notice.balance.empty.title" => "{service} {meter} used up",
-    NoticeBodyRunsOut = "notice.body.runsout" => "At your recent pace it runs out at {time}, {duration} before the reset.",
-    NoticeBodyLasts = "notice.body.lasts" => "At your recent pace it lasts until the reset at {time}.",
-    NoticeBodyResets = "notice.body.resets" => "It resets {time}.",
-    NoticeBodyBack = "notice.body.back" => "It is back at {time}, in {duration}.",
-    NoticeBodyNoReset = "notice.body.noreset" => "Select to see the details in Lastdrop.",
-    NoticeBodyReset = "notice.body.reset" => "Back to {pct} used.",
-    NoticeBodyResetUsedUp = "notice.body.reset.usedup" => "Back to {pct} used. You can use it again.",
-    NoticeBodyBalance = "notice.body.balance" => "{amount} {unit} left, about {duration} at your use of the last 7 days.",
-    NoticeBodyBalanceLeft = "notice.body.balance.left" => "{amount} {unit} left.",
-    NoticeBodyBalanceEmpty = "notice.body.balance.empty" => "Top it up to keep using {service}.",
-    NoticeMore = "notice.more" => "+{n} more",
-
-    // ---- Meter names (R§2 table: `short_label` / `short_name` / `name`; [`super::meters`])
-    MeterFiveHourLabel = "meter.five_hour.label" => "5h",
-    MeterFiveHourShort = "meter.five_hour.short" => "5-hour",
-    MeterFiveHourName = "meter.five_hour.name" => "5-hour session",
-    MeterWeeklyLabel = "meter.weekly.label" => "Wk",
-    MeterWeeklyShort = "meter.weekly.short" => "weekly",
-    MeterWeeklyName = "meter.weekly.name" => "Weekly",
-    // Claude's weekly window counts every model; its per-model windows name the model.
-    MeterWeeklyAllName = "meter.weekly.all.name" => "Weekly · all models",
-    MeterWeeklyModelShort = "meter.weekly.model.short" => "{model} weekly",
-    MeterWeeklyModelName = "meter.weekly.model.name" => "Weekly · {model}",
-    // A window outside the catalogue, named by its length (Codex).
-    MeterHoursLabel = "meter.hours.label" => "{n}h",
-    MeterHoursShort = "meter.hours.short" => "{n}-hour",
-    MeterHoursName = "meter.hours.name" => "{n}-hour window",
-    MeterDaysLabel = "meter.days.label" => "{n}d",
-    MeterDaysShort = "meter.days.short" => "{n}-day",
-    MeterDaysName = "meter.days.name" => "{n}-day window",
-    MeterCreditsLabel = "meter.credits.label" => "Cr",
-    MeterCreditsShort = "meter.credits.short" => "credits",
-    MeterCreditsName = "meter.credits.name" => "Credits",
-    MeterPremiumLabel = "meter.premium.label" => "Prem",
-    MeterPremiumShort = "meter.premium.short" => "premium",
-    MeterPremiumName = "meter.premium.name" => "Premium requests",
-    MeterChatLabel = "meter.chat.label" => "Chat",
-    MeterChatShort = "meter.chat.short" => "chat",
-    MeterChatName = "meter.chat.name" => "Chat messages",
-    MeterCompletionsLabel = "meter.completions.label" => "Code",
-    MeterCompletionsShort = "meter.completions.short" => "completions",
-    MeterCompletionsName = "meter.completions.name" => "Code completions",
-    // A Copilot quota this build does not know; its `name` stays the id the service gave.
-    MeterMonthlyLabel = "meter.monthly.label" => "Mo",
-    MeterMonthlyShort = "meter.monthly.short" => "monthly",
-
-    // ---- Context menus (R§10, F§9)
-    MenuRefresh = "menu.refresh" => "Refresh now",
-    MenuPause = "menu.pause" => "Pause updates",
-    MenuPauseHour = "menu.pause.hour" => "For 1 hour",
-    MenuPauseUntilResume = "menu.pause.resume" => "Until I resume",
-    MenuResume = "menu.resume" => "Resume updates",
-    MenuReadout = "menu.readout" => "Taskbar readout",
-    MenuReadoutAuto = "menu.readout.auto" => "Auto",
-    MenuReadoutPinned = "menu.readout.pinned" => "Pinned meters…",
-    MenuReadoutOff = "menu.readout.off" => "Off",
-    MenuSettings = "menu.settings" => "Settings…",
-    MenuAbout = "menu.about" => "About Lastdrop",
-    MenuQuit = "menu.quit" => "Quit Lastdrop",
-    MenuCardUsage = "menu.card.usage" => "Open usage page",
-    MenuCardRefresh = "menu.card.refresh" => "Refresh {service}",
-    MenuCardReadout = "menu.card.readout" => "Show in taskbar readout",
-
-    // ---- Settings window (ROADMAP M1 "settings basics"; out of both specs, F§12)
-    SettingsTitle = "settings.title" => "Lastdrop settings",
-    SettingsHeading = "settings.heading" => "Settings",
-    SettingsServices = "settings.services" => "Services",
-    SettingsServicesHint = "settings.services.hint" => "Claude and Codex are read from their own files on this PC, Copilot with the GitHub CLI's sign-in (gh auth login). Lastdrop never signs in for you and never changes their sign-in.",
-    SettingsKey = "settings.key" => "Meshy API key",
-    SettingsKeyPaste = "settings.key.paste" => "Paste your Meshy API key",
-    SettingsKeyReplace = "settings.key.replace" => "A key is stored. Paste a new one to replace it",
-    SettingsKeySave = "settings.key.save" => "Save key",
-    SettingsKeyRemove = "settings.key.remove" => "Remove",
-    SettingsKeyHint = "settings.key.hint" => "Stored in Windows Credential Manager, never in a file. Lastdrop only reads your credit balance.",
-    SettingsKeySaved = "settings.key.saved" => "Key saved. Apply to start reading Meshy.",
-    SettingsKeyNotSaved = "settings.key.notsaved" => "Couldn't store the key: {detail}",
-    SettingsKeyRemoved = "settings.key.removed" => "Key removed.",
-    SettingsKeyNotRemoved = "settings.key.notremoved" => "Couldn't remove the key: {detail}",
-    SettingsRefresh = "settings.refresh" => "Refresh",
-    SettingsRefreshCheck = "settings.refresh.check" => "Check usage",
-    // The other choices are `duration.min`.
-    SettingsRefreshManual = "settings.refresh.manual" => "Manual",
-    SettingsReadout = "settings.readout" => "Taskbar readout",
-    SettingsReadoutShow = "settings.readout.show" => "Show the readout in the taskbar",
-    SettingsReadoutRows = "settings.readout.rows" => "Rows",
-    SettingsReadoutAuto = "settings.readout.auto" => "The most constrained meters (auto)",
-    SettingsReadoutPinned = "settings.readout.pinned" => "Meters I pin",
-    SettingsReadoutTimes = "settings.readout.times" => "Show times as",
-    // The examples are the readout's tokens (R§5.2).
-    SettingsReadoutClock = "settings.readout.clock" => "Clock times (14:56)",
-    SettingsReadoutRelative = "settings.readout.relative" => "Time remaining (2h)",
-    SettingsMetersHint = "settings.meters.hint" => "Meters: show them in the flyout, and pin up to two to the readout.",
-    // A meter row: the meter's `short_name` with its service, capitalised.
-    SettingsMeter = "settings.meter" => "{service} {short_name}",
-    SettingsMeterShow = "settings.meter.show" => "Show",
-    SettingsMeterPin = "settings.meter.pin" => "Pin",
-    SettingsNotify = "settings.notify" => "Notifications",
-    SettingsNotifyOn = "settings.notify.on" => "Notify me about my limits",
-    // "When a limit reaches [80%] and [95%]".
-    SettingsNotifyLevels = "settings.notify.levels" => "When a limit reaches",
-    SettingsNotifyAnd = "settings.notify.and" => "and",
-    SettingsNotifyOff = "settings.notify.off" => "Off",
-    SettingsNotifyUsedUp = "settings.notify.usedup" => "When a limit or a balance is used up",
-    SettingsNotifyResets = "settings.notify.resets" => "When a limit resets after a notification",
-    SettingsNotifyLow = "settings.notify.low" => "When a balance runs low",
-    SettingsNotifyHint = "settings.notify.hint" => "Windows notifications, once per level in each window. Do not disturb holds them back.",
-    SettingsShortcut = "settings.shortcut" => "Shortcut",
-    SettingsShortcutOn = "settings.shortcut.on" => "Open Lastdrop with a keyboard shortcut",
-    SettingsShortcutCtrl = "settings.shortcut.ctrl" => "Ctrl",
-    SettingsShortcutAlt = "settings.shortcut.alt" => "Alt",
-    SettingsShortcutShift = "settings.shortcut.shift" => "Shift",
-    SettingsShortcutWin = "settings.shortcut.win" => "Win",
-    SettingsShortcutKey = "settings.shortcut.key" => "Key",
-    SettingsShortcutInvalid = "settings.shortcut.invalid" => "Choose Ctrl, Alt or Win (Shift alone only with F1–F24) and a letter, a digit or F1–F24.",
-    SettingsShortcutInUse = "settings.shortcut.inuse" => "The shortcut is already in use.",
-    SettingsShortcutFailed = "settings.shortcut.failed" => "Couldn't register the shortcut: {detail}",
-    SettingsLanguage = "settings.language" => "Language",
-    // `{language}`: the language Windows' display language resolves to, by its own name.
-    SettingsLanguageWindows = "settings.language.windows" => "Same as Windows ({language})",
-    SettingsLanguageHint = "settings.language.hint" => "For everything Lastdrop shows. Numbers and times follow the regional format in Windows.",
-    SettingsStartup = "settings.startup" => "Start-up",
-    SettingsStartupOn = "settings.startup.on" => "Start Lastdrop when I sign in to Windows",
-    SettingsApply = "settings.apply" => "Apply",
-    SettingsClose = "settings.close" => "Close",
-    SettingsSaved = "settings.saved" => "Saved.",
-    SettingsSavedNoShortcut = "settings.saved.noshortcut" => "Saved, except the shortcut.",
-    SettingsSavedNoStartup = "settings.saved.nostartup" => "Saved, except start with Windows.",
-    SettingsSavedNeither = "settings.saved.neither" => "Saved, except the shortcut and start with Windows.",
-    SettingsNotSaved = "settings.notsaved" => "Couldn't save the settings: {detail}",
-
-    // ---- About window (R§10 "About Lastdrop")
-    AboutTitle = "about.title" => "About Lastdrop",
-    AboutHeading = "about.heading" => "Lastdrop {version}",
-    AboutTagline = "about.tagline" => "How much AI is left in the tank, one click away.",
-    AboutCopyright = "about.copyright" => "© 2026 Adinosaur AB. All rights reserved.",
-    // Third-party credit line (open-source components and their licences).
-    AboutCredits = "about.credits" => "Built with Slint (Royalty-free License 2.0), jiff, serde, ureq and windows-rs (MIT / Apache-2.0). No telemetry: Lastdrop only talks to the services whose usage it reads.",
-    AboutClose = "about.close" => "Close",
-}
-
-/// The Swedish template of every message ([`Swedish`]). The match lists every [`Msg`] with no
-/// fallback arm, so a message without a Swedish text does not compile.
-const fn swedish(msg: Msg) -> &'static str {
-    match msg {
-        // ---- Readout tokens (R§5.1–R§5.5)
-        Msg::ReasonOffline => "Offline",
-        Msg::ReasonSignIn => "Logga in",
-        Msg::ReasonPaused => "Pausad",
-        Msg::ReasonNoData => "Ingen data",
-        Msg::ReasonOldReading => "Ingen ny data",
-        Msg::Loading => "Hämtar…",
-        // Lower-case like the weekday abbreviations it stands with (`↺idag`, `↺mån`, R§5.9).
-        Msg::Today => "idag",
-        Msg::Out => "Slut {time}",
-        Msg::Back => "Åter {time}",
-        Msg::Empty => "Tomt",
-        Msg::CountdownMin => "{n} min kvar",
-        Msg::CountdownHours => "{n} h kvar",
-        Msg::CountdownDays => "{n} d kvar",
-        Msg::CountdownCompactMin => "{n} min",
-        Msg::CountdownCompactHours => "{n} h",
-        Msg::CountdownCompactDays => "{n} d",
-        Msg::NoReset => "–",
-        Msg::AgeMin => "{n}m sedan",
-        Msg::AgeHours => "{n}h sedan",
-        Msg::AgeDays => "{n}d sedan",
-        Msg::TokenDays => "{n}d",
-        Msg::TokenRelMin => "{n}m",
-        Msg::TokenRelHours => "{n}h",
-        Msg::TokenRelDays => "{n}d",
-        Msg::BalanceApprox => "≈",
-        Msg::BalanceHours => "{n}h",
-        Msg::BalanceDays => "{n}d",
-        Msg::BalanceWeeks => "{n}v",
-        Msg::BalanceMax => "9v+",
-
-        // ---- Long durations (R§5.0)
-        Msg::DurationMin => "{n} min",
-        Msg::DurationHours => "{h} h",
-        Msg::DurationHoursMin => "{h} h {m} min",
-        Msg::DurationDays => "{d} d",
-        Msg::DurationDaysHours => "{d} d {h} h",
-
-        // ---- Spoken units with plurals
-        Msg::UnitMinuteOne => "{n} minut",
-        Msg::UnitMinuteOther => "{n} minuter",
-        Msg::UnitHourOne => "{n} timme",
-        Msg::UnitHourOther => "{n} timmar",
-        Msg::UnitDayOne => "{n} dag",
-        Msg::UnitDayOther => "{n} dagar",
-        Msg::UnitWeekOne => "{n} vecka",
-        Msg::UnitWeekOther => "{n} veckor",
-        Msg::UnitCredits => "krediter",
-
-        // ---- Hover card (R§8.2)
-        Msg::CardTitleOkOne => "Det räcker till återställningen",
-        Msg::CardTitleOkTwo => "Det räcker till båda återställningarna",
-        Msg::CardTitleOkMany => "Det räcker till alla återställningar",
-        Msg::CardTitleWarning => "{meter} tar slut {time}",
-        Msg::CardTitleWarningService => "{meter} för {service} tar slut {time}",
-        Msg::CardTitleWarningCourse => "{meter} är på väg mot {p} vid återställningen",
-        Msg::CardTitleWarningCourseService => {
-            "{meter} för {service} är på väg mot {p} vid återställningen"
+/// `a` against `b` by bytes, the order `build.rs` sorts the keys in.
+const fn compare(a: &str, b: &str) -> Ordering {
+    let (a, b) = (a.as_bytes(), b.as_bytes());
+    let mut i = 0;
+    while i < a.len() && i < b.len() {
+        if a[i] != b[i] {
+            return if a[i] < b[i] {
+                Ordering::Less
+            } else {
+                Ordering::Greater
+            };
         }
-        Msg::CardTitleCriticalRunway => "{meter} tar slut om {duration}",
-        // Also a balance's title (`krediterna`), so no adjective that agrees with the noun.
-        Msg::CardTitleCriticalLevel => "{pct} av {meter} har använts",
-        Msg::CardTitleExhausted => "{meter} är slut till {time}",
-        Msg::CardTitleStale => "Ingen ny avläsning från {service} på {age}",
-        Msg::CardTitleSignIn => "{service} behöver att du loggar in igen",
-        Msg::CardTitleApiKey => "{service} behöver en API-nyckel",
-        Msg::CardSentenceApiKey => {
-            "Lastdrop har ingen fungerande API-nyckel för {service}. Välj visningen i \
-             aktivitetsfältet och sedan Ange nyckel… för att lägga till en."
-        }
-        Msg::CardSentenceOkOne => {
-            "Den används långsammare än tiden går. I din senaste takt finns ungefär {left} av \
-             {window} kvar när den återställs."
-        }
-        Msg::CardSentenceOkMany => {
-            "Alla gränser används långsammare än tiden går. I din senaste takt finns ungefär \
-             {left} kvar när de återställs."
-        }
-        Msg::CardSentenceOkOneAbout => {
-            "Den används ungefär lika snabbt som tiden går. I din senaste takt finns ungefär \
-             {left} av {window} kvar när den återställs."
-        }
-        Msg::CardSentenceOkOneAhead => {
-            "Den används snabbare än tiden går, men i din senaste takt finns ungefär {left} av \
-             {window} kvar när den återställs."
-        }
-        Msg::CardSentenceOkManyMixed => {
-            "I din senaste takt finns ungefär {left} kvar när de återställs."
-        }
-        Msg::CardSentenceOkOnePaceUnder => "Den används långsammare än tiden går.",
-        Msg::CardSentenceOkOnePaceAbout => "Den används ungefär lika snabbt som tiden går.",
-        Msg::CardSentenceOkOnePaceAhead => "Den används snabbare än tiden går.",
-        Msg::CardSentenceOkManyPace => "Alla gränser används långsammare än tiden går.",
-        Msg::CardSentenceOkOneLeft => {
-            "I din senaste takt finns ungefär {left} av {window} kvar när den återställs."
-        }
-        Msg::CardTitleOkNoReset => "Inom dina gränser",
-        // Definite: the templates say `av {window}` ("of the session").
-        Msg::CardWindowSession => "sessionen",
-        Msg::CardWindowWeek => "veckan",
-        Msg::CardWindowMonth => "månaden",
-        Msg::CardSentenceWarning => {
-            "Du använder den snabbare än tiden går: {pct} använt när {e} av perioden har gått. \
-             I takten från de senaste {span} tar den slut {duration} före återställningen \
-             {time}."
-        }
-        Msg::CardSentenceWarningCourse => {
-            "Du använder den snabbare än tiden går: {pct} använt när {e} av perioden har gått. \
-             I takten från de senaste {span} når den ungefär {p} vid återställningen {time}."
-        }
-        Msg::CardSentenceOtherFine => " Det är ingen fara med {other}.",
-        Msg::CardSentenceCritical => {
-            "{pct} använt. I takten från de senaste {span} är den slut ungefär {time}, \
-             {duration} före återställningen {reset}."
-        }
-        Msg::CardSentenceLevel => {
-            "Nästan slut. I din senaste takt räcker den till återställningen {time}."
-        }
-        Msg::CardSentenceExhausted => "Slut sedan {since}. Den är tillbaka {time}, om {duration}.",
-        Msg::CardSentenceExhaustedNoSince => "Slut. Den är tillbaka {time}, om {duration}.",
-        Msg::CardSentenceOffline => {
-            "Lastdrop är offline, så det här är siffrorna från {time}. Staplarna är streckade \
-             och frysta vid den tidpunkten tills en ny avläsning kommer. Nästa försök {next}."
-        }
-        Msg::CardSentenceNoData => {
-            "{service} svarar inte ({detail}), så det här är siffrorna från {time}. Nästa \
-             försök {next}."
-        }
-        Msg::CardSentenceOldReading => {
-            "{service} svarar, men de senaste siffrorna är från {time}. Nästa försök {next}."
-        }
-        Msg::CardSentenceSignIn => {
-            "Inloggningen till {service} har gått ut. Lastdrop loggar aldrig in åt dig: öppna \
-             {client} med det här kontot för att förnya den. Välj visningen i aktivitetsfältet \
-             för att se stegen."
-        }
-        Msg::CardSentencePaused => {
-            "Uppdateringarna är pausade till {until}. Det här är siffrorna från {time}."
-        }
-        Msg::CardSentencePausedOpen => {
-            "Uppdateringarna är pausade. Det här är siffrorna från {time}."
-        }
-        // The card's tick line shares its row with the forecast: short forms.
-        Msg::CardLineElapsed => "{e} av tiden gått",
-        Msg::CardLineElapsedStale => "{e} av tiden hade gått {time}",
-        Msg::CardLineElapsedUnknown => "förfluten tid okänd",
-        Msg::CardForecastCourse => "prognos {p} vid återställning",
-        Msg::CardForecastLasts => "räcker till återställningen",
-        Msg::CardForecastNone => "ingen prognos än",
-        Msg::CardForecastRunsOut => "tar slut ≈ {time}",
-        Msg::CardForecastUsedUp => "slut",
-        Msg::CardLineReset => "Återställs {time}",
-        Msg::CardLineIn => "om {duration}",
-        Msg::CardLineIdle => "Börjar vid nästa användning",
-        Msg::CardLineNotStarted => "perioden har inte börjat",
-        Msg::CardLineNoReset => "Ingen återställningstid angiven",
-        Msg::CardLineNoLength => "periodens längd okänd",
-        Msg::CardLineJustReset => "Återställd {time} · väntar på första avläsningen",
-        Msg::CardLineEnded => "Avslutad senast {time}",
-        Msg::CardValue => "{pct} använt",
-        Msg::CardBalanceValue => "{pct} av påfyllningen använt",
-        Msg::CardBalanceLeft => "{amount} av {ref} {unit} kvar",
-        Msg::CardBalanceRate => "{burn} per dag, senaste 7 dagarna",
-        Msg::CardBalanceLasts => "räcker ≈ {duration}",
-        Msg::CardBalanceRunsOut => "tar slut ≈ {time}",
-        Msg::CardBalanceEmpty => "tomt",
-        Msg::CardBalanceNoUse => "ingen användning på 7 dagar",
-        Msg::CardBalanceNoHistory => "inte tillräckligt med historik än",
-        Msg::CardBalanceUntil => "till ≈ {date}",
-        Msg::CardAge => "Uppdaterad {age}",
-        Msg::CardAgeStale => "Senaste avläsning {time}",
-        Msg::CardAlso => "Bevakas också",
-        Msg::CardAlsoMore => "+{n} till",
-        Msg::CardAlsoLine => "{short_name} för {service}",
-
-        // ---- Flyout (F§3–F§6, F§10)
-        Msg::FlyoutTitle => "Lastdrop",
-        Msg::FlyoutVerdictOk => "Alla gränser räcker till återställningen",
-        Msg::FlyoutVerdictOkNoReset => "Inom dina gränser",
-        Msg::FlyoutVerdictWarning => "{label} tar slut {time}",
-        Msg::FlyoutVerdictWarningCourse => "{label} är på väg mot {p} vid återställningen",
-        Msg::FlyoutVerdictRunway => "{label} tar slut om {countdown}",
-        // Also a balance's verdict, as `card.title.critical.level`.
-        Msg::FlyoutVerdictLevel => "{pct} av {label} har använts",
-        Msg::FlyoutVerdictExhausted => "{label} är slut till {time}",
-        Msg::FlyoutVerdictStale => "{service}: ingen avläsning på {age}",
-        Msg::FlyoutVerdictSignIn => "{service}: logga in igen",
-        Msg::FlyoutVerdictPaused => "Uppdateringar pausade",
-        Msg::FlyoutVerdictLoading => "Hämtar användning…",
-        Msg::FlyoutVerdictMore => " · {n} till",
-        Msg::FlyoutRefreshName => "Uppdatera alla tjänster",
-        Msg::FlyoutRefreshTooltip => "Uppdatera (F5)",
-        Msg::FlyoutSettings => "Inställningar",
-        Msg::FlyoutAgeNow => "Nyss",
-        Msg::FlyoutAgeMin => "för {n} min sedan",
-        Msg::FlyoutAgeHours => "för {n} h sedan",
-        Msg::FlyoutAgeDays => "för {n} d sedan",
-        Msg::FlyoutMsgSep => " · ",
-        Msg::FlyoutMsgOffline => "Offline",
-        Msg::FlyoutMsgNoData => "Svarar inte",
-        Msg::FlyoutMsgOldReading => "Ingen ny avläsning",
-        Msg::FlyoutMsgShowing => "visar {time}",
-        Msg::FlyoutMsgNextTry => "nästa försök {time}",
-        Msg::FlyoutMsgSignInLead => "Inloggningen har gått ut.",
-        Msg::FlyoutMsgSignInText => "Lastdrop loggar aldrig in åt dig.",
-        Msg::FlyoutMsgSignInAction => "Öppna inloggning…",
-        Msg::FlyoutMsgPaused => "Pausad",
-        Msg::FlyoutMsgResume => "Återuppta",
-        Msg::FlyoutMsgFailedLead => "Kunde inte läsa {service}",
-        Msg::FlyoutMsgRetry => "Försök igen",
-        Msg::FlyoutMsgApiKeyLead => "API-nyckeln saknas eller avvisades.",
-        Msg::FlyoutMsgApiKeyAction => "Ange nyckel…",
-        Msg::FlyoutLineWarning => "Tar slut {duration} före återställningen {time}.",
-        Msg::FlyoutLineWarningCourse => "På väg mot {p} vid återställningen {time}.",
-        Msg::FlyoutLineCritical => "Slut ≈ {time}, {duration} före återställningen {reset}.",
-        Msg::FlyoutLineLevel => "Nästan slut. Räcker till återställningen i din senaste takt.",
-        Msg::FlyoutLineExhausted => "Slut sedan {since}. Tillbaka om {duration}.",
-        Msg::FlyoutLineExhaustedNoSince => "Slut. Tillbaka om {duration}.",
-        Msg::FlyoutBalanceLeft => "≈ {duration} kvar",
-        Msg::FlyoutBalanceMax => "Mer än 8 veckor kvar",
-        Msg::FlyoutBalanceNoUse => "Ingen användning på 7 dagar",
-        Msg::FlyoutBalanceNoHistory => "Inte tillräckligt med historik än",
-        // Shares its row with `flyout.balance.until`: short forms.
-        Msg::FlyoutBalanceSpent => "{pct} av påfyllningen använt",
-        Msg::FlyoutBalanceBurn => " · {burn}/dag",
-        Msg::FlyoutBalanceUntil => "till ≈ {date}",
-        Msg::FlyoutFooterPaused => "Uppdateringar pausade",
-        Msg::FlyoutFooterResume => "Återuppta",
-        Msg::FlyoutCardName => "{service}, abonnemang {plan}, uppdaterad {age}",
-        Msg::FlyoutCardNameNoPlan => "{service}, uppdaterad {age}",
-        Msg::FlyoutCardOffline => ", offline",
-        Msg::FlyoutCardSignIn => ", inloggningen har gått ut",
-        Msg::FlyoutBalanceName => {
-            "{amount} {unit} kvar, {n} procent av senaste påfyllningen använt, ungefär \
-             {duration} med {burn} per dag"
-        }
-        Msg::FlyoutSparkWindow => {
-            "Användning av {meter} per dag de senaste 14 dagarna: idag {today} procent, högst \
-             {max} procent ({day}), i genomsnitt {avg} procent."
-        }
-        Msg::FlyoutSparkBalance => {
-            "{unit} använda per dag de senaste 14 dagarna: idag {today}, högst {max} ({day}), \
-             i genomsnitt {avg}."
-        }
-
-        // ---- UI Automation (R§11)
-        Msg::A11yRoot => "Lastdrop. {rows}",
-        Msg::A11yHelp => "Välj för detaljer, högerklicka för alternativ.",
-        Msg::A11yAt => "kl. {time}",
-        Msg::A11yAgo => "för {duration} sedan",
-        Msg::A11yRowOk => "{service} {meter}: i fas, {n} procent använt, återställs {reset}.",
-        Msg::A11yRowWarning => {
-            "{service} {meter}: varning, tar slut ungefär {time}, före återställningen {reset}; \
-             {n} procent använt."
-        }
-        Msg::A11yRowWarningCourse => {
-            "{service} {meter}: varning, på väg mot {course} procent vid återställningen \
-             {reset}; {n} procent använt."
-        }
-        Msg::A11yRowRunway => {
-            "{service} {meter}: kritisk, tar slut om ungefär {duration}; {n} procent använt; \
-             återställs {reset}."
-        }
-        Msg::A11yRowLevel => {
-            "{service} {meter}: kritisk, {n} procent använt, räcker till återställningen \
-             {reset}."
-        }
-        Msg::A11yRowExhausted => "{service} {meter}: slut, tillbaka {time}.",
-        Msg::A11yRowExhaustedNoReset => {
-            "{service} {meter}: slut, {n} procent använt, ingen återställningstid angiven."
-        }
-        Msg::A11yRowIdle => {
-            "{service} {meter}: inte påbörjad, {n} procent använt, börjar med ditt nästa \
-             meddelande."
-        }
-        Msg::A11yRowNoReset => {
-            "{service} {meter}: {n} procent använt, ingen återställningstid angiven."
-        }
-        Msg::A11yRowLoading => "{service} {meter}: hämtar.",
-        Msg::A11yRowEnded => "{service} {meter}: avslutad senast {time}, ingen nyare avläsning.",
-        Msg::A11yServiceOffline => {
-            "{service}: offline, senaste avläsning för {age} sedan. Då: {rows}."
-        }
-        Msg::A11yServiceNoData => {
-            "{service}: svarar inte, senaste avläsning för {age} sedan. Då: {rows}."
-        }
-        Msg::A11yServiceOldReading => {
-            "{service}: ingen ny avläsning, senaste avläsning för {age} sedan. Då: {rows}."
-        }
-        Msg::A11yServicePaused => {
-            "{service}: uppdateringar pausade, senaste avläsning för {age} sedan. Då: {rows}."
-        }
-        Msg::A11yServiceSignIn => {
-            "{service}: inloggningen har gått ut, senaste avläsning för {age} sedan. Välj för \
-             att öppna Lastdrop och se hur du loggar in."
-        }
-        Msg::A11yServiceApiKey => {
-            "{service}: API-nyckeln saknas eller avvisades. Välj för att öppna Lastdrop och \
-             lägga till en."
-        }
-        Msg::A11yStaleRow => "{meter} {n} procent använt",
-        Msg::A11yBalance => "{service}: {amount} {unit} kvar, ungefär {duration} i nuvarande takt.",
-        Msg::A11yBalanceNoForecast => "{service}: {amount} {unit} kvar.",
-        Msg::A11yListSep => ", ",
-
-        // ---- Tray tooltip (R§9.3)
-        Msg::TrayOk => "Lastdrop: {pct} av {meter} för {service} använt, återställs {time}",
-        Msg::TrayNoReset => "Lastdrop: {pct} av {meter} för {service} använt",
-        Msg::TrayWarning => "Lastdrop: {meter} för {service} tar slut {time}",
-        Msg::TrayRunway => "Lastdrop: {meter} för {service} tar slut om {duration}",
-        Msg::TrayLevel => "Lastdrop: {pct} av {meter} för {service} använt",
-        Msg::TrayExhausted => "Lastdrop: {meter} för {service} är slut till {time}",
-        Msg::TrayOffline => "Lastdrop: {service} offline, senaste avläsning för {age} sedan",
-        Msg::TrayNoData => "Lastdrop: {service} svarar inte, senaste avläsning för {age} sedan",
-        Msg::TrayOldReading => {
-            "Lastdrop: {service} har ingen ny avläsning, senaste avläsning för {age} sedan"
-        }
-        Msg::TraySignIn => "Lastdrop: {service} behöver att du loggar in igen",
-        Msg::TrayApiKey => "Lastdrop: {service} behöver en API-nyckel",
-        Msg::TrayPaused => "Lastdrop: uppdateringar pausade",
-        Msg::TrayLoading => "Lastdrop: hämtar användning…",
-        Msg::TrayNothing => "Lastdrop",
-
-        // ---- Notifications (N§3)
-        Msg::NoticeLevelTitle => "{meter} för {service} är till {pct} använd",
-        Msg::NoticeUsedUpTitle => "{meter} för {service} är slut",
-        Msg::NoticeResetTitle => "{meter} för {service} har återställts",
-        Msg::NoticeBalanceLowTitle => "{meter} för {service} börjar ta slut",
-        Msg::NoticeBalanceEmptyTitle => "{meter} för {service} är slut",
-        Msg::NoticeBodyRunsOut => {
-            "I din senaste takt tar den slut {time}, {duration} före återställningen."
-        }
-        Msg::NoticeBodyLasts => "I din senaste takt räcker den till återställningen {time}.",
-        Msg::NoticeBodyResets => "Den återställs {time}.",
-        Msg::NoticeBodyBack => "Den är tillbaka {time}, om {duration}.",
-        Msg::NoticeBodyNoReset => "Välj för att se detaljerna i Lastdrop.",
-        Msg::NoticeBodyReset => "Tillbaka på {pct} använt.",
-        Msg::NoticeBodyResetUsedUp => "Tillbaka på {pct} använt. Du kan använda den igen.",
-        Msg::NoticeBodyBalance => {
-            "{amount} {unit} kvar, ungefär {duration} med din användning de senaste 7 dagarna."
-        }
-        Msg::NoticeBodyBalanceLeft => "{amount} {unit} kvar.",
-        Msg::NoticeBodyBalanceEmpty => "Fyll på för att fortsätta använda {service}.",
-        Msg::NoticeMore => "+{n} till",
-
-        // ---- Meter names (R§2): `short_name` is the definite noun with "limit" in it
-        Msg::MeterFiveHourLabel => "5h",
-        Msg::MeterFiveHourShort => "5-timmarsgränsen",
-        Msg::MeterFiveHourName => "5-timmarssession",
-        Msg::MeterWeeklyLabel => "Vk",
-        Msg::MeterWeeklyShort => "veckogränsen",
-        Msg::MeterWeeklyName => "Vecka",
-        Msg::MeterWeeklyAllName => "Vecka · alla modeller",
-        Msg::MeterWeeklyModelShort => "{model}-veckogränsen",
-        Msg::MeterWeeklyModelName => "Vecka · {model}",
-        Msg::MeterHoursLabel => "{n}h",
-        Msg::MeterHoursShort => "{n}-timmarsgränsen",
-        Msg::MeterHoursName => "{n}-timmarsfönster",
-        Msg::MeterDaysLabel => "{n}d",
-        Msg::MeterDaysShort => "{n}-dagarsgränsen",
-        Msg::MeterDaysName => "{n}-dagarsfönster",
-        // Not `Kr`, which reads as kronor.
-        Msg::MeterCreditsLabel => "Kred",
-        Msg::MeterCreditsShort => "krediterna",
-        Msg::MeterCreditsName => "Krediter",
-        Msg::MeterPremiumLabel => "Prem",
-        Msg::MeterPremiumShort => "premiumgränsen",
-        Msg::MeterPremiumName => "Premiumförfrågningar",
-        Msg::MeterChatLabel => "Chatt",
-        Msg::MeterChatShort => "chattgränsen",
-        Msg::MeterChatName => "Chattmeddelanden",
-        Msg::MeterCompletionsLabel => "Kod",
-        Msg::MeterCompletionsShort => "kompletteringsgränsen",
-        Msg::MeterCompletionsName => "Kodkompletteringar",
-        // Not `Mån`, which reads as Monday next to the weekday tokens.
-        Msg::MeterMonthlyLabel => "Mnd",
-        Msg::MeterMonthlyShort => "månadsgränsen",
-
-        // ---- Context menus (R§10, F§9)
-        Msg::MenuRefresh => "Uppdatera nu",
-        Msg::MenuPause => "Pausa uppdateringar",
-        Msg::MenuPauseHour => "I 1 timme",
-        Msg::MenuPauseUntilResume => "Tills jag återupptar",
-        Msg::MenuResume => "Återuppta uppdateringar",
-        Msg::MenuReadout => "Visning i aktivitetsfältet",
-        Msg::MenuReadoutAuto => "Automatiskt",
-        Msg::MenuReadoutPinned => "Fästa mätare…",
-        Msg::MenuReadoutOff => "Av",
-        Msg::MenuSettings => "Inställningar…",
-        Msg::MenuAbout => "Om Lastdrop",
-        Msg::MenuQuit => "Avsluta Lastdrop",
-        Msg::MenuCardUsage => "Öppna användningssidan",
-        Msg::MenuCardRefresh => "Uppdatera {service}",
-        Msg::MenuCardReadout => "Visa i aktivitetsfältet",
-
-        // ---- Settings window: Windows' own Swedish names (Verkställ, Stäng, Skift, Stör ej,
-        // Autentiseringshanteraren)
-        Msg::SettingsTitle => "Inställningar för Lastdrop",
-        Msg::SettingsHeading => "Inställningar",
-        Msg::SettingsServices => "Tjänster",
-        Msg::SettingsServicesHint => {
-            "Claude och Codex läses från sina egna filer på den här datorn, Copilot med GitHub \
-             CLI:s inloggning (gh auth login). Lastdrop loggar aldrig in åt dig och ändrar aldrig \
-             deras inloggning."
-        }
-        Msg::SettingsKey => "API-nyckel för Meshy",
-        Msg::SettingsKeyPaste => "Klistra in din API-nyckel för Meshy",
-        // Shares its row with two buttons: short.
-        Msg::SettingsKeyReplace => "Nyckel sparad. Klistra in en ny för att byta",
-        Msg::SettingsKeySave => "Spara nyckel",
-        Msg::SettingsKeyRemove => "Ta bort",
-        Msg::SettingsKeyHint => {
-            "Sparas i Autentiseringshanteraren i Windows, aldrig i en fil. Lastdrop läser bara \
-             ditt kreditsaldo."
-        }
-        Msg::SettingsKeySaved => "Nyckeln har sparats. Verkställ för att börja läsa Meshy.",
-        Msg::SettingsKeyNotSaved => "Kunde inte spara nyckeln: {detail}",
-        Msg::SettingsKeyRemoved => "Nyckeln har tagits bort.",
-        Msg::SettingsKeyNotRemoved => "Kunde inte ta bort nyckeln: {detail}",
-        Msg::SettingsRefresh => "Uppdatering",
-        Msg::SettingsRefreshCheck => "Hämta användning",
-        Msg::SettingsRefreshManual => "Manuellt",
-        Msg::SettingsReadout => "Visning i aktivitetsfältet",
-        Msg::SettingsReadoutShow => "Visa användningen i aktivitetsfältet",
-        Msg::SettingsReadoutRows => "Rader",
-        Msg::SettingsReadoutAuto => "De mest belastade mätarna (auto)",
-        Msg::SettingsReadoutPinned => "Mätare jag fäster",
-        Msg::SettingsReadoutTimes => "Visa tider som",
-        Msg::SettingsReadoutClock => "Klockslag (14:56)",
-        Msg::SettingsReadoutRelative => "Tid kvar (2h)",
-        Msg::SettingsMetersHint => {
-            "Mätare: visa dem i panelen och fäst upp till två i aktivitetsfältet."
-        }
-        // As `card.also.line`: `Veckogränsen för Claude`.
-        Msg::SettingsMeter => "{short_name} för {service}",
-        Msg::SettingsMeterShow => "Visa",
-        Msg::SettingsMeterPin => "Fäst",
-        Msg::SettingsNotify => "Aviseringar",
-        Msg::SettingsNotifyOn => "Avisera mig om mina gränser",
-        Msg::SettingsNotifyLevels => "När en gräns når",
-        Msg::SettingsNotifyAnd => "och",
-        Msg::SettingsNotifyOff => "Av",
-        Msg::SettingsNotifyUsedUp => "När en gräns eller ett saldo är slut",
-        Msg::SettingsNotifyResets => "När en gräns återställs efter en avisering",
-        Msg::SettingsNotifyLow => "När ett saldo börjar ta slut",
-        Msg::SettingsNotifyHint => {
-            "Aviseringar i Windows, en gång per nivå och period. Stör ej håller dem tillbaka."
-        }
-        Msg::SettingsShortcut => "Kortkommando",
-        Msg::SettingsShortcutOn => "Öppna Lastdrop med ett kortkommando",
-        Msg::SettingsShortcutCtrl => "Ctrl",
-        Msg::SettingsShortcutAlt => "Alt",
-        Msg::SettingsShortcutShift => "Skift",
-        Msg::SettingsShortcutWin => "Win",
-        Msg::SettingsShortcutKey => "Tangent",
-        Msg::SettingsShortcutInvalid => {
-            "Välj Ctrl, Alt eller Win (Skift ensam bara med F1–F24) och en bokstav, en siffra \
-             eller F1–F24."
-        }
-        Msg::SettingsShortcutInUse => "Kortkommandot används redan.",
-        Msg::SettingsShortcutFailed => "Kunde inte registrera kortkommandot: {detail}",
-        Msg::SettingsLanguage => "Språk",
-        Msg::SettingsLanguageWindows => "Samma som Windows ({language})",
-        Msg::SettingsLanguageHint => {
-            "För allt som Lastdrop visar. Tal och tider följer det regionala formatet i Windows."
-        }
-        Msg::SettingsStartup => "Start",
-        Msg::SettingsStartupOn => "Starta Lastdrop när jag loggar in i Windows",
-        Msg::SettingsApply => "Verkställ",
-        Msg::SettingsClose => "Stäng",
-        Msg::SettingsSaved => "Sparat.",
-        Msg::SettingsSavedNoShortcut => "Sparat, utom kortkommandot.",
-        Msg::SettingsSavedNoStartup => "Sparat, utom start med Windows.",
-        Msg::SettingsSavedNeither => "Sparat, utom kortkommandot och start med Windows.",
-        Msg::SettingsNotSaved => "Kunde inte spara inställningarna: {detail}",
-
-        // ---- About window
-        Msg::AboutTitle => "Om Lastdrop",
-        Msg::AboutHeading => "Lastdrop {version}",
-        Msg::AboutTagline => "Hur mycket AI som finns kvar i tanken, ett klick bort.",
-        Msg::AboutCopyright => "© 2026 Adinosaur AB. Alla rättigheter förbehållna.",
-        // The licence names stay as their authors wrote them.
-        Msg::AboutCredits => {
-            "Byggt med Slint (Royalty-free License 2.0), jiff, serde, ureq och windows-rs \
-             (MIT / Apache-2.0). Ingen telemetri: Lastdrop pratar bara med de tjänster vars \
-             användning den läser."
-        }
-        Msg::AboutClose => "Stäng",
+        i += 1;
+    }
+    if a.len() < b.len() {
+        Ordering::Less
+    } else if a.len() > b.len() {
+        Ordering::Greater
+    } else {
+        Ordering::Equal
     }
 }
 
-/// CLDR-style plural category; English uses `One` and `Other`.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub enum Plural {
-    /// Singular (`1 minute`).
-    One,
-    /// Everything else.
-    Other,
+/// The place of `key` in `keys` (sorted by bytes). Evaluated at compile time, so a key that
+/// `crates/core/locales/en.toml` lacks stops the build with the key as the message.
+const fn index_of(keys: &[&str], key: &str) -> usize {
+    let (mut low, mut high) = (0, keys.len());
+    while low < high {
+        let mid = low + (high - low) / 2;
+        match compare(keys[mid], key) {
+            Ordering::Less => low = mid + 1,
+            Ordering::Greater => high = mid,
+            Ordering::Equal => return mid,
+        }
+    }
+    panic!("{}", key)
+}
+
+catalogue! {
+    /// A string resource. The doc of each variant is its key (Appendix B style); the texts are in
+    /// `crates/core/locales`.
+    Msg in KEYS {
+        // ---- Readout tokens (R§5.1–R§5.5, Appendix B)
+        ReasonOffline = "reason.offline",
+        ReasonSignIn = "reason.signin",
+        ReasonPaused = "reason.paused",
+        ReasonNoData = "reason.nodata",
+        ReasonOldReading = "reason.oldreading",
+        Loading = "loading",
+        Today = "today",
+        Out = "out",
+        Back = "back",
+        Empty = "empty",
+        CountdownMin = "countdown.min",
+        CountdownHours = "countdown.h",
+        CountdownDays = "countdown.d",
+        CountdownCompactMin = "countdown.compact.min",
+        CountdownCompactHours = "countdown.compact.h",
+        CountdownCompactDays = "countdown.compact.d",
+        NoReset = "noreset",
+        AgeMin = "age.m",
+        AgeHours = "age.h",
+        AgeDays = "age.d",
+        TokenDays = "token.days",
+        TokenRelMin = "token.rel.m",
+        TokenRelHours = "token.rel.h",
+        TokenRelDays = "token.rel.d",
+        BalanceApprox = "balance.approx",
+        BalanceHours = "balance.h",
+        BalanceDays = "balance.d",
+        BalanceWeeks = "balance.w",
+        BalanceMax = "balance.max",
+
+        // ---- Long durations (R§5.0)
+        DurationMin = "duration.min",
+        DurationHours = "duration.h",
+        DurationHoursMin = "duration.hmin",
+        DurationDays = "duration.d",
+        DurationDaysHours = "duration.dh",
+
+        // ---- Units (the counted ones are `PluralMsg`s)
+        UnitCredits = "unit.credits",
+
+        // ---- Hover card (R§8.2, Appendix B)
+        CardTitleOkOne = "card.title.ok.1",
+        CardTitleOkTwo = "card.title.ok.2",
+        CardTitleOkMany = "card.title.ok.n",
+        CardTitleWarning = "card.title.warning",
+        CardTitleWarningService = "card.title.warning.service",
+        CardTitleWarningCourse = "card.title.warning.course",
+        CardTitleWarningCourseService = "card.title.warning.course.service",
+        CardTitleCriticalRunway = "card.title.critical.runway",
+        CardTitleCriticalLevel = "card.title.critical.level",
+        CardTitleExhausted = "card.title.exhausted",
+        CardTitleStale = "card.title.stale",
+        CardTitleSignIn = "card.title.signin",
+        CardTitleApiKey = "card.title.apikey",
+        CardSentenceApiKey = "card.sentence.apikey",
+        CardSentenceOkOne = "card.sentence.ok.1",
+        CardSentenceOkMany = "card.sentence.ok.n",
+        CardSentenceOkOneAbout = "card.sentence.ok.1.about",
+        CardSentenceOkOneAhead = "card.sentence.ok.1.ahead",
+        CardSentenceOkManyMixed = "card.sentence.ok.n.mixed",
+        CardSentenceOkOnePaceUnder = "card.sentence.ok.1.pace.under",
+        CardSentenceOkOnePaceAbout = "card.sentence.ok.1.pace.about",
+        CardSentenceOkOnePaceAhead = "card.sentence.ok.1.pace.ahead",
+        CardSentenceOkManyPace = "card.sentence.ok.n.pace",
+        CardSentenceOkOneLeft = "card.sentence.ok.1.left",
+        CardTitleOkNoReset = "card.title.ok.noreset",
+        CardWindowSession = "card.window.session",
+        CardWindowWeek = "card.window.week",
+        CardWindowMonth = "card.window.month",
+        CardSentenceWarning = "card.sentence.warning",
+        CardSentenceWarningCourse = "card.sentence.warning.course",
+        CardSentenceOtherFine = "card.sentence.other",
+        CardSentenceCritical = "card.sentence.critical",
+        CardSentenceLevel = "card.sentence.level",
+        CardSentenceExhausted = "card.sentence.exhausted",
+        CardSentenceExhaustedNoSince = "card.sentence.exhausted.nosince",
+        CardSentenceOffline = "card.sentence.offline",
+        CardSentenceNoData = "card.sentence.nodata",
+        CardSentenceOldReading = "card.sentence.oldreading",
+        CardSentenceSignIn = "card.sentence.signin",
+        CardSentencePaused = "card.sentence.paused",
+        CardSentencePausedOpen = "card.sentence.paused.open",
+        CardLineElapsed = "card.line.elapsed",
+        CardLineElapsedStale = "card.line.elapsed.stale",
+        CardLineElapsedUnknown = "card.line.elapsed.unknown",
+        CardForecastCourse = "card.line.forecast.course",
+        CardForecastLasts = "card.line.forecast.lasts",
+        CardForecastNone = "card.line.forecast.none",
+        CardForecastRunsOut = "card.line.forecast.runsout",
+        CardForecastUsedUp = "card.line.forecast.usedup",
+        CardLineReset = "card.line.reset",
+        CardLineIn = "card.line.in",
+        CardLineIdle = "card.line.idle",
+        CardLineNotStarted = "card.line.notstarted",
+        CardLineNoReset = "card.line.noreset",
+        CardLineNoLength = "card.line.nolength",
+        CardLineJustReset = "card.line.justreset",
+        CardLineEnded = "card.line.ended",
+        CardValue = "card.value",
+        CardBalanceValue = "card.balance.value",
+        CardBalanceLeft = "card.balance.left",
+        CardBalanceRate = "card.balance.rate",
+        CardBalanceLasts = "card.balance.forecast.lasts",
+        CardBalanceRunsOut = "card.balance.forecast.runsout",
+        CardBalanceEmpty = "card.balance.forecast.empty",
+        CardBalanceNoUse = "card.balance.forecast.nouse",
+        CardBalanceNoHistory = "card.balance.forecast.nohistory",
+        CardBalanceUntil = "card.balance.until",
+        CardAge = "card.age",
+        CardAgeStale = "card.age.stale",
+        CardAlso = "card.also",
+        CardAlsoMore = "card.also.more",
+        CardAlsoLine = "card.also.line",
+
+        // ---- Flyout (F§3–F§6, F§10)
+        FlyoutTitle = "flyout.title",
+        FlyoutVerdictOk = "flyout.verdict.ok",
+        FlyoutVerdictOkNoReset = "flyout.verdict.ok.noreset",
+        FlyoutVerdictWarning = "flyout.verdict.warning",
+        FlyoutVerdictWarningCourse = "flyout.verdict.warning.course",
+        FlyoutVerdictRunway = "flyout.verdict.critical.runway",
+        FlyoutVerdictLevel = "flyout.verdict.critical.level",
+        FlyoutVerdictExhausted = "flyout.verdict.exhausted",
+        FlyoutVerdictStale = "flyout.verdict.stale",
+        FlyoutVerdictSignIn = "flyout.verdict.signin",
+        FlyoutVerdictPaused = "flyout.verdict.paused",
+        FlyoutVerdictLoading = "flyout.verdict.loading",
+        FlyoutVerdictMore = "flyout.verdict.more",
+        FlyoutRefreshName = "flyout.refresh.a11y",
+        FlyoutRefreshTooltip = "flyout.refresh.tooltip",
+        FlyoutSettings = "flyout.settings",
+        FlyoutAgeNow = "flyout.age.now",
+        FlyoutAgeMin = "flyout.age.min",
+        FlyoutAgeHours = "flyout.age.h",
+        FlyoutAgeDays = "flyout.age.d",
+        FlyoutMsgSep = "flyout.msg.sep",
+        FlyoutMsgOffline = "flyout.msg.offline",
+        FlyoutMsgNoData = "flyout.msg.nodata",
+        FlyoutMsgOldReading = "flyout.msg.oldreading",
+        FlyoutMsgShowing = "flyout.msg.showing",
+        FlyoutMsgNextTry = "flyout.msg.nexttry",
+        FlyoutMsgSignInLead = "flyout.msg.signin.lead",
+        FlyoutMsgSignInText = "flyout.msg.signin.text",
+        FlyoutMsgSignInAction = "flyout.msg.signin.action",
+        FlyoutMsgPaused = "flyout.msg.paused",
+        FlyoutMsgResume = "flyout.msg.resume",
+        FlyoutMsgFailedLead = "flyout.msg.failed.lead",
+        FlyoutMsgRetry = "flyout.msg.retry",
+        FlyoutMsgApiKeyLead = "flyout.msg.apikey.lead",
+        FlyoutMsgApiKeyAction = "flyout.msg.apikey.action",
+        FlyoutLineWarning = "flyout.line.warning",
+        FlyoutLineWarningCourse = "flyout.line.warning.course",
+        FlyoutLineCritical = "flyout.line.critical",
+        FlyoutLineLevel = "flyout.line.level",
+        FlyoutLineExhausted = "flyout.line.exhausted",
+        FlyoutLineExhaustedNoSince = "flyout.line.exhausted.nosince",
+        FlyoutBalanceLeft = "flyout.balance.left",
+        FlyoutBalanceMax = "flyout.balance.max",
+        FlyoutBalanceNoUse = "flyout.balance.nouse",
+        FlyoutBalanceNoHistory = "flyout.balance.nohistory",
+        FlyoutBalanceSpent = "flyout.balance.spent",
+        FlyoutBalanceBurn = "flyout.balance.burn",
+        FlyoutBalanceUntil = "flyout.balance.until",
+        FlyoutFooterPaused = "flyout.footer.paused",
+        FlyoutFooterResume = "flyout.footer.resume",
+        FlyoutCardName = "flyout.card.a11y",
+        FlyoutCardNameNoPlan = "flyout.card.a11y.noplan",
+        FlyoutCardOffline = "flyout.card.a11y.offline",
+        FlyoutCardSignIn = "flyout.card.a11y.signin",
+        FlyoutBalanceName = "flyout.balance.a11y",
+        FlyoutSparkWindow = "flyout.spark.a11y.window",
+        FlyoutSparkBalance = "flyout.spark.a11y.balance",
+
+        // ---- UI Automation (R§11)
+        A11yRoot = "a11y.root",
+        A11yHelp = "a11y.help",
+        A11yAt = "a11y.at",
+        A11yAgo = "a11y.ago",
+        A11yRowOk = "a11y.row.ok",
+        A11yRowWarning = "a11y.row.warning",
+        A11yRowWarningCourse = "a11y.row.warning.course",
+        A11yRowRunway = "a11y.row.critical.runway",
+        A11yRowLevel = "a11y.row.critical.level",
+        A11yRowExhausted = "a11y.row.exhausted",
+        A11yRowExhaustedNoReset = "a11y.row.exhausted.noreset",
+        A11yRowIdle = "a11y.row.idle",
+        A11yRowNoReset = "a11y.row.noreset",
+        A11yRowLoading = "a11y.row.loading",
+        A11yRowEnded = "a11y.row.ended",
+        A11yServiceOffline = "a11y.service.offline",
+        A11yServiceNoData = "a11y.service.nodata",
+        A11yServiceOldReading = "a11y.service.oldreading",
+        A11yServicePaused = "a11y.service.paused",
+        A11yServiceSignIn = "a11y.service.signin",
+        A11yServiceApiKey = "a11y.service.apikey",
+        A11yStaleRow = "a11y.stale.row",
+        A11yBalance = "a11y.balance",
+        A11yBalanceNoForecast = "a11y.balance.noforecast",
+        A11yListSep = "a11y.list.sep",
+
+        // ---- Tray tooltip (R§9.3)
+        TrayOk = "tray.ok",
+        TrayNoReset = "tray.noreset",
+        TrayWarning = "tray.warning",
+        TrayRunway = "tray.runway",
+        TrayLevel = "tray.level",
+        TrayExhausted = "tray.exhausted",
+        TrayOffline = "tray.offline",
+        TrayNoData = "tray.nodata",
+        TrayOldReading = "tray.oldreading",
+        TraySignIn = "tray.signin",
+        TrayApiKey = "tray.apikey",
+        TrayPaused = "tray.paused",
+        TrayLoading = "tray.loading",
+        TrayNothing = "tray.nothing",
+
+        // ---- Notifications (N§3)
+        NoticeLevelTitle = "notice.level.title",
+        NoticeUsedUpTitle = "notice.usedup.title",
+        NoticeResetTitle = "notice.reset.title",
+        NoticeBalanceLowTitle = "notice.balance.low.title",
+        NoticeBalanceEmptyTitle = "notice.balance.empty.title",
+        NoticeBodyRunsOut = "notice.body.runsout",
+        NoticeBodyLasts = "notice.body.lasts",
+        NoticeBodyResets = "notice.body.resets",
+        NoticeBodyBack = "notice.body.back",
+        NoticeBodyNoReset = "notice.body.noreset",
+        NoticeBodyReset = "notice.body.reset",
+        NoticeBodyResetUsedUp = "notice.body.reset.usedup",
+        NoticeBodyBalance = "notice.body.balance",
+        NoticeBodyBalanceLeft = "notice.body.balance.left",
+        NoticeBodyBalanceEmpty = "notice.body.balance.empty",
+        NoticeMore = "notice.more",
+
+        // ---- Meter names (R§2 table: `short_label` / `short_name` / `name`; [`super::meters`])
+        MeterFiveHourLabel = "meter.five_hour.label",
+        MeterFiveHourShort = "meter.five_hour.short",
+        MeterFiveHourName = "meter.five_hour.name",
+        MeterWeeklyLabel = "meter.weekly.label",
+        MeterWeeklyShort = "meter.weekly.short",
+        MeterWeeklyName = "meter.weekly.name",
+        MeterWeeklyAllName = "meter.weekly.all.name",
+        MeterWeeklyModelShort = "meter.weekly.model.short",
+        MeterWeeklyModelName = "meter.weekly.model.name",
+        MeterHoursLabel = "meter.hours.label",
+        MeterHoursShort = "meter.hours.short",
+        MeterHoursName = "meter.hours.name",
+        MeterDaysLabel = "meter.days.label",
+        MeterDaysShort = "meter.days.short",
+        MeterDaysName = "meter.days.name",
+        MeterCreditsLabel = "meter.credits.label",
+        MeterCreditsShort = "meter.credits.short",
+        MeterCreditsName = "meter.credits.name",
+        MeterPremiumLabel = "meter.premium.label",
+        MeterPremiumShort = "meter.premium.short",
+        MeterPremiumName = "meter.premium.name",
+        MeterChatLabel = "meter.chat.label",
+        MeterChatShort = "meter.chat.short",
+        MeterChatName = "meter.chat.name",
+        MeterCompletionsLabel = "meter.completions.label",
+        MeterCompletionsShort = "meter.completions.short",
+        MeterCompletionsName = "meter.completions.name",
+        MeterMonthlyLabel = "meter.monthly.label",
+        MeterMonthlyShort = "meter.monthly.short",
+
+        // ---- Context menus (R§10, F§9)
+        MenuRefresh = "menu.refresh",
+        MenuPause = "menu.pause",
+        MenuPauseHour = "menu.pause.hour",
+        MenuPauseUntilResume = "menu.pause.resume",
+        MenuResume = "menu.resume",
+        MenuReadout = "menu.readout",
+        MenuReadoutAuto = "menu.readout.auto",
+        MenuReadoutPinned = "menu.readout.pinned",
+        MenuReadoutOff = "menu.readout.off",
+        MenuSettings = "menu.settings",
+        MenuAbout = "menu.about",
+        MenuQuit = "menu.quit",
+        MenuCardUsage = "menu.card.usage",
+        MenuCardRefresh = "menu.card.refresh",
+        MenuCardReadout = "menu.card.readout",
+
+        // ---- Settings window (ROADMAP M1 "settings basics"; out of both specs, F§12)
+        SettingsTitle = "settings.title",
+        SettingsHeading = "settings.heading",
+        SettingsServices = "settings.services",
+        SettingsServicesHint = "settings.services.hint",
+        SettingsKey = "settings.key",
+        SettingsKeyPaste = "settings.key.paste",
+        SettingsKeyReplace = "settings.key.replace",
+        SettingsKeySave = "settings.key.save",
+        SettingsKeyRemove = "settings.key.remove",
+        SettingsKeyHint = "settings.key.hint",
+        SettingsKeySaved = "settings.key.saved",
+        SettingsKeyNotSaved = "settings.key.notsaved",
+        SettingsKeyRemoved = "settings.key.removed",
+        SettingsKeyNotRemoved = "settings.key.notremoved",
+        SettingsRefresh = "settings.refresh",
+        SettingsRefreshCheck = "settings.refresh.check",
+        SettingsRefreshManual = "settings.refresh.manual",
+        SettingsReadout = "settings.readout",
+        SettingsReadoutShow = "settings.readout.show",
+        SettingsReadoutRows = "settings.readout.rows",
+        SettingsReadoutAuto = "settings.readout.auto",
+        SettingsReadoutPinned = "settings.readout.pinned",
+        SettingsReadoutTimes = "settings.readout.times",
+        SettingsReadoutClock = "settings.readout.clock",
+        SettingsReadoutRelative = "settings.readout.relative",
+        SettingsMetersHint = "settings.meters.hint",
+        SettingsMeter = "settings.meter",
+        SettingsMeterShow = "settings.meter.show",
+        SettingsMeterPin = "settings.meter.pin",
+        SettingsNotify = "settings.notify",
+        SettingsNotifyOn = "settings.notify.on",
+        SettingsNotifyLevels = "settings.notify.levels",
+        SettingsNotifyAnd = "settings.notify.and",
+        SettingsNotifyOff = "settings.notify.off",
+        SettingsNotifyUsedUp = "settings.notify.usedup",
+        SettingsNotifyResets = "settings.notify.resets",
+        SettingsNotifyLow = "settings.notify.low",
+        SettingsNotifyHint = "settings.notify.hint",
+        SettingsShortcut = "settings.shortcut",
+        SettingsShortcutOn = "settings.shortcut.on",
+        SettingsShortcutCtrl = "settings.shortcut.ctrl",
+        SettingsShortcutAlt = "settings.shortcut.alt",
+        SettingsShortcutShift = "settings.shortcut.shift",
+        SettingsShortcutWin = "settings.shortcut.win",
+        SettingsShortcutKey = "settings.shortcut.key",
+        SettingsShortcutInvalid = "settings.shortcut.invalid",
+        SettingsShortcutInUse = "settings.shortcut.inuse",
+        SettingsShortcutFailed = "settings.shortcut.failed",
+        SettingsLanguage = "settings.language",
+        SettingsLanguageWindows = "settings.language.windows",
+        SettingsLanguageHint = "settings.language.hint",
+        SettingsStartup = "settings.startup",
+        SettingsStartupOn = "settings.startup.on",
+        SettingsApply = "settings.apply",
+        SettingsClose = "settings.close",
+        SettingsSaved = "settings.saved",
+        SettingsSavedNoShortcut = "settings.saved.noshortcut",
+        SettingsSavedNoStartup = "settings.saved.nostartup",
+        SettingsSavedNeither = "settings.saved.neither",
+        SettingsNotSaved = "settings.notsaved",
+
+        // ---- About window (R§10 "About Lastdrop")
+        AboutTitle = "about.title",
+        AboutHeading = "about.heading",
+        AboutTagline = "about.tagline",
+        AboutCopyright = "about.copyright",
+        AboutCredits = "about.credits",
+        AboutClose = "about.close",
+    }
+}
+
+catalogue! {
+    /// A string resource with plural forms (`unit.minute`: `{n} minute`, `{n} minutes`), each
+    /// language with the forms of its [`PluralRule`]. [`count`] picks the form and fills `{n}`.
+    PluralMsg in PLURAL_KEYS {
+        // ---- Spoken units (R§11 sentences, F§4.5 balance forecast)
+        UnitMinute = "unit.minute",
+        UnitHour = "unit.hour",
+        UnitDay = "unit.day",
+        UnitWeek = "unit.week",
+    }
 }
 
 /// One language's string table.
@@ -952,99 +505,66 @@ pub trait Strings: Send + Sync {
     /// The template of `msg`, with `{name}` placeholders.
     fn template(&self, msg: Msg) -> &str;
 
-    /// The plural category of `n` in this language.
+    /// The plural form the count `n` takes in this language.
     fn plural(&self, n: i64) -> Plural;
+
+    /// The template of `msg` in the plural form `form`; empty for a form the language's rule
+    /// never picks. [`count`] picks the form.
+    fn plural_template(&self, msg: PluralMsg, form: Plural) -> &str;
+
+    /// Meter names start lower-case inside a sentence (`weekly, all models`); off for languages
+    /// that capitalise nouns.
+    fn lowercase_names(&self) -> bool;
 }
 
-/// The English table (R Appendix B; the en-US/en-GB texts of both specs).
-#[derive(Clone, Copy, Debug, Default)]
-pub struct English;
+/// Implements [`Strings`] for a language's table struct from its generated [`Language`] data.
+macro_rules! table {
+    ($language:ident) => {
+        impl Strings for $language {
+            fn language(&self) -> &str {
+                Language::$language.tag()
+            }
 
-impl Strings for English {
-    fn language(&self) -> &str {
-        Language::English.tag()
-    }
+            fn template(&self, msg: Msg) -> &str {
+                Language::$language.texts()[msg.index()]
+            }
 
-    fn template(&self, msg: Msg) -> &str {
-        english(msg)
-    }
+            fn plural(&self, n: i64) -> Plural {
+                Language::$language.plural_rule().category(n)
+            }
 
-    fn plural(&self, n: i64) -> Plural {
-        if n == 1 { Plural::One } else { Plural::Other }
-    }
+            fn plural_template(&self, msg: PluralMsg, form: Plural) -> &str {
+                Language::$language.plural_texts()[msg.index()][form as usize]
+            }
+
+            fn lowercase_names(&self) -> bool {
+                Language::$language.lowercase_names()
+            }
+        }
+    };
 }
 
-/// The Swedish table. Numbers, times and weekday names come from the regional format
-/// ([`super::LocaleFormat`], `sv-SE`: `42 %`, `mån`), so only the words are here.
-///
-/// `short_name` is a definite noun that already says "limit" (`veckogränsen`, `krediterna`),
-/// so the templates do not add it, and a meter with its service reads
-/// `veckogränsen för Claude` (`card.also.line`). Percent is always `använt`/`har använts`, never
-/// `kvar`, except the share left at the reset of an OK card, as in English.
-#[derive(Clone, Copy, Debug, Default)]
-pub struct Swedish;
-
-impl Strings for Swedish {
-    fn language(&self) -> &str {
-        Language::Swedish.tag()
-    }
-
-    fn template(&self, msg: Msg) -> &str {
-        swedish(msg)
-    }
-
-    fn plural(&self, n: i64) -> Plural {
-        // Swedish has the same two forms as English (`1 minut`, `2 minuter`).
-        if n == 1 { Plural::One } else { Plural::Other }
-    }
-}
-
-/// A language with a string table (ROADMAP M4 "Language: English and Swedish to start").
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
-pub enum Language {
-    /// [`English`], and the fallback for every language without a table.
-    #[default]
-    English,
-    /// [`Swedish`].
-    Swedish,
-}
+// `KEYS`, `PLURAL_KEYS`, `Language` with its data, and a table struct per language.
+include!(concat!(env!("OUT_DIR"), "/locales.rs"));
 
 impl Language {
-    /// Every language with a table, in the order a language picker lists them.
-    pub const ALL: [Language; 2] = [Language::English, Language::Swedish];
-
-    /// The BCP 47 language tag (`en`, `sv`): [`Strings::language`] and the value of the
-    /// language setting.
-    pub const fn tag(self) -> &'static str {
-        match self {
-            Language::English => "en",
-            Language::Swedish => "sv",
-        }
-    }
-
-    /// The language's name in itself (`English`, `Svenska`), as language pickers show it.
-    pub const fn native_name(self) -> &'static str {
-        match self {
-            Language::English => "English",
-            Language::Swedish => "Svenska",
-        }
-    }
-
-    /// The string table.
-    pub fn strings(self) -> &'static dyn Strings {
-        match self {
-            Language::English => &English,
-            Language::Swedish => &Swedish,
-        }
-    }
-
-    /// The language of a BCP 47 tag by its primary subtag, in any case (`sv`, `sv-SE` and
-    /// `sv-FI` are Swedish); `None` for a language without a table.
+    /// The language of a BCP 47 tag, in any case and with `-` or `_`: the language of the whole
+    /// tag (a file named `pt-BR.toml`), else of its primary subtag (`sv`, `sv-SE` and `sv-FI` are
+    /// Swedish); `None` for a language without a table.
     pub fn from_tag(tag: &str) -> Option<Language> {
+        let same = |a: &str, b: &str| {
+            let norm = |c: u8| {
+                if c == b'_' {
+                    b'-'
+                } else {
+                    c.to_ascii_lowercase()
+                }
+            };
+            a.len() == b.len() && a.bytes().zip(b.bytes()).all(|(x, y)| norm(x) == norm(y))
+        };
         let primary = tag.split(['-', '_']).next().unwrap_or_default();
-        Language::ALL
-            .into_iter()
-            .find(|l| l.tag().eq_ignore_ascii_case(primary))
+        let find = |t: &str| Language::ALL.into_iter().find(|l| same(l.tag(), t));
+        find(tag).or_else(|| find(primary))
     }
 
     /// The language to show: `chosen` (the setting) when it has a table; otherwise the first of
@@ -1094,6 +614,12 @@ pub fn text(strings: &dyn Strings, msg: Msg, args: &[(&str, &str)]) -> String {
     fill(strings.template(msg), args)
 }
 
+/// `n` in the plural form the language gives it (`1 minute`, `5 minutes`), `{n}` filled in.
+pub fn count(strings: &dyn Strings, msg: PluralMsg, n: i64) -> String {
+    let template = strings.plural_template(msg, strings.plural(n));
+    fill(template, &[("n", &n.to_string())])
+}
+
 /// `s` with its first letter upper-cased: titles, verdicts, "Also tracked" lines and meter rows,
 /// whose templates may start with `{meter}`, `{label}` or `{short_name}` (Appendix B: `{meter}`
 /// "capitalised at the start of a sentence").
@@ -1119,13 +645,48 @@ mod tests {
     }
 
     #[test]
-    fn every_message_has_a_unique_key_and_an_english_template() {
+    fn every_message_has_a_unique_key_and_a_text_in_every_language() {
         let mut keys: Vec<&str> = Msg::ALL.iter().map(|m| m.key()).collect();
+        keys.extend(PluralMsg::ALL.iter().map(|m| m.key()));
         let n = keys.len();
         keys.sort_unstable();
         keys.dedup();
         assert_eq!(keys.len(), n, "duplicate message keys");
-        assert!(Msg::ALL.iter().all(|m| !English.template(*m).is_empty()));
+        for l in Language::ALL {
+            let strings = l.strings();
+            for m in Msg::ALL {
+                assert!(!strings.template(*m).is_empty(), "{}: {}", l.tag(), m.key());
+            }
+            // Exactly the forms the language's rule picks.
+            for m in PluralMsg::ALL {
+                for form in Plural::ALL {
+                    let picked = l.plural_rule().forms().contains(&form);
+                    assert_eq!(
+                        !strings.plural_template(*m, form).is_empty(),
+                        picked,
+                        "{}: {}.{}",
+                        l.tag(),
+                        m.key(),
+                        form.name()
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn messages_find_their_own_texts() {
+        // The compile-time index lands on the message's own key in every table.
+        assert_eq!(English.template(Msg::ReasonOffline), "Offline");
+        assert_eq!(English.template(Msg::AboutClose), "Close");
+        assert_eq!(Swedish.template(Msg::MenuQuit), "Avsluta Lastdrop");
+        assert_eq!(Swedish.template(Msg::Today), "idag");
+        for m in Msg::ALL {
+            assert_eq!(KEYS[m.index()], m.key());
+        }
+        for m in PluralMsg::ALL {
+            assert_eq!(PLURAL_KEYS[m.index()], m.key());
+        }
     }
 
     #[test]
@@ -1145,47 +706,20 @@ mod tests {
         }
     }
 
-    /// The `{name}` placeholders of a template, sorted, each once.
-    fn placeholders(template: &str) -> Vec<&str> {
-        let mut names: Vec<&str> = template
-            .split('{')
-            .skip(1)
-            .filter_map(|part| part.split_once('}').map(|(name, _)| name))
-            .collect();
-        names.sort_unstable();
-        names.dedup();
-        names
-    }
-
     #[test]
-    fn every_message_has_a_swedish_template_with_the_english_placeholders() {
-        for m in Msg::ALL {
-            let sv = Swedish.template(*m);
-            assert!(!sv.is_empty(), "{}", m.key());
-            assert_eq!(
-                placeholders(sv),
-                placeholders(English.template(*m)),
-                "{}: {sv}",
-                m.key()
-            );
-        }
-    }
-
-    #[test]
-    fn swedish_keeps_the_shape_of_each_english_template() {
+    fn every_language_keeps_the_shape_of_each_english_template() {
         // Fragments joined to other text keep their leading space or separator, sentences
-        // their full stop, so a joined Swedish line reads as the English one does.
-        for m in Msg::ALL {
-            let (en, sv) = (English.template(*m), Swedish.template(*m));
-            assert_eq!(
-                en.starts_with(' '),
-                sv.starts_with(' '),
-                "{}: {sv:?}",
-                m.key()
-            );
-            assert_eq!(en.starts_with(", "), sv.starts_with(", "), "{}", m.key());
-            assert_eq!(en.ends_with('.'), sv.ends_with('.'), "{}: {sv:?}", m.key());
-            assert_eq!(en.ends_with('…'), sv.ends_with('…'), "{}: {sv:?}", m.key());
+        // their full stop, so a joined line reads in every language as the English one does.
+        for l in Language::ALL {
+            let strings = l.strings();
+            for m in Msg::ALL {
+                let (en, t) = (English.template(*m), strings.template(*m));
+                let what = format!("{}: {}: {t:?}", l.tag(), m.key());
+                assert_eq!(en.starts_with(' '), t.starts_with(' '), "{what}");
+                assert_eq!(en.starts_with(", "), t.starts_with(", "), "{what}");
+                assert_eq!(en.ends_with('.'), t.ends_with('.'), "{what}");
+                assert_eq!(en.ends_with('…'), t.ends_with('…'), "{what}");
+            }
         }
     }
 
@@ -1207,8 +741,11 @@ mod tests {
         assert_eq!(Language::from_tag("sv-SE"), Some(Language::Swedish));
         assert_eq!(Language::from_tag("SV"), Some(Language::Swedish));
         assert_eq!(Language::from_tag("sv-FI"), Some(Language::Swedish));
+        assert_eq!(Language::from_tag("sv_se"), Some(Language::Swedish));
         assert_eq!(Language::from_tag("en_GB"), Some(Language::English));
-        assert_eq!(Language::from_tag("de-DE"), None);
+        // `qaa` is a private-use language: no locale file will ever be named after it.
+        assert_eq!(Language::from_tag("qaa-DE"), None);
+        assert_eq!(Language::from_tag("s"), None);
         assert_eq!(Language::from_tag(""), None);
 
         assert_eq!(
@@ -1225,17 +762,19 @@ mod tests {
         );
         // A display language without a table falls through to the next one, then to English.
         assert_eq!(
-            Language::resolve(None, &ui(&["de-DE", "sv-SE"])),
+            Language::resolve(None, &ui(&["qaa-DE", "sv-SE"])),
             Language::Swedish
         );
-        assert_eq!(Language::resolve(None, &ui(&["de-DE"])), Language::English);
+        assert_eq!(Language::resolve(None, &ui(&["qaa-DE"])), Language::English);
         assert_eq!(Language::resolve(None, &[]), Language::English);
         // A newer build's language follows Windows.
         assert_eq!(
-            Language::resolve(Some("de"), &ui(&["sv-SE"])),
+            Language::resolve(Some("qaa"), &ui(&["sv-SE"])),
             Language::Swedish
         );
 
+        assert_eq!(Language::ALL[0], Language::English);
+        assert_eq!(Language::default(), Language::English);
         for l in Language::ALL {
             assert_eq!(l.strings().language(), l.tag());
             assert_eq!(Language::from_tag(l.tag()), Some(l));
@@ -1243,13 +782,13 @@ mod tests {
     }
 
     #[test]
-    fn swedish_plurals_are_one_and_other() {
+    fn counts_take_the_language_plural_form() {
         assert_eq!(Swedish.plural(1), Plural::One);
         assert_eq!(Swedish.plural(0), Plural::Other);
         assert_eq!(Swedish.plural(2), Plural::Other);
-        assert_eq!(
-            text(&Swedish, Msg::UnitMinuteOther, &[("n", "5")]),
-            "5 minuter"
-        );
+        assert_eq!(count(&Swedish, PluralMsg::UnitMinute, 1), "1 minut");
+        assert_eq!(count(&Swedish, PluralMsg::UnitMinute, 5), "5 minuter");
+        assert_eq!(count(&English, PluralMsg::UnitWeek, 1), "1 week");
+        assert_eq!(count(&English, PluralMsg::UnitWeek, 0), "0 weeks");
     }
 }

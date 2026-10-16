@@ -11,7 +11,7 @@ use jiff::{SignedDuration, Timestamp};
 
 use super::TextContext;
 use super::locale::{DayMonthOrder, LocaleFormat};
-use super::strings::{Msg, Plural, Strings, text};
+use super::strings::{Msg, PluralMsg, Strings, count, text};
 use crate::consts::{COUNTDOWN_HOURS_BELOW, COUNTDOWN_MAX_MIN, TIME_OF_DAY_MAX};
 use crate::stats::runway_minutes;
 
@@ -275,15 +275,6 @@ pub fn long_duration(d: SignedDuration, strings: &dyn Strings) -> String {
     text(strings, Msg::DurationDays, &[("d", &days)])
 }
 
-/// `n` units in words with the language's plural form.
-fn plural(n: i64, one: Msg, other: Msg, strings: &dyn Strings) -> String {
-    let msg = match strings.plural(n) {
-        Plural::One => one,
-        Plural::Other => other,
-    };
-    num(msg, n, strings)
-}
-
 /// A duration in words for UI Automation (`12 minutes`, `6 hours`, `9 days`): the largest
 /// whole unit, with the language's plural forms (R§11).
 ///
@@ -292,21 +283,11 @@ fn plural(n: i64, one: Msg, other: Msg, strings: &dyn Strings) -> String {
 pub fn spoken_duration(d: SignedDuration, strings: &dyn Strings) -> String {
     let mins = d.as_mins().max(1);
     if mins < MINS_PER_HOUR {
-        plural(mins, Msg::UnitMinuteOne, Msg::UnitMinuteOther, strings)
+        count(strings, PluralMsg::UnitMinute, mins)
     } else if mins < COUNTDOWN_HOURS_BELOW.as_mins() {
-        plural(
-            mins / MINS_PER_HOUR,
-            Msg::UnitHourOne,
-            Msg::UnitHourOther,
-            strings,
-        )
+        count(strings, PluralMsg::UnitHour, mins / MINS_PER_HOUR)
     } else {
-        plural(
-            mins / MINS_PER_DAY,
-            Msg::UnitDayOne,
-            Msg::UnitDayOther,
-            strings,
-        )
+        count(strings, PluralMsg::UnitDay, mins / MINS_PER_DAY)
     }
 }
 

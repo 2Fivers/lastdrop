@@ -46,6 +46,9 @@ windows-core = { version = "=0.62.2" }
 # Data
 serde = { version = "=1.0.229", features = ["derive"] }
 serde_json = "=1.0.152"
+# Build time only: core's build script reads the locale files (crates/core/locales) into its
+# string tables. Nothing of it reaches the binary.
+toml = { version = "=1.1.8", default-features = false, features = ["std", "serde", "parse"] }
 # Time. `core` only needs instants, durations and caller-supplied time zones; the binary adds
 # the system time zone and the bundled tzdb on Windows (crates/app/Cargo.toml).
 jiff = { version = "=0.2.38", default-features = false, features = ["std", "serde", "perf-inline"] }
