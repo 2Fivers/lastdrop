@@ -169,13 +169,18 @@ const MESHY_PATHS: [GlyphPath; 2] = [
     stroke("M3.45 5.85h5.1L6 10.4z", 1.0, false, true),
 ];
 
-/// The paths of a drawn provider glyph (R Appendix A), drawn in TextPrimary.
+/// The paths of a drawn provider glyph (R Appendix A), drawn in TextPrimary; none for the
+/// services shown with a monogram (`ProviderId::glyph`).
 pub const fn provider_paths(provider: ProviderId) -> &'static [GlyphPath] {
     match provider {
         ProviderId::Claude => &CLAUDE_PATHS,
         ProviderId::Codex => &CODEX_PATHS,
         ProviderId::Copilot => &COPILOT_PATHS,
         ProviderId::Meshy => &MESHY_PATHS,
+        ProviderId::Cursor
+        | ProviderId::Antigravity
+        | ProviderId::OpenCodeGo
+        | ProviderId::Grok => &[],
     }
 }
 

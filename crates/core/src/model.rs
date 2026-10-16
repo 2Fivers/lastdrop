@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 use crate::glyph::ProviderGlyph;
 use crate::secret::SecretString;
 
-/// A service Lastdrop reads (R§2 "Service"). M2 adds Cursor, Antigravity, … .
+/// A service Lastdrop reads (R§2 "Service").
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ProviderId {
@@ -23,25 +23,43 @@ pub enum ProviderId {
     Copilot,
     /// Meshy: a credit balance.
     Meshy,
+    /// Cursor: the plan's included usage per pool and on-demand spend, per billing cycle.
+    Cursor,
+    /// Google Antigravity: 5-hour and weekly quotas per model pool.
+    Antigravity,
+    /// OpenCode Go: 5-hour, weekly and monthly windows.
+    OpenCodeGo,
+    /// Grok (SuperGrok, Grok Build): the shared credit pool of the week or month, on-demand spend
+    /// and prepaid credit.
+    Grok,
 }
 
 impl ProviderId {
     /// Every provider, in the default service order (settings default, F§2.2).
-    pub const ALL: [ProviderId; 4] = [
+    pub const ALL: [ProviderId; 8] = [
         ProviderId::Claude,
         ProviderId::Codex,
         ProviderId::Copilot,
         ProviderId::Meshy,
+        ProviderId::Cursor,
+        ProviderId::Antigravity,
+        ProviderId::OpenCodeGo,
+        ProviderId::Grok,
     ];
 
     /// Stable lower-case id used in settings, history file names and credential names
-    /// (`claude`, `codex`, `copilot`, `meshy`). Never changes once shipped.
+    /// (`claude`, `codex`, `copilot`, `meshy`, `cursor`, `antigravity`, `opencode_go`, `grok`).
+    /// Never changes once shipped.
     pub const fn as_str(self) -> &'static str {
         match self {
             ProviderId::Claude => "claude",
             ProviderId::Codex => "codex",
             ProviderId::Copilot => "copilot",
             ProviderId::Meshy => "meshy",
+            ProviderId::Cursor => "cursor",
+            ProviderId::Antigravity => "antigravity",
+            ProviderId::OpenCodeGo => "opencode_go",
+            ProviderId::Grok => "grok",
         }
     }
 
@@ -58,25 +76,47 @@ impl ProviderId {
             ProviderId::Codex => "Codex",
             ProviderId::Copilot => "Copilot",
             ProviderId::Meshy => "Meshy",
+            ProviderId::Cursor => "Cursor",
+            ProviderId::Antigravity => "Antigravity",
+            ProviderId::OpenCodeGo => "OpenCode Go",
+            ProviderId::Grok => "Grok",
         }
     }
 
-    /// The service glyph (R§6.7, R Appendix A). Every M1 provider has a drawn glyph.
-    pub const fn glyph(self) -> ProviderGlyph {
-        ProviderGlyph::Drawn(self)
+    /// The service glyph (R§6.7): a drawing from R Appendix A, or a monogram (R§6.4) for the
+    /// services Appendix A has no drawing of. No two monograms share a letter.
+    pub fn glyph(self) -> ProviderGlyph {
+        match self {
+            ProviderId::Claude | ProviderId::Codex | ProviderId::Copilot | ProviderId::Meshy => {
+                ProviderGlyph::Drawn(self)
+            }
+            ProviderId::Cursor => ProviderGlyph::Monogram("C".to_owned()),
+            ProviderId::Antigravity => ProviderGlyph::Monogram("A".to_owned()),
+            ProviderId::OpenCodeGo => ProviderGlyph::Monogram("O".to_owned()),
+            ProviderId::Grok => ProviderGlyph::Monogram("G".to_owned()),
+        }
     }
 
     /// The vendor's own client that renews a sign-in, for Appendix B `card.sentence.signin`
     /// (`open {client} in this account`). `None` for services signed in with an API key that the
-    /// user enters in Lastdrop's settings (Meshy): their cards show the API-key message instead
-    /// (`flyout::MessageKind::ApiKey`).
+    /// user enters in Lastdrop's settings (Meshy, OpenCode Go): their cards show the API-key
+    /// message instead (`flyout::MessageKind::ApiKey`).
     pub const fn client_name(self) -> Option<&'static str> {
         match self {
             ProviderId::Claude => Some("Claude Code"),
             ProviderId::Codex => Some("Codex"),
             ProviderId::Copilot => Some("GitHub CLI"),
-            ProviderId::Meshy => None,
+            ProviderId::Cursor => Some("Cursor"),
+            ProviderId::Antigravity => Some("Antigravity"),
+            ProviderId::Grok => Some("Grok"),
+            ProviderId::Meshy | ProviderId::OpenCodeGo => None,
         }
+    }
+
+    /// The service is read with an API key the user stores in Lastdrop's settings (Credential
+    /// Manager, `Lastdrop:<provider>:<account>:api_key`).
+    pub const fn uses_api_key(self) -> bool {
+        matches!(self, ProviderId::Meshy | ProviderId::OpenCodeGo)
     }
 }
 
@@ -270,6 +310,18 @@ impl MeterId {
     pub const CHAT: &'static str = "chat";
     /// Copilot's code-completions quota (Copilot Free).
     pub const COMPLETIONS: &'static str = "completions";
+    /// A monthly window (OpenCode Go; Grok's monthly credit pool).
+    pub const MONTHLY: &'static str = "monthly";
+    /// Cursor's included usage of Auto and Cursor's own models.
+    pub const AUTO: &'static str = "auto";
+    /// Cursor's included usage of other models (the API pool).
+    pub const API: &'static str = "api";
+    /// Cursor's included usage when the plan reports one total.
+    pub const INCLUDED: &'static str = "included";
+    /// On-demand spend against its limit (Cursor, Grok).
+    pub const ON_DEMAND: &'static str = "on_demand";
+    /// Grok's prepaid credit (a balance).
+    pub const PREPAID: &'static str = "prepaid";
 
     /// The prefix of a per-model weekly window id ([`MeterId::weekly_model`]).
     const WEEKLY_MODEL_PREFIX: &'static str = "weekly:";
@@ -378,6 +430,53 @@ impl MeterNames {
 
 /// The start of a per-model weekly window's `name` ([`MeterNames::weekly_model`]).
 const WEEKLY_MODEL_NAME_PREFIX: &str = "Weekly · ";
+
+/// The ends of a pool window's `name` ([`MeterNames::pool_window`]).
+const POOL_FIVE_HOUR_SUFFIX: &str = " · 5-hour";
+/// See [`POOL_FIVE_HOUR_SUFFIX`].
+const POOL_WEEKLY_SUFFIX: &str = " · weekly";
+
+/// A window of a model pool (Antigravity's `Gemini Models`, …).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PoolWindow {
+    /// The 5-hour window.
+    FiveHour,
+    /// The weekly window.
+    Weekly,
+}
+
+impl MeterNames {
+    /// The names of a window of a model pool (Antigravity): `G5h` / `Gemini Models 5-hour` /
+    /// `Gemini Models · 5-hour` (English; the surfaces show
+    /// [`crate::grammar::meters::localized`]).
+    pub fn pool_window(pool: &str, window: PoolWindow) -> MeterNames {
+        let initial: String = pool
+            .chars()
+            .next()
+            .into_iter()
+            .flat_map(char::to_uppercase)
+            .collect();
+        let (label, short, suffix) = match window {
+            PoolWindow::FiveHour => ("5h", "5-hour", POOL_FIVE_HOUR_SUFFIX),
+            PoolWindow::Weekly => ("Wk", "weekly", POOL_WEEKLY_SUFFIX),
+        };
+        MeterNames {
+            short_label: format!("{initial}{label}"),
+            short_name: format!("{pool} {short}"),
+            name: format!("{pool}{suffix}"),
+        }
+    }
+
+    /// The pool and window of names built by [`MeterNames::pool_window`]; `None` for any other.
+    pub fn pool_of(&self) -> Option<(&str, PoolWindow)> {
+        if let Some(pool) = self.name.strip_suffix(POOL_FIVE_HOUR_SUFFIX) {
+            return Some((pool, PoolWindow::FiveHour));
+        }
+        self.name
+            .strip_suffix(POOL_WEEKLY_SUFFIX)
+            .map(|pool| (pool, PoolWindow::Weekly))
+    }
+}
 
 /// The kind of a meter definition (R§2 "Two kinds").
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -491,6 +590,43 @@ const MESHY_METERS: [MeterDef; 1] = [MeterDef {
     kind: MeterKind::Balance,
 }];
 
+const OPENCODE_GO_METERS: [MeterDef; 3] = [
+    MeterDef {
+        id: MeterId::FIVE_HOUR,
+        short_label: "5h",
+        short_name: "5-hour",
+        name: "5-hour session",
+        order: 0,
+        kind: MeterKind::Window {
+            window: FIVE_HOURS,
+            // The rolling window: unused, it reports its reset a whole window from now.
+            starts_on_use: true,
+        },
+    },
+    MeterDef {
+        id: MeterId::WEEKLY,
+        short_label: "Wk",
+        short_name: "weekly",
+        name: "Weekly",
+        order: 1,
+        kind: MeterKind::Window {
+            window: SEVEN_DAYS,
+            starts_on_use: false,
+        },
+    },
+    MeterDef {
+        id: MeterId::MONTHLY,
+        short_label: "Mo",
+        short_name: "monthly",
+        name: "Monthly",
+        order: 2,
+        kind: MeterKind::Window {
+            window: WindowLen::CalendarMonth,
+            starts_on_use: false,
+        },
+    },
+];
+
 /// The R§2 definitions of a service's always-present meters, in meter order (English names;
 /// the surfaces show them in the user's language, [`crate::grammar::meters::localized`]). Claude's
 /// per-model weekly windows come from readings (order 2, 3, … in the service's order). A Codex
@@ -505,6 +641,10 @@ pub const fn catalog(provider: ProviderId) -> &'static [MeterDef] {
         // (`lastdrop_providers::copilot::meter_names`).
         ProviderId::Copilot => &[],
         ProviderId::Meshy => &MESHY_METERS,
+        ProviderId::OpenCodeGo => &OPENCODE_GO_METERS,
+        // Which pools a Cursor plan reports, which period Grok's plan counts and which model
+        // pools Antigravity has depend on the account: their meters come from readings.
+        ProviderId::Cursor | ProviderId::Antigravity | ProviderId::Grok => &[],
     }
 }
 
@@ -647,6 +787,15 @@ pub enum SourceKind {
     CopilotApi,
     /// `GET https://api.meshy.ai/openapi/v1/balance`.
     MeshyApi,
+    /// `GET https://cursor.com/api/usage-summary` with the session Cursor keeps in `state.vscdb`.
+    CursorApi,
+    /// `agy -p /usage --output-format json` (the Antigravity CLI's print mode).
+    AntigravityCli,
+    /// `GET https://opencode.ai/zen/go/v1/usage` with the Go API key.
+    OpenCodeGoApi,
+    /// `GET https://cli-chat-proxy.grok.com/v1/billing?format=credits` with the Grok CLI's
+    /// sign-in.
+    GrokApi,
 }
 
 /// What the provider says about the reading it returns (ARCHITECTURE "Snapshot"). The

@@ -444,7 +444,7 @@ pub fn new_folder(
     let prefix = match provider {
         ProviderId::Claude => ".claude-",
         ProviderId::Codex => ".codex-",
-        ProviderId::Copilot | ProviderId::Meshy => return None,
+        _ => return None,
     };
     let base = format!("{prefix}{}", slug(name));
     let mut folder = home.join(&base);

@@ -17,6 +17,15 @@ fn non_empty_var(env: &dyn Env, name: &str) -> Option<PathBuf> {
     env.var(name).filter(|v| !v.is_empty()).map(PathBuf::from)
 }
 
+/// `%APPDATA%` (else the profile's `AppData\Roaming`), or Unavailable.
+fn roaming(env: &dyn Env) -> Result<PathBuf, FetchError> {
+    non_empty_var(env, "APPDATA")
+        .or_else(|| env.home_dir().map(|h| h.join("AppData").join("Roaming")))
+        .ok_or_else(|| FetchError::Unavailable {
+            detail: "no user profile folder".to_owned(),
+        })
+}
+
 /// The user's profile folder, or Unavailable.
 fn home(env: &dyn Env) -> Result<PathBuf, FetchError> {
     env.home_dir().ok_or_else(|| FetchError::Unavailable {
@@ -64,6 +73,36 @@ pub enum AccountSource {
         account: AccountKey,
         /// The API key's name in Credential Manager (`Lastdrop:meshy:<account>:api_key`).
         credential: CredentialName,
+    },
+    /// A Cursor account: the session the Cursor app keeps in its `state.vscdb`.
+    Cursor {
+        /// The account key from settings.
+        account: AccountKey,
+        /// `%APPDATA%\Cursor\User\globalStorage\state.vscdb` (read-only; it can be 1.6 GB).
+        state_db: PathBuf,
+    },
+    /// An Antigravity account: the `agy` CLI's own sign-in, which agy keeps and renews itself.
+    Antigravity {
+        /// The account key from settings.
+        account: AccountKey,
+    },
+    /// An OpenCode Go account: the Go API key stored in Lastdrop, else the one OpenCode keeps.
+    OpenCodeGo {
+        /// The account key from settings.
+        account: AccountKey,
+        /// The API key's name in Credential Manager (`Lastdrop:opencode_go:<account>:api_key`).
+        credential: CredentialName,
+        /// OpenCode's `auth.json` (`~\.local\share\opencode\auth.json`), whose `opencode-go`
+        /// entry holds the key when Lastdrop has none (read-only).
+        auth_file: PathBuf,
+    },
+    /// A Grok account: the Grok CLI's sign-in.
+    Grok {
+        /// The account key from settings.
+        account: AccountKey,
+        /// The Grok CLI's `auth.json`: `GROK_AUTH_PATH`, else `<GROK_HOME>\auth.json`, else
+        /// `~\.grok\auth.json` (read-only, never refreshed or rewritten).
+        auth_file: PathBuf,
     },
 }
 
@@ -171,6 +210,41 @@ impl AccountSource {
                     account: key,
                 })
             }
+            (ProviderId::Cursor, SourceSettings::Default) => Ok(AccountSource::Cursor {
+                account: key,
+                state_db: roaming(env)?.join(crate::cursor::STATE_DB),
+            }),
+            (ProviderId::Antigravity, SourceSettings::Default) => {
+                Ok(AccountSource::Antigravity { account: key })
+            }
+            (ProviderId::OpenCodeGo, SourceSettings::Default | SourceSettings::ApiKey { .. }) => {
+                let name = match &account.source {
+                    SourceSettings::ApiKey { name } if !name.is_empty() => name.clone(),
+                    _ => crate::meshy::API_KEY_NAME.to_owned(),
+                };
+                Ok(AccountSource::OpenCodeGo {
+                    credential: CredentialName {
+                        provider: ProviderId::OpenCodeGo,
+                        account: key.clone(),
+                        name,
+                    },
+                    account: key,
+                    auth_file: home(env)?.join(crate::opencode_go::AUTH_FILE),
+                })
+            }
+            (ProviderId::Grok, SourceSettings::Default) => {
+                let auth_file = match non_empty_var(env, crate::grok::AUTH_PATH_VAR) {
+                    Some(file) => file,
+                    None => match non_empty_var(env, crate::grok::HOME_VAR) {
+                        Some(dir) => dir.join(crate::grok::AUTH_FILE),
+                        None => home(env)?.join(".grok").join(crate::grok::AUTH_FILE),
+                    },
+                };
+                Ok(AccountSource::Grok {
+                    account: key,
+                    auth_file,
+                })
+            }
             _ => Err(FetchError::Unavailable {
                 detail: format!(
                     "the {} account's source is not a {} source",
@@ -188,6 +262,10 @@ impl AccountSource {
             AccountSource::Codex { .. } => ProviderId::Codex,
             AccountSource::Copilot { .. } => ProviderId::Copilot,
             AccountSource::Meshy { .. } => ProviderId::Meshy,
+            AccountSource::Cursor { .. } => ProviderId::Cursor,
+            AccountSource::Antigravity { .. } => ProviderId::Antigravity,
+            AccountSource::OpenCodeGo { .. } => ProviderId::OpenCodeGo,
+            AccountSource::Grok { .. } => ProviderId::Grok,
         }
     }
 
@@ -197,7 +275,7 @@ impl AccountSource {
         match self {
             AccountSource::Claude { config_dir, .. } => Some(config_dir),
             AccountSource::Codex { codex_home, .. } => Some(codex_home),
-            AccountSource::Copilot { .. } | AccountSource::Meshy { .. } => None,
+            _ => None,
         }
     }
 
@@ -207,7 +285,11 @@ impl AccountSource {
             AccountSource::Claude { account, .. }
             | AccountSource::Codex { account, .. }
             | AccountSource::Copilot { account, .. }
-            | AccountSource::Meshy { account, .. } => account,
+            | AccountSource::Meshy { account, .. }
+            | AccountSource::Cursor { account, .. }
+            | AccountSource::Antigravity { account }
+            | AccountSource::OpenCodeGo { account, .. }
+            | AccountSource::Grok { account, .. } => account,
         }
     }
 }

@@ -345,7 +345,8 @@ pub fn reuse_providers(
                     before.provider_options.claude == after.provider_options.claude
                 }
                 ProviderId::Codex => before.provider_options.codex == after.provider_options.codex,
-                ProviderId::Copilot | ProviderId::Meshy => true,
+                // No options of their own.
+                _ => true,
             };
             match existing.iter().find(|e| e.id() == p.id()) {
                 Some(kept) if unchanged => kept.clone(),
@@ -920,6 +921,26 @@ pub(crate) mod tests {
                     account: AccountKey::primary(),
                     name: "api_key".to_owned(),
                 },
+            },
+            ProviderId::Cursor => AccountSource::Cursor {
+                account: AccountKey::primary(),
+                state_db: home.join(r"AppData\Roaming\Cursor\User\globalStorage\state.vscdb"),
+            },
+            ProviderId::Antigravity => AccountSource::Antigravity {
+                account: AccountKey::primary(),
+            },
+            ProviderId::OpenCodeGo => AccountSource::OpenCodeGo {
+                account: AccountKey::primary(),
+                credential: CredentialName {
+                    provider: ProviderId::OpenCodeGo,
+                    account: AccountKey::primary(),
+                    name: "api_key".to_owned(),
+                },
+                auth_file: home.join(r".local\share\opencode\auth.json"),
+            },
+            ProviderId::Grok => AccountSource::Grok {
+                account: AccountKey::primary(),
+                auth_file: home.join(r".grok\auth.json"),
             },
         }
     }

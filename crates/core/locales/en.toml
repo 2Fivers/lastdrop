@@ -300,6 +300,34 @@ lowercase_names = true
 # A Copilot quota this build does not know; its `name` stays the id the service gave.
 "meter.monthly.label" = "Mo"
 "meter.monthly.short" = "monthly"
+"meter.monthly.name" = "Monthly"
+# Cursor's included usage: the pool of Auto and Cursor's own models, the pool of other models
+# (the API pool), or one total when the plan reports no pools.
+"meter.auto.label" = "Auto"
+"meter.auto.short" = "Auto"
+"meter.auto.name" = "Included · Auto and Cursor models"
+"meter.api.label" = "API"
+"meter.api.short" = "API"
+"meter.api.name" = "Included · other models"
+"meter.included.label" = "Incl"
+"meter.included.short" = "included usage"
+"meter.included.name" = "Included usage"
+# On-demand spend against its limit (Cursor, Grok).
+"meter.on_demand.label" = "Extra"
+"meter.on_demand.short" = "on-demand"
+"meter.on_demand.name" = "On-demand spend"
+# Grok's prepaid credit (a balance).
+"meter.prepaid.label" = "Pre"
+"meter.prepaid.short" = "prepaid credit"
+"meter.prepaid.name" = "Prepaid credit"
+# A window of one of Antigravity's model pools. `{group}`: the pool as Antigravity names it
+# (`Gemini Models`); `{initial}`: its first letter.
+"meter.group.five_hour.label" = "{initial}5h"
+"meter.group.five_hour.short" = "{group} 5-hour"
+"meter.group.five_hour.name" = "{group} · 5-hour"
+"meter.group.weekly.label" = "{initial}Wk"
+"meter.group.weekly.short" = "{group} weekly"
+"meter.group.weekly.name" = "{group} · weekly"
 
 # ---- Context menus (R§10, F§9)
 "menu.refresh" = "Refresh now"
@@ -322,14 +350,15 @@ lowercase_names = true
 "settings.title" = "Lastdrop settings"
 "settings.heading" = "Settings"
 "settings.services" = "Services"
-"settings.services.hint" = "Claude and Codex are read from their own files on this PC, Copilot with the GitHub CLI's sign-in (gh auth login). Lastdrop never signs in for you and never changes their sign-in."
-"settings.key" = "Meshy API key"
-"settings.key.paste" = "Paste your Meshy API key"
+"settings.services.hint" = "Claude and Codex are read from their own files on this PC, Copilot with the GitHub CLI's sign-in (gh auth login), Cursor with the Cursor app's, Grok with the Grok CLI's (grok login) and Antigravity through its CLI (agy). Lastdrop never signs in for you and never changes their sign-in."
+"settings.key" = "API keys"
+# `{service}`: Meshy or OpenCode Go.
+"settings.key.paste" = "Paste your {service} API key"
 "settings.key.replace" = "A key is stored. Paste a new one to replace it"
 "settings.key.save" = "Save key"
 "settings.key.remove" = "Remove"
-"settings.key.hint" = "Stored in Windows Credential Manager, never in a file. Lastdrop only reads your credit balance."
-"settings.key.saved" = "Key saved. Apply to start reading Meshy."
+"settings.key.hint" = "Stored in Windows Credential Manager, never in a file. Lastdrop only reads your usage. Without a key here, OpenCode Go uses the one OpenCode itself keeps."
+"settings.key.saved" = "Key saved. Apply to start reading {service}."
 "settings.key.notsaved" = "Couldn't store the key: {detail}"
 "settings.key.removed" = "Key removed."
 "settings.key.notremoved" = "Couldn't remove the key: {detail}"

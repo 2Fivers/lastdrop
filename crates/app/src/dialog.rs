@@ -102,15 +102,16 @@ impl DialogKind {
 pub struct Changes {
     /// `settings.json` was written (Apply): re-read and apply it.
     pub settings: bool,
-    /// The Meshy API key was saved or removed: lift Meshy's sign-in stop and read again.
-    pub meshy_key: bool,
+    /// An API key (Meshy, OpenCode Go) was saved or removed: lift those services' sign-in stop and
+    /// read them again.
+    pub api_key: bool,
 }
 
 impl Changes {
     /// The flag of [`Changes::settings`].
     const SETTINGS: usize = 1;
-    /// The flag of [`Changes::meshy_key`].
-    const MESHY_KEY: usize = 2;
+    /// The flag of [`Changes::api_key`] (the bit Meshy's key used before; same meaning).
+    const API_KEY: usize = 2;
 
     /// The flags as a `WPARAM`.
     pub fn to_wparam(self) -> usize {
@@ -118,8 +119,8 @@ impl Changes {
         if self.settings {
             flags |= Changes::SETTINGS;
         }
-        if self.meshy_key {
-            flags |= Changes::MESHY_KEY;
+        if self.api_key {
+            flags |= Changes::API_KEY;
         }
         flags
     }
@@ -128,7 +129,7 @@ impl Changes {
     pub fn from_wparam(wparam: usize) -> Changes {
         Changes {
             settings: wparam & Changes::SETTINGS != 0,
-            meshy_key: wparam & Changes::MESHY_KEY != 0,
+            api_key: wparam & Changes::API_KEY != 0,
         }
     }
 }
@@ -397,11 +398,8 @@ mod tests {
     #[test]
     fn change_flags_round_trip_and_ignore_unknown_bits() {
         for settings in [false, true] {
-            for meshy_key in [false, true] {
-                let changes = Changes {
-                    settings,
-                    meshy_key,
-                };
+            for api_key in [false, true] {
+                let changes = Changes { settings, api_key };
                 assert_eq!(Changes::from_wparam(changes.to_wparam()), changes);
             }
         }
@@ -410,14 +408,14 @@ mod tests {
             Changes::from_wparam(1 | 8),
             Changes {
                 settings: true,
-                meshy_key: false
+                api_key: false
             }
         );
         assert_eq!(
             Changes::from_wparam(2),
             Changes {
                 settings: false,
-                meshy_key: true
+                api_key: true
             }
         );
     }

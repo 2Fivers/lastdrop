@@ -7,7 +7,7 @@
 //! [`localize`]. A meter this build has no names for keeps the ones its provider gave.
 
 use super::strings::{Msg, Strings, text};
-use crate::model::{MeterId, MeterNames, ProviderId};
+use crate::model::{MeterId, MeterNames, PoolWindow, ProviderId};
 use crate::stats::Evaluation;
 
 /// The `short_label`, `short_name` and `name` messages of a meter.
@@ -49,6 +49,38 @@ const COMPLETIONS: NameMsgs = (
     Msg::MeterCompletionsLabel,
     Msg::MeterCompletionsShort,
     Msg::MeterCompletionsName,
+);
+const MONTHLY: NameMsgs = (
+    Msg::MeterMonthlyLabel,
+    Msg::MeterMonthlyShort,
+    Msg::MeterMonthlyName,
+);
+const AUTO: NameMsgs = (Msg::MeterAutoLabel, Msg::MeterAutoShort, Msg::MeterAutoName);
+const API: NameMsgs = (Msg::MeterApiLabel, Msg::MeterApiShort, Msg::MeterApiName);
+const INCLUDED: NameMsgs = (
+    Msg::MeterIncludedLabel,
+    Msg::MeterIncludedShort,
+    Msg::MeterIncludedName,
+);
+const ON_DEMAND: NameMsgs = (
+    Msg::MeterOnDemandLabel,
+    Msg::MeterOnDemandShort,
+    Msg::MeterOnDemandName,
+);
+const PREPAID: NameMsgs = (
+    Msg::MeterPrepaidLabel,
+    Msg::MeterPrepaidShort,
+    Msg::MeterPrepaidName,
+);
+const POOL_FIVE_HOUR: NameMsgs = (
+    Msg::MeterGroupFiveHourLabel,
+    Msg::MeterGroupFiveHourShort,
+    Msg::MeterGroupFiveHourName,
+);
+const POOL_WEEKLY: NameMsgs = (
+    Msg::MeterGroupWeeklyLabel,
+    Msg::MeterGroupWeeklyShort,
+    Msg::MeterGroupWeeklyName,
 );
 
 /// The three names from their messages, each filled with `args`.
@@ -111,6 +143,30 @@ pub fn localized(
         },
         (ProviderId::Codex, _) => match id.window_minutes() {
             Some(minutes) => length_names(minutes, strings),
+            None => names.clone(),
+        },
+        (ProviderId::OpenCodeGo, MeterId::FIVE_HOUR) => fixed(FIVE_HOUR),
+        (ProviderId::OpenCodeGo | ProviderId::Grok, MeterId::WEEKLY) => fixed(WEEKLY),
+        (ProviderId::OpenCodeGo | ProviderId::Grok, MeterId::MONTHLY) => fixed(MONTHLY),
+        (ProviderId::Cursor, MeterId::AUTO) => fixed(AUTO),
+        (ProviderId::Cursor, MeterId::API) => fixed(API),
+        (ProviderId::Cursor, MeterId::INCLUDED) => fixed(INCLUDED),
+        (ProviderId::Cursor | ProviderId::Grok, MeterId::ON_DEMAND) => fixed(ON_DEMAND),
+        (ProviderId::Grok, MeterId::PREPAID) => fixed(PREPAID),
+        (ProviderId::Antigravity, _) => match names.pool_of() {
+            Some((pool, window)) => {
+                let initial: String = pool
+                    .chars()
+                    .next()
+                    .into_iter()
+                    .flat_map(char::to_uppercase)
+                    .collect();
+                let msgs = match window {
+                    PoolWindow::FiveHour => POOL_FIVE_HOUR,
+                    PoolWindow::Weekly => POOL_WEEKLY,
+                };
+                names_of(strings, msgs, &[("group", pool), ("initial", &initial)])
+            }
             None => names.clone(),
         },
         _ => names.clone(),

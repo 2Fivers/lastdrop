@@ -3,3 +3,4 @@
 *.ico binary
 *.exe binary
 *.br binary
+*.vscdb binary
