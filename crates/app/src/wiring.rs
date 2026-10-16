@@ -90,7 +90,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
 use crate::dialog::{self, Changes, DialogKind};
 use crate::history::HistoryStore;
 use crate::persist::{LoadOutcome, Paths};
-use crate::scheduler::{Job, JobResult, Scheduler, WorkerIo};
+use crate::scheduler::{IdentityRead, Job, JobResult, Scheduler, WorkerIo};
 use crate::state::AppState;
 use crate::writer::Writer;
 use crate::{AppError, Args, bench, persist, ui};
@@ -105,6 +105,8 @@ pub struct Startup {
     pub paths: Paths,
     /// Loaded settings.
     pub settings: Settings,
+    /// There was no settings file: the first run (accounts-spec §6).
+    pub first_run: bool,
 }
 
 thread_local! {
@@ -185,6 +187,7 @@ pub fn run(startup: Startup) -> Result<(), AppError> {
         guard,
         paths,
         settings,
+        first_run,
     } = startup;
     let bench = args
         .bench
@@ -333,6 +336,13 @@ pub fn run(startup: Startup) -> Result<(), AppError> {
     rebuild(&app, Timestamp::now());
     replan(&app);
     arm_minute_tick(&app);
+    // The first run found more Claude Code or Codex folders than the default ones: the accounts
+    // section lists them, and none is read before the user adds it (accounts-spec §6).
+    if first_run && open_on_start && extra_folders_found() {
+        // Written once, so the next start is not a first run and the window does not come back.
+        save_settings(&app);
+        open_dialog(&app, DialogKind::SettingsAccounts);
+    }
     if let Some(after) = args.smoke {
         slint::Timer::single_shot(after, || {
             log::info!("smoke run finished");
@@ -348,6 +358,20 @@ pub fn run(startup: Startup) -> Result<(), AppError> {
 
     shutdown();
     Ok(())
+}
+
+/// Whether Claude Code or Codex has folders on this PC besides its default one (a listing of the
+/// profile folder and a few `metadata` calls, start-up only).
+fn extra_folders_found() -> bool {
+    crate::settings_accounts::SERVICES.iter().any(|p| {
+        lastdrop_providers::discover::candidates(
+            *p,
+            &lastdrop_providers::real::RealEnv,
+            &lastdrop_providers::real::RealFs,
+        )
+        .iter()
+        .any(|c| c.source != lastdrop_core::settings::SourceSettings::Default)
+    })
 }
 
 /// The orderly shutdown after the event loop: windows hidden, hotkey unregistered, tray icon
@@ -834,6 +858,7 @@ pub fn replan(app: &App) {
                     account: source.source.clone(),
                     manual: false,
                     probe: None,
+                    identity: crate::state::identity_read_for(source, now),
                 });
             }
         }
@@ -846,6 +871,20 @@ pub fn replan(app: &App) {
                     account: source.source.clone(),
                     manual: false,
                     probe: source.refresh.auth_stopped.clone(),
+                    identity: crate::state::identity_read_for(source, now),
+                });
+            }
+        }
+        for key in &plan.identity_checks {
+            if let Some(source) = st.sources.get_mut(key) {
+                source.refresh.in_flight = true;
+                jobs.push(Job {
+                    source: key.clone(),
+                    provider: source.provider.clone(),
+                    account: source.source.clone(),
+                    manual: false,
+                    probe: None,
+                    identity: IdentityRead::Only,
                 });
             }
         }
@@ -878,7 +917,10 @@ pub fn refresh_now(app: &App, only: Option<&SourceKey>) {
             if only.is_some_and(|o| o != key) {
                 continue;
             }
-            if !manual_allowed(&source.refresh, now, source.provider.min_interval()) {
+            // A duplicate is read through the account it duplicates (accounts-spec §3).
+            if source.duplicate_of.is_some()
+                || !manual_allowed(&source.refresh, now, source.provider.min_interval())
+            {
                 continue;
             }
             source.refresh.in_flight = true;
@@ -888,6 +930,7 @@ pub fn refresh_now(app: &App, only: Option<&SourceKey>) {
                 account: source.source.clone(),
                 manual: true,
                 probe: None,
+                identity: crate::state::identity_read_for(source, now),
             });
         }
         if !jobs.is_empty() {

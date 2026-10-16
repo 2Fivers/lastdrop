@@ -9,6 +9,7 @@ use jiff::{SignedDuration, Span, Timestamp};
 use serde::{Deserialize, Serialize};
 
 use crate::glyph::ProviderGlyph;
+use crate::secret::SecretString;
 
 /// A service Lastdrop reads (R§2 "Service"). M2 adds Cursor, Antigravity, … .
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
@@ -79,19 +80,140 @@ impl ProviderId {
     }
 }
 
-/// Identifies one account of one service. In M1 every service has exactly one account,
-/// [`AccountKey::primary`]; M2 keys accounts by who is signed in (ROADMAP "Multiple accounts").
+/// Identifies one account entry (one source, accounts-spec §1) of one service: the default
+/// folder is [`AccountKey::primary`], every folder added later `f-` and 8 hex digits of its path's
+/// hash ([`AccountKey::for_folder`]). Keys never change, so history, pins and notifications follow
+/// the folder entry (accounts-spec §7).
 ///
 /// Privacy: the key appears in history file names, settings and logs, so it is never an
-/// e-mail address, account id or token; M2 derives it from an alias or a hash.
+/// e-mail address, account id or token.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct AccountKey(pub String);
 
 impl AccountKey {
-    /// The key of the single account per service in M1: `"default"`.
+    /// The key of a service's default folder (and of the single account of Copilot and Meshy):
+    /// `"default"`.
     pub fn primary() -> AccountKey {
         AccountKey("default".to_owned())
+    }
+
+    /// The key of a folder added as an account (accounts-spec §7): `f-` and the first 8 hex
+    /// digits of [`fnv1a64`] over the folder's path in lower case, then `-2`, `-3` … until it is
+    /// not one of `taken`.
+    pub fn for_folder(path: &str, taken: &[AccountKey]) -> AccountKey {
+        let lower = path.to_lowercase();
+        let hash = format!("{:016x}", fnv1a64(&[lower.as_str()]));
+        let base = format!("f-{}", &hash[..8]);
+        let mut key = AccountKey(base.clone());
+        let mut n = 2;
+        while taken.contains(&key) {
+            key = AccountKey(format!("{base}-{n}"));
+            n += 1;
+        }
+        key
+    }
+}
+
+/// FNV-1a, 64 bits, over `parts` joined by `\n` (accounts-spec §2 "Hash"): stable across builds
+/// and machines, unlike `std`'s hashers.
+pub fn fnv1a64(parts: &[&str]) -> u64 {
+    const OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
+    const PRIME: u64 = 0x0000_0100_0000_01b3;
+    let mut hash = OFFSET;
+    for (i, part) in parts.iter().enumerate() {
+        if i > 0 {
+            hash ^= u64::from(b'\n');
+            hash = hash.wrapping_mul(PRIME);
+        }
+        for byte in part.bytes() {
+            hash ^= u64::from(byte);
+            hash = hash.wrapping_mul(PRIME);
+        }
+    }
+    hash
+}
+
+/// Who is signed in to a source, as 16 lowercase hex digits of [`fnv1a64`] over what names the
+/// account (accounts-spec §1–§2). The only form of the account Lastdrop keeps (`state.json`); it is
+/// never shown, and its `Debug` form hides it so it never reaches a log.
+#[derive(Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(try_from = "String", into = "String")]
+pub struct AccountIdentity(String);
+
+impl AccountIdentity {
+    /// The identity named by `parts` (the service's id first: `["claude", org, account]`).
+    pub fn of(parts: &[&str]) -> AccountIdentity {
+        AccountIdentity(format!("{:016x}", fnv1a64(parts)))
+    }
+
+    /// The hex digits.
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl TryFrom<String> for AccountIdentity {
+    type Error = String;
+
+    /// Exactly 16 lowercase hex digits, as [`AccountIdentity::of`] writes them.
+    fn try_from(value: String) -> Result<AccountIdentity, String> {
+        let valid = value.len() == 16
+            && value
+                .bytes()
+                .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b));
+        if valid {
+            Ok(AccountIdentity(value))
+        } else {
+            Err("not an account identity".to_owned())
+        }
+    }
+}
+
+impl From<AccountIdentity> for String {
+    fn from(identity: AccountIdentity) -> String {
+        identity.0
+    }
+}
+
+impl std::fmt::Debug for AccountIdentity {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("AccountIdentity([hidden])")
+    }
+}
+
+/// What a source's own files say about who is signed in (accounts-spec §2).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Identity {
+    /// The files name an account.
+    SignedIn {
+        /// The account.
+        id: AccountIdentity,
+        /// The address it is signed in with, when the files give one; shown only as
+        /// accounts-spec §4 says.
+        email: Option<SecretString>,
+    },
+    /// The files say nobody is signed in.
+    SignedOut,
+    /// The files cannot tell: missing, unreadable, or a layout Lastdrop does not know.
+    Unknown,
+}
+
+impl Identity {
+    /// The account when one is signed in.
+    pub fn id(&self) -> Option<&AccountIdentity> {
+        match self {
+            Identity::SignedIn { id, .. } => Some(id),
+            Identity::SignedOut | Identity::Unknown => None,
+        }
+    }
+
+    /// The e-mail address when one is signed in and the files give it.
+    pub fn email(&self) -> Option<&SecretString> {
+        match self {
+            Identity::SignedIn { email, .. } => email.as_ref(),
+            Identity::SignedOut | Identity::Unknown => None,
+        }
     }
 }
 
@@ -109,16 +231,22 @@ pub struct AccountRef {
     /// Plan as the service names it (`Max`, `Pro`), for the plan badge (F§4.2) and the hover
     /// card's service row (R§8.2). `None` when unknown: the badge is omitted.
     pub plan: Option<String>,
+    /// What names the account when it has no alias and its service shows two or more accounts
+    /// (accounts-spec §4): the e-mail address, or `Account 2`. Set by the app on each evaluation;
+    /// a secret because it can be an e-mail address, and never written to a file.
+    #[serde(skip)]
+    pub label: Option<SecretString>,
 }
 
 impl AccountRef {
-    /// The M1 account: [`AccountKey::primary`], no alias, no tag, no plan.
+    /// The default account: [`AccountKey::primary`], no alias, no tag, no plan, no label.
     pub fn primary() -> AccountRef {
         AccountRef {
             key: AccountKey::primary(),
             alias: None,
             tag: None,
             plan: None,
+            label: None,
         }
     }
 }
@@ -625,5 +753,59 @@ mod tests {
             MeterNames::weekly_model("Fable"),
             MeterNames::new("Fable", "Fable weekly", "Weekly · Fable")
         );
+    }
+
+    #[test]
+    fn fnv1a64_matches_the_reference_vectors() {
+        use super::fnv1a64;
+        // The FNV reference values (draft-eastlake-fnv): the offset basis, "a" and "foobar".
+        assert_eq!(fnv1a64(&[""]), 0xcbf2_9ce4_8422_2325);
+        assert_eq!(fnv1a64(&["a"]), 0xaf63_dc4c_8601_ec8c);
+        assert_eq!(fnv1a64(&["foobar"]), 0x8594_4171_f739_67e8);
+        // Parts are joined by a newline.
+        assert_eq!(fnv1a64(&["foo", "bar"]), fnv1a64(&["foo\nbar"]));
+        assert_ne!(fnv1a64(&["foo", "bar"]), fnv1a64(&["foobar"]));
+    }
+
+    #[test]
+    fn identities_are_sixteen_hex_digits_and_never_print() {
+        use super::AccountIdentity;
+        let id = AccountIdentity::of(&["claude", "org", "account"]);
+        assert_eq!(id.as_str().len(), 16);
+        assert_eq!(id, AccountIdentity::of(&["claude", "org", "account"]));
+        assert_ne!(id, AccountIdentity::of(&["codex", "org", "account"]));
+        assert_eq!(format!("{id:?}"), "AccountIdentity([hidden])");
+        let json = serde_json::to_string(&id).expect("serialize");
+        let back: AccountIdentity = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(back, id);
+        for bad in [
+            "\"\"",
+            "\"ABCDEF0123456789\"",
+            "\"0123\"",
+            "\"0123456789abcdefg\"",
+            "7",
+        ] {
+            assert!(
+                serde_json::from_str::<AccountIdentity>(bad).is_err(),
+                "{bad}"
+            );
+        }
+    }
+
+    #[test]
+    fn folder_keys_are_stable_and_never_clash() {
+        use super::AccountKey;
+        let key = AccountKey::for_folder(r"C:\Users\tester\.claude-work", &[]);
+        assert!(key.0.starts_with("f-") && key.0.len() == 10, "{}", key.0);
+        assert_eq!(
+            AccountKey::for_folder(r"c:\users\TESTER\.claude-work", &[]),
+            key,
+            "case does not matter, as on Windows"
+        );
+        let second =
+            AccountKey::for_folder(r"C:\Users\tester\.claude-work", std::slice::from_ref(&key));
+        assert_eq!(second.0, format!("{}-2", key.0));
+        let third = AccountKey::for_folder(r"C:\Users\tester\.claude-work", &[key.clone(), second]);
+        assert_eq!(third.0, format!("{}-3", key.0));
     }
 }

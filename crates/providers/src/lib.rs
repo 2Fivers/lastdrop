@@ -10,6 +10,8 @@
 //! - [`FetchError`]: why a fetch failed, classified for freshness (R§3.8) and back-off.
 //! - [`claude`], [`codex`], [`meshy`]: the M1 services, sources per the ARCHITECTURE table;
 //!   [`copilot`] (M2).
+//! - [`identity`]: who is signed in to a source; [`discover`]: the config folders on this PC
+//!   (accounts-spec §2, §6).
 //!
 //! Rules for every provider (ARCHITECTURE "Rules for every provider"):
 //! - **Never write, refresh or copy another tool's credentials.** Read, use in memory, drop.
@@ -34,9 +36,11 @@ pub mod account;
 pub mod claude;
 pub mod codex;
 pub mod copilot;
+pub mod discover;
 pub mod error;
 pub mod fakes;
 pub mod fingerprint;
+pub mod identity;
 pub mod io;
 pub mod meshy;
 pub mod real;
@@ -45,7 +49,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use jiff::Timestamp;
-use lastdrop_core::model::{ProviderId, Snapshot};
+use lastdrop_core::model::{Identity, ProviderId, Snapshot};
 use lastdrop_core::refresh::CredentialFingerprint;
 use lastdrop_core::settings::Settings;
 
@@ -105,6 +109,13 @@ pub trait Provider: Send + Sync {
     /// "Enter on a card"). `None` when there is none.
     fn usage_page(&self) -> Option<&'static str> {
         None
+    }
+
+    /// Who is signed in to the account's source (accounts-spec §2), from its own files, read-only
+    /// ([`identity::read`]). Cheap enough for a refresh worker; the app reads it on a source's
+    /// first job, after its credential changed, and at most every 30 minutes otherwise.
+    fn identity(&self, ctx: &FetchContext<'_>, account: &AccountSource) -> Identity {
+        identity::read(ctx.fs, account)
     }
 }
 

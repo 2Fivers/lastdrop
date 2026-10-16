@@ -17,7 +17,7 @@ use crate::grammar::numbers::{amount, balance_duration_words, percent};
 use crate::grammar::strings::{capitalise, text};
 use crate::grammar::time::{card_time, long_duration, shown_duration};
 use crate::grammar::{Msg, TextContext};
-use crate::model::MeterKey;
+use crate::model::{MeterKey, SourceKey};
 use crate::readout::hovercard::before_reset;
 use crate::settings::NotificationSettings;
 use crate::stats::{
@@ -95,6 +95,12 @@ pub enum Announced {
 /// What was announced, per meter. Owned by the app's state (main thread) and saved in its state
 /// file, so a restart repeats nothing (N§1).
 pub type NotifyMemory = BTreeMap<MeterKey, Announced>;
+
+/// Forgets what was announced for one source's meters: its folder holds another account now, whose
+/// levels are announced afresh (accounts-spec §5).
+pub fn forget_source(memory: &mut NotifyMemory, source: &SourceKey) {
+    memory.retain(|k, _| !(k.provider == source.provider && k.account == source.account));
+}
 
 /// The notices `eval` raises that `memory` has not announced yet, most important first (N§1,
 /// N§3), and `memory` updated with them. Nothing when notifications are off (the memory is left

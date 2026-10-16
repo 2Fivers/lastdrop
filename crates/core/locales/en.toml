@@ -385,6 +385,36 @@ lowercase_names = true
 "settings.saved.neither" = "Saved, except the shortcut and start with Windows."
 "settings.notsaved" = "Couldn't save the settings: {detail}"
 
+# ---- Accounts (accounts-spec §4, §7)
+# `{n}`: the account's place among its service's shown accounts, from 1.
+"account.n" = "Account {n}"
+"settings.accounts" = "Accounts"
+"settings.accounts.hint" = "Each Claude Code or Codex folder can be signed in to an account of its own. Lastdrop reads each folder's sign-in and never signs in for you."
+# `{email}`: the address the folder is signed in with.
+"settings.accounts.signedin" = "Signed in as {email}"
+"settings.accounts.signedin.hidden" = "Signed in"
+"settings.accounts.signedout" = "Not signed in"
+"settings.accounts.unknown" = "Can't tell who is signed in"
+# `{name}`: the name of the account listed first (accounts-spec §4).
+"settings.accounts.same" = "Same account as {name}, shown once"
+"settings.accounts.alias" = "Alias"
+"settings.accounts.alias.none" = "No alias"
+"settings.accounts.remove" = "Remove"
+"settings.accounts.found" = "Found on this PC"
+"settings.accounts.add" = "Add"
+"settings.accounts.addfolder" = "Add folder…"
+# The folder picker's title. `{client}`: Claude Code or Codex.
+"settings.accounts.picker" = "Choose a {client} folder"
+"settings.accounts.new" = "New account"
+"settings.accounts.new.name" = "Name, for example Work"
+"settings.accounts.new.create" = "Create and sign in"
+"settings.accounts.added" = "Added. Apply to start reading it."
+"settings.accounts.already" = "That folder is already one of the accounts."
+"settings.accounts.created" = "Sign in with {client} in the terminal that opened, then Apply."
+"settings.accounts.notcreated" = "Couldn't create the folder: {detail}"
+"settings.accounts.nosignin" = "Added, but the terminal for {client}'s sign-in didn't open: {detail}"
+"settings.privacy.hide" = "Hide personal info: show Account 1, Account 2 instead of e-mail addresses"
+
 # ---- About window (R§10 "About Lastdrop")
 "about.title" = "About Lastdrop"
 "about.heading" = "Lastdrop {version}"

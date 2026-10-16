@@ -18,7 +18,8 @@
 //! - [`backdrop`]: DWM backdrop, corners, dark mode, tool-window and no-activate show/hide.
 //! - [`autostart`], [`credentials`], [`single_instance`], [`locale`], [`network`], [`hotkey`]
 //!   (optional global hotkey, R§10), [`shell`] (usage page in the browser, vendor sign-in in a
-//!   console, F§4.3, F§9), [`idle`] (time since the last input, for the adaptive refresh).
+//!   console, F§4.3, F§9), [`idle`] (time since the last input, for the adaptive refresh),
+//!   [`folder_picker`] (the settings window's Add folder…, accounts-spec §7).
 //!
 //! # Threading rules (ARCHITECTURE "Threads")
 //!
@@ -56,6 +57,7 @@ pub mod autostart;
 pub mod backdrop;
 pub mod credentials;
 pub mod flyout_pos;
+pub mod folder_picker;
 pub mod geom;
 pub mod hotkey;
 pub mod idle;

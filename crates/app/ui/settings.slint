@@ -21,12 +21,48 @@ export struct MeterChoice {
     pinned: bool,
 }
 
+// One account of Claude Code or Codex (accounts-spec §7): its name (alias, e-mail or
+// `Account 2`), its folder, who is signed in there, its alias as typed, and whether it may be
+// removed (not the last one of its service).
+export struct AccountRow {
+    name: string,
+    folder: string,
+    status: string,
+    alias: string,
+    removable: bool,
+}
+
+// A folder found on this PC that is not an account yet (accounts-spec §6).
+export struct FoundFolder {
+    folder: string,
+    status: string,
+}
+
+// The accounts of one service, with its folders found on this PC.
+export struct AccountBlock {
+    title: string,
+    accounts: [AccountRow],
+    found: [FoundFolder],
+}
+
 // The window's fixed texts (`settings.*` strings), from Rust.
 export struct SettingsTexts {
     title: string,
     heading: string,
     services: string,
     services-hint: string,
+    accounts: string,
+    accounts-hint: string,
+    accounts-alias: string,
+    accounts-alias-none: string,
+    accounts-remove: string,
+    accounts-found: string,
+    accounts-add: string,
+    accounts-add-folder: string,
+    accounts-new: string,
+    accounts-new-name: string,
+    accounts-new-create: string,
+    privacy-hide: string,
     key: string,
     key-paste: string,
     key-replace: string,
@@ -90,6 +126,10 @@ export component SettingsWindow inherits Window {
 
     in property <SettingsTexts> texts;
     in-out property <[ProviderRow]> providers;
+    // Claude Code's and Codex's accounts (accounts-spec §7), one block per service.
+    in property <[AccountBlock]> account-blocks;
+    // Hide personal info (accounts-spec §4); Rust renames the accounts when it is toggled.
+    in property <bool> hide-personal-info;
     // Refresh interval: index into interval-choices ("Manual", "1 min", …), localized by Rust.
     in property <[string]> interval-choices;
     in-out property <int> interval-index;
@@ -130,6 +170,14 @@ export component SettingsWindow inherits Window {
     in property <string> status-text;
 
     callback provider-toggled(int, bool);
+    // Accounts: (block, row) of an account or a found folder; a block for the folder picker and
+    // for a new account with its name.
+    callback account-alias-edited(int, int, string);
+    callback account-removed(int, int);
+    callback found-added(int, int);
+    callback add-folder(int);
+    callback new-account(int, string);
+    callback privacy-toggled(bool);
     callback meter-shown-toggled(int, bool);
     callback meter-pinned-toggled(int, bool);
     callback set-meshy-key(string);
@@ -141,6 +189,11 @@ export component SettingsWindow inherits Window {
     // Scrolls the readout section into view (focus-pins).
     public function show-pins() {
         sv.content-y = -readout-section.y;
+    }
+
+    // Scrolls the accounts section into view (first run, accounts-spec §6).
+    public function show-accounts() {
+        sv.content-y = -accounts-section.y;
     }
 
     VerticalLayout {
@@ -175,6 +228,142 @@ export component SettingsWindow inherits Window {
                     }
                     Hint {
                         text: root.texts.services-hint;
+                    }
+                }
+
+                // Accounts of Claude Code and Codex (accounts-spec §7).
+                accounts-section := VerticalLayout {
+                    spacing: 8px;
+                    SectionTitle {
+                        text: root.texts.accounts;
+                    }
+                    Hint {
+                        text: root.texts.accounts-hint;
+                    }
+                    for block[b] in root.account-blocks: VerticalLayout {
+                        spacing: 6px;
+                        padding-top: 4px;
+                        Text {
+                            text: block.title;
+                            font-weight: 600;
+                            color: Palette.foreground;
+                        }
+                        for account[a] in block.accounts: Rectangle {
+                            border-radius: 4px;
+                            background: Palette.alternate-background;
+                            VerticalLayout {
+                                padding: 8px;
+                                spacing: 4px;
+                                HorizontalLayout {
+                                    spacing: 8px;
+                                    VerticalLayout {
+                                        horizontal-stretch: 1;
+                                        spacing: 2px;
+                                        Text {
+                                            text: account.name;
+                                            color: Palette.foreground;
+                                            overflow: elide;
+                                        }
+                                        Hint {
+                                            text: account.folder;
+                                            wrap: no-wrap;
+                                            overflow: elide;
+                                        }
+                                        Hint {
+                                            text: account.status;
+                                        }
+                                    }
+                                    if account.removable: VerticalLayout {
+                                        alignment: start;
+                                        Button {
+                                            text: root.texts.accounts-remove;
+                                            clicked => {
+                                                root.account-removed(b, a);
+                                            }
+                                        }
+                                    }
+                                }
+                                HorizontalLayout {
+                                    spacing: 8px;
+                                    Text {
+                                        text: root.texts.accounts-alias;
+                                        vertical-alignment: center;
+                                        color: Palette.foreground;
+                                    }
+                                    LineEdit {
+                                        text: account.alias;
+                                        placeholder-text: root.texts.accounts-alias-none;
+                                        horizontal-stretch: 1;
+                                        edited(text) => {
+                                            root.account-alias-edited(b, a, text);
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        if block.found.length > 0: Hint {
+                            text: root.texts.accounts-found;
+                        }
+                        for found[f] in block.found: HorizontalLayout {
+                            spacing: 8px;
+                            VerticalLayout {
+                                horizontal-stretch: 1;
+                                spacing: 2px;
+                                Text {
+                                    text: found.folder;
+                                    color: Palette.foreground;
+                                    overflow: elide;
+                                }
+                                Hint {
+                                    text: found.status;
+                                }
+                            }
+                            Button {
+                                text: root.texts.accounts-add;
+                                clicked => {
+                                    root.found-added(b, f);
+                                }
+                            }
+                        }
+                        HorizontalLayout {
+                            spacing: 8px;
+                            Button {
+                                text: root.texts.accounts-add-folder;
+                                clicked => {
+                                    root.add-folder(b);
+                                }
+                            }
+                            Rectangle {
+                                horizontal-stretch: 1;
+                            }
+                        }
+                        HorizontalLayout {
+                            spacing: 8px;
+                            Text {
+                                text: root.texts.accounts-new;
+                                vertical-alignment: center;
+                                color: Palette.foreground;
+                            }
+                            new-name := LineEdit {
+                                placeholder-text: root.texts.accounts-new-name;
+                                horizontal-stretch: 1;
+                            }
+                            Button {
+                                text: root.texts.accounts-new-create;
+                                enabled: new-name.text != "";
+                                clicked => {
+                                    root.new-account(b, new-name.text);
+                                    new-name.text = "";
+                                }
+                            }
+                        }
+                    }
+                    CheckBox {
+                        text: root.texts.privacy-hide;
+                        checked: root.hide-personal-info;
+                        toggled => {
+                            root.privacy-toggled(self.checked);
+                        }
                     }
                 }
 

@@ -26,8 +26,8 @@ the spike picked by measuring idle memory and flyout latency
 The first useful build is done: tray icon, taskbar readout, flyout, hover card, settings and
 autostart, reading Claude, Codex, GitHub Copilot and Meshy, with notifications when a limit
 reaches 80 % or 95 %, is used up or resets. It speaks English and Swedish, following Windows'
-display language unless one is picked in settings. Next come more services and several
-accounts per service, then charts.
+display language unless one is picked in settings. Claude Code and Codex can have several
+accounts, one per config folder. Next come more services, then charts.
 
 ## Plan
 

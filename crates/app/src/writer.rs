@@ -37,6 +37,13 @@ enum Job {
     /// Rewrite the history files of `dir` without samples older than `cutoff`
     /// ([`crate::history::compact_dir`]).
     Compact { dir: PathBuf, cutoff: Timestamp },
+    /// Retire the history files of one service in `dir` (`<service>.*.jsonl`, accounts-spec §5,
+    /// [`crate::history::retire_files`]); failed appends kept for them are dropped.
+    Retire {
+        dir: PathBuf,
+        service: String,
+        at: Timestamp,
+    },
     /// Replace a file atomically ([`crate::persist::write_atomic`]); `what` names it in the log.
     Replace {
         path: PathBuf,
@@ -64,6 +71,7 @@ impl std::fmt::Debug for Job {
         f.write_str(match self {
             Job::Append { .. } => "Append",
             Job::Compact { .. } => "Compact",
+            Job::Retire { .. } => "Retire",
             Job::Replace { .. } => "Replace",
             Job::Flush(_) => "Flush",
             #[cfg(test)]
@@ -84,6 +92,13 @@ impl WriterHandle {
     /// Queues the daily compaction of the history folder `dir` (samples older than `cutoff` go).
     pub fn compact(&self, dir: PathBuf, cutoff: Timestamp) {
         self.send(Job::Compact { dir, cutoff });
+    }
+
+    /// Queues the retirement of one service's history files in `dir` (`service` =
+    /// `<provider>.<account>` as in the file names): a folder signed in to another account
+    /// (accounts-spec §5). Appends queued before it are written first and retired with the rest.
+    pub fn retire(&self, dir: PathBuf, service: String, at: Timestamp) {
+        self.send(Job::Retire { dir, service, at });
     }
 
     /// Queues an atomic replace of `path` with `bytes` (settings, state). `what` names the file
@@ -190,6 +205,19 @@ fn run(rx: &Receiver<Job>) {
             Job::Compact { dir, cutoff } => {
                 if let Err(e) = crate::history::compact_dir(&dir, cutoff) {
                     log::warn!("history compaction: {e}");
+                }
+            }
+            Job::Retire { dir, service, at } => {
+                let prefix = format!("{service}.");
+                pending.retain(|path, _| {
+                    path.parent() != Some(dir.as_path())
+                        || !path
+                            .file_name()
+                            .and_then(|n| n.to_str())
+                            .is_some_and(|n| n.starts_with(&prefix))
+                });
+                if let Err(e) = crate::history::retire_files(&dir, &service, at) {
+                    log::warn!("history: cannot retire {service}: {e}");
                 }
             }
             Job::Replace { path, bytes, what } => {

@@ -31,7 +31,7 @@ use lastdrop_core::consts::{
     BAL_REF_LOOKBACK, HISTORY_RETENTION, HISTORY_THIN_INTERVAL, SPARK_DAYS,
 };
 use lastdrop_core::model::{
-    MeterId, MeterKey, MeterKind, ProviderId, Snapshot, WindowLen, catalog,
+    MeterId, MeterKey, MeterKind, ProviderId, Snapshot, SourceKey, WindowLen, catalog,
 };
 use lastdrop_core::stats::{
     HistoryView, Sample, current_instance, instance_of, is_exhausted, latest_instance,
@@ -60,6 +60,9 @@ const EXTENSION: &str = ".jsonl";
 
 /// Suffix of [`HistoryStore::compact`]'s temporary files (`<meter file>.tmp`).
 const TEMP_SUFFIX: &str = ".jsonl.tmp";
+
+/// Suffix of retired history files ([`retire_files`], accounts-spec §5).
+const RETIRED_SUFFIX: &str = ".retired";
 
 /// The store.
 pub struct HistoryStore {
@@ -288,6 +291,24 @@ pub(crate) fn compact_dir(dir: &Path, cutoff: Timestamp) -> io::Result<()> {
         let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
             continue;
         };
+        if name.ends_with(RETIRED_SUFFIX) {
+            // A retired file goes once it is older than the retention (accounts-spec §5).
+            let old = fs::metadata(&path)
+                .and_then(|m| m.modified())
+                .ok()
+                .and_then(|t| Timestamp::try_from(t).ok())
+                .is_some_and(|t| t < cutoff);
+            if old && path.is_file() {
+                match fs::remove_file(&path) {
+                    Ok(()) => log::info!("history: removed {name}"),
+                    Err(e) => {
+                        log::warn!("history: cannot remove {name}: {e}");
+                        first_error.get_or_insert(e);
+                    }
+                }
+            }
+            continue;
+        }
         if split_file_name(name).is_none() || !path.is_file() {
             continue;
         }
@@ -298,6 +319,46 @@ pub(crate) fn compact_dir(dir: &Path, cutoff: Timestamp) -> io::Result<()> {
             }
             Err(e) => {
                 log::warn!("history: cannot compact {name}: {e}");
+                first_error.get_or_insert(e);
+            }
+        }
+    }
+    first_error.map_or(Ok(()), Err)
+}
+
+/// Renames every history file of `service` (`<service>.<meter>.jsonl`, `service` =
+/// `<provider>.<account>` sanitized) in `dir` to `<file>.<seconds>.retired`: the folder was signed
+/// in to another account (accounts-spec §5). Retired files are never loaded, and [`compact_dir`]
+/// deletes them once they are older than the retention. A missing `dir` has nothing to retire.
+pub(crate) fn retire_files(dir: &Path, service: &str, at: Timestamp) -> io::Result<()> {
+    let entries = match fs::read_dir(dir) {
+        Ok(entries) => entries,
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(()),
+        Err(e) => return Err(e),
+    };
+    let mut first_error = None;
+    for entry in entries {
+        let path = match entry {
+            Ok(entry) => entry.path(),
+            Err(e) => {
+                first_error.get_or_insert(e);
+                continue;
+            }
+        };
+        let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
+            continue;
+        };
+        let Some((file_service, _)) = split_file_name(name) else {
+            continue;
+        };
+        if file_service != service || !path.is_file() {
+            continue;
+        }
+        let retired = path.with_file_name(format!("{name}.{}{RETIRED_SUFFIX}", at.as_second()));
+        match fs::rename(&path, &retired) {
+            Ok(()) => log::info!("history: retired {name}"),
+            Err(e) => {
+                log::warn!("history: cannot retire {name}: {e}");
                 first_error.get_or_insert(e);
             }
         }
@@ -605,6 +666,25 @@ impl HistoryStore {
             self.names.retain(|_, name| series.contains_key(name));
             self.spark = None;
         }
+    }
+
+    /// Forgets the history of one source, in memory at once and on disk through the writer
+    /// ([`retire_files`]): the folder was signed in to another account (accounts-spec §5), so
+    /// pace, forecasts and the sparkline start again from the new account's readings.
+    pub fn retire(&mut self, source: &SourceKey, at: Timestamp) {
+        let service = format!(
+            "{}.{}",
+            sanitize(source.provider.as_str()),
+            sanitize(&source.account.0)
+        );
+        let before = self.series.len();
+        self.series.retain(|_, s| s.service != service);
+        if self.series.len() != before {
+            let series = &self.series;
+            self.names.retain(|_, name| series.contains_key(name));
+            self.spark = None;
+        }
+        self.writer.retire(self.dir.clone(), service, at);
     }
 
     /// Waits until every write queued so far is on disk (tests; shutdown joins the writer).
@@ -1182,6 +1262,62 @@ mod tests {
         // Appending after compaction still works.
         store.record(&snapshot(now, Vec::new(), vec![credits(6.0)]));
         assert_eq!(dir.lines(&old_and_new).len(), 2);
+    }
+
+    #[test]
+    fn a_retired_service_is_never_loaded_and_goes_after_the_retention() {
+        let dir = TempDir::new("retire");
+        let now = t0();
+        let weekly = dir.file("codex.default.weekly.jsonl");
+        write_samples(&weekly, &[Sample::window(now - days(1), 0.4, None)]);
+        let other = dir.file("codex.f-work.weekly.jsonl");
+        write_samples(&other, &[Sample::window(now - days(1), 0.2, None)]);
+        let mut store = dir.open(now);
+        let key = |account: &str| MeterKey {
+            provider: ProviderId::Codex,
+            account: AccountKey(account.to_owned()),
+            meter: MeterId::new(MeterId::WEEKLY),
+        };
+        assert_eq!(store.samples(&key("default"), Timestamp::MIN).len(), 1);
+
+        let source = lastdrop_core::model::SourceKey {
+            provider: ProviderId::Codex,
+            account: AccountKey::primary(),
+        };
+        store.retire(&source, now);
+        assert!(store.samples(&key("default"), Timestamp::MIN).is_empty());
+        assert_eq!(
+            store.samples(&key("f-work"), Timestamp::MIN).len(),
+            1,
+            "another account of the service keeps its history"
+        );
+        store.flush();
+        assert!(!weekly.exists());
+        let retired = dir.file(&format!(
+            "codex.default.weekly.jsonl.{}.retired",
+            now.as_second()
+        ));
+        assert!(retired.exists());
+        assert!(other.exists());
+        // Never loaded again.
+        let reopened = dir.open(now);
+        assert!(reopened.samples(&key("default"), Timestamp::MIN).is_empty());
+
+        // The compaction keeps it within the retention and deletes it after.
+        let mut store = reopened;
+        store.compact(now);
+        store.flush();
+        assert!(retired.exists(), "younger than 90 days");
+        let old = std::time::SystemTime::from(now - days(100));
+        fs::File::options()
+            .write(true)
+            .open(&retired)
+            .and_then(|f| f.set_modified(old))
+            .expect("age the file");
+        store.compact(now);
+        store.flush();
+        assert!(!retired.exists());
+        assert!(other.exists());
     }
 
     #[test]

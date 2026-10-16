@@ -201,12 +201,19 @@ impl Assessment {
 }
 
 impl ServiceEval {
-    /// The service name with the account alias when there is one (`Claude · Work`, R§6.4).
-    /// Borrowed when there is no alias.
+    /// The service name with what names the account (R§6.4, accounts-spec §4): the alias when
+    /// there is one (`Claude · Work`), else the label the app set when the service shows two or
+    /// more accounts (`Claude · Account 2`), else the service name alone (borrowed).
     pub fn display_name(&self) -> Cow<'static, str> {
         let name = self.source.provider.display_name();
-        match &self.account.alias {
-            Some(alias) => Cow::Owned(format!("{name} · {alias}")),
+        let label = self
+            .account
+            .alias
+            .as_deref()
+            .or_else(|| self.account.label.as_ref().map(|l| l.expose()))
+            .filter(|l| !l.trim().is_empty());
+        match label {
+            Some(label) => Cow::Owned(format!("{name} · {label}")),
             None => Cow::Borrowed(name),
         }
     }
@@ -272,6 +279,20 @@ pub struct EvalMemory {
     /// ([`ServiceEval::absent`]): in this run, plus what the app restored from its state file
     /// (earlier runs, R§6.3).
     pub seen: BTreeMap<MeterKey, (MeterNames, bool)>,
+}
+
+impl EvalMemory {
+    /// Forgets what the evaluations remembered about one source's meters: its folder holds
+    /// another account now (accounts-spec §5). Severity hysteresis, the last severities, window
+    /// instances and the last freshness go; the meters it has seen stay, since their room in the
+    /// readout belongs to the folder entry (R§6.3).
+    pub fn forget_source(&mut self, source: &SourceKey) {
+        let of = |k: &MeterKey| k.provider == source.provider && k.account == source.account;
+        self.severity.retain(|k, _| !of(k));
+        self.last_severity.retain(|k, _| !of(k));
+        self.instance.retain(|k, _| !of(k));
+        self.last_freshness.remove(source);
+    }
 }
 
 /// The result of one evaluation, input of every surface builder.

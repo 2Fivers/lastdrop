@@ -446,9 +446,8 @@ impl Provider for ClaudeProvider {
         fill_resets(&mut chosen, &readings);
         let account_ref = AccountRef {
             key: key.clone(),
-            alias: None,
-            tag: None,
             plan,
+            ..AccountRef::primary()
         };
         let mut snapshot = to_snapshot(&chosen.usage, chosen.source, account_ref, fetched_at);
         let age = fetched_at.duration_since(snapshot.measured_at);

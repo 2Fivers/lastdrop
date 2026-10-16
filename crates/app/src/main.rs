@@ -68,11 +68,13 @@ fn main() -> ExitCode {
     log::info!("settings: {outcome:?}");
 
     // 4. Everything else runs on the main thread's event loop.
+    let first_run = matches!(outcome, persist::LoadOutcome::Missing);
     let code = match wiring::run(wiring::Startup {
         args,
         guard,
         paths,
         settings,
+        first_run,
     }) {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {
