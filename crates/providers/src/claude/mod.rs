@@ -49,7 +49,7 @@
 //! `SignInRequired`; when no other source answers, an expired token is the reported error
 //! (`Auth`: open Claude Code to renew it).
 
-mod json;
+pub(crate) mod json;
 
 pub mod blockfile;
 pub mod cache;

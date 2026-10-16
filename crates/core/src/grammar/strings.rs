@@ -28,7 +28,8 @@
 //! `{today}`, `{max}`, `{avg}` bare numbers and `{day}` a full weekday (sparkline); `{model}` a
 //! model's display name (`meter.*`); `{language}` a language's own name ([`Language::native_name`])
 //! and `{version}` the app's version (`settings.*`, `about.*`); `{email}` the e-mail address an
-//! account is signed in with and `{name}` an account's name (accounts-spec §4, `settings.accounts.*`).
+//! account is signed in with and `{name}` an account's name (accounts-spec §4, `settings.accounts.*`);
+//! `{group}` a model pool as the service names it and `{initial}` its first letter (`meter.group.*`).
 //!
 //! Titles, verdicts, notification titles, "Also tracked" lines and the settings window's meter
 //! rows are capitalised as a whole after filling ([`capitalise`]; Appendix B: `{meter}`
@@ -396,6 +397,28 @@ catalogue! {
         MeterCompletionsName = "meter.completions.name",
         MeterMonthlyLabel = "meter.monthly.label",
         MeterMonthlyShort = "meter.monthly.short",
+        MeterMonthlyName = "meter.monthly.name",
+        MeterAutoLabel = "meter.auto.label",
+        MeterAutoShort = "meter.auto.short",
+        MeterAutoName = "meter.auto.name",
+        MeterApiLabel = "meter.api.label",
+        MeterApiShort = "meter.api.short",
+        MeterApiName = "meter.api.name",
+        MeterIncludedLabel = "meter.included.label",
+        MeterIncludedShort = "meter.included.short",
+        MeterIncludedName = "meter.included.name",
+        MeterOnDemandLabel = "meter.on_demand.label",
+        MeterOnDemandShort = "meter.on_demand.short",
+        MeterOnDemandName = "meter.on_demand.name",
+        MeterPrepaidLabel = "meter.prepaid.label",
+        MeterPrepaidShort = "meter.prepaid.short",
+        MeterPrepaidName = "meter.prepaid.name",
+        MeterGroupFiveHourLabel = "meter.group.five_hour.label",
+        MeterGroupFiveHourShort = "meter.group.five_hour.short",
+        MeterGroupFiveHourName = "meter.group.five_hour.name",
+        MeterGroupWeeklyLabel = "meter.group.weekly.label",
+        MeterGroupWeeklyShort = "meter.group.weekly.short",
+        MeterGroupWeeklyName = "meter.group.weekly.name",
 
         // ---- Context menus (R§10, F§9)
         MenuRefresh = "menu.refresh",

@@ -25,7 +25,7 @@ fn prefixes(provider: ProviderId) -> &'static [&'static str] {
     match provider {
         ProviderId::Claude => &[".claude-", ".claude_"],
         ProviderId::Codex => &[".codex-", ".codex_"],
-        ProviderId::Copilot | ProviderId::Meshy => &[],
+        _ => &[],
     }
 }
 
@@ -39,7 +39,7 @@ fn markers(provider: ProviderId) -> &'static [&'static str] {
             "projects",
         ],
         ProviderId::Codex => &["auth.json", "config.toml", "sessions"],
-        ProviderId::Copilot | ProviderId::Meshy => &[],
+        _ => &[],
     }
 }
 

@@ -1,8 +1,8 @@
 // Settings window: M1 "settings basics" (ROADMAP M1). The settings design is out of scope of both
-// specs (F§12); this is a plain Windows 11 (fluent) window following the app theme. The Meshy API
-// key is passed to Rust once and stored in Credential Manager, never kept in a property, never
-// shown again and never written to settings.json. Every text comes from Rust (`texts`, the
-// `settings.*` strings) in the chosen language.
+// specs (F§12); this is a plain Windows 11 (fluent) window following the app theme. API keys
+// (Meshy, OpenCode Go) are passed to Rust once and stored in Credential Manager, never kept in a
+// property, never shown again and never written to settings.json. Every text comes from Rust
+// (`texts`, the `settings.*` strings) in the chosen language.
 
 import { Button, CheckBox, LineEdit, ComboBox, ScrollView, Switch, GroupBox, Palette } from "std-widgets.slint";
 
@@ -19,6 +19,14 @@ export struct MeterChoice {
     label: string,
     shown: bool,
     pinned: bool,
+}
+
+// The API key of one service (Meshy, OpenCode Go): its name, the box's placeholder, and whether
+// a key is stored. The key itself is never shown or kept here.
+export struct ApiKeyRow {
+    title: string,
+    placeholder: string,
+    stored: bool,
 }
 
 // One account of Claude Code or Codex (accounts-spec §7): its name (alias, e-mail or
@@ -64,8 +72,6 @@ export struct SettingsTexts {
     accounts-new-create: string,
     privacy-hide: string,
     key: string,
-    key-paste: string,
-    key-replace: string,
     key-save: string,
     key-remove: string,
     key-hint: string,
@@ -155,7 +161,8 @@ export component SettingsWindow inherits Window {
     // each language by its own name), from Rust.
     in property <[string]> language-choices;
     in-out property <int> language-index;
-    in property <bool> meshy-key-stored;
+    // The services read with an API key the user stores here.
+    in property <[ApiKeyRow]> api-keys;
     // The global hotkey (R§10, off by default): modifiers and one key (a letter, a digit or
     // F1…F24).
     in-out property <bool> hotkey-enabled;
@@ -180,8 +187,9 @@ export component SettingsWindow inherits Window {
     callback privacy-toggled(bool);
     callback meter-shown-toggled(int, bool);
     callback meter-pinned-toggled(int, bool);
-    callback set-meshy-key(string);
-    callback clear-meshy-key();
+    // Store (row, key) and remove (row) an API key.
+    callback set-api-key(int, string);
+    callback clear-api-key(int);
     callback apply();
     // `close` would shadow Window's builtin close() (Slint 1.18), hence `dismiss`.
     callback dismiss();
@@ -372,31 +380,38 @@ export component SettingsWindow inherits Window {
                     SectionTitle {
                         text: root.texts.key;
                     }
-                    HorizontalLayout {
-                        spacing: 8px;
-                        key := LineEdit {
-                            placeholder-text: root.meshy-key-stored ? root.texts.key-replace : root.texts.key-paste;
-                            input-type: password;
-                            horizontal-stretch: 1;
-                            accepted => {
-                                if (self.text != "") {
-                                    root.set-meshy-key(self.text);
-                                    self.text = "";
+                    for row[i] in root.api-keys: VerticalLayout {
+                        spacing: 4px;
+                        Text {
+                            text: row.title;
+                            color: Palette.foreground;
+                        }
+                        HorizontalLayout {
+                            spacing: 8px;
+                            key := LineEdit {
+                                placeholder-text: row.placeholder;
+                                input-type: password;
+                                horizontal-stretch: 1;
+                                accepted => {
+                                    if (self.text != "") {
+                                        root.set-api-key(i, self.text);
+                                        self.text = "";
+                                    }
                                 }
                             }
-                        }
-                        Button {
-                            text: root.texts.key-save;
-                            enabled: key.text != "";
-                            clicked => {
-                                root.set-meshy-key(key.text);
-                                key.text = "";
+                            Button {
+                                text: root.texts.key-save;
+                                enabled: key.text != "";
+                                clicked => {
+                                    root.set-api-key(i, key.text);
+                                    key.text = "";
+                                }
                             }
-                        }
-                        if root.meshy-key-stored: Button {
-                            text: root.texts.key-remove;
-                            clicked => {
-                                root.clear-meshy-key();
+                            if row.stored: Button {
+                                text: root.texts.key-remove;
+                                clicked => {
+                                    root.clear-api-key(i);
+                                }
                             }
                         }
                     }

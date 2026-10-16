@@ -9,7 +9,7 @@
 //! - [`AccountSource`]: where one account's data and credentials are.
 //! - [`FetchError`]: why a fetch failed, classified for freshness (R§3.8) and back-off.
 //! - [`claude`], [`codex`], [`meshy`]: the M1 services, sources per the ARCHITECTURE table;
-//!   [`copilot`] (M2).
+//!   [`copilot`], [`cursor`], [`antigravity`], [`opencode_go`], [`grok`] (M2).
 //! - [`identity`]: who is signed in to a source; [`discover`]: the config folders on this PC
 //!   (accounts-spec §2, §6).
 //!
@@ -33,17 +33,23 @@
 //! at a time; they never touch UI objects (ARCHITECTURE "Threads").
 
 pub mod account;
+pub mod antigravity;
 pub mod claude;
 pub mod codex;
 pub mod copilot;
+pub mod cursor;
 pub mod discover;
 pub mod error;
 pub mod fakes;
 pub mod fingerprint;
+pub mod grok;
 pub mod identity;
 pub mod io;
+mod lenient;
 pub mod meshy;
+pub mod opencode_go;
 pub mod real;
+pub mod sqlite;
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -159,5 +165,9 @@ pub fn providers(settings: &Settings) -> Vec<Arc<dyn Provider>> {
         Arc::new(codex::CodexProvider::new(options.codex.clone())),
         Arc::new(copilot::CopilotProvider::new()),
         Arc::new(meshy::MeshyProvider::new()),
+        Arc::new(cursor::CursorProvider::new()),
+        Arc::new(antigravity::AntigravityProvider::new()),
+        Arc::new(opencode_go::OpenCodeGoProvider::new()),
+        Arc::new(grok::GrokProvider::new()),
     ]
 }

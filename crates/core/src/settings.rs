@@ -407,7 +407,7 @@ impl SourceSettings {
         match provider {
             ProviderId::Claude => Some(SourceSettings::ClaudeConfigDir { path }),
             ProviderId::Codex => Some(SourceSettings::CodexHome { path }),
-            ProviderId::Copilot | ProviderId::Meshy => None,
+            _ => None,
         }
     }
 }
@@ -601,6 +601,10 @@ mod tests {
                 (ProviderId::Claude, true),
                 (ProviderId::Codex, false),
                 (ProviderId::Copilot, false),
+                (ProviderId::Cursor, false),
+                (ProviderId::Antigravity, false),
+                (ProviderId::OpenCodeGo, false),
+                (ProviderId::Grok, false),
             ]
         );
         assert!(!s.add_new_providers());
@@ -642,7 +646,14 @@ mod tests {
             .collect();
         assert_eq!(
             added,
-            vec![ProviderId::Copilot, ProviderId::Meshy],
+            vec![
+                ProviderId::Copilot,
+                ProviderId::Meshy,
+                ProviderId::Cursor,
+                ProviderId::Antigravity,
+                ProviderId::OpenCodeGo,
+                ProviderId::Grok
+            ],
             "no second Claude or Codex entry"
         );
         let out = serde_json::to_value(&s).expect("serialize");

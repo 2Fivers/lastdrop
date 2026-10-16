@@ -1,6 +1,6 @@
 [package]
 name = "lastdrop-providers"
-description = "Lastdrop's service providers (Claude, Codex, Meshy) with I/O behind small traits."
+description = "Lastdrop's service providers, one module per service, with I/O behind small traits."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

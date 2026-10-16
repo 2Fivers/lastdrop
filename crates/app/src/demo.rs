@@ -155,6 +155,10 @@ fn snapshot(provider: ProviderId, plan: &str, at: Timestamp) -> Snapshot {
             ProviderId::Codex => SourceKind::CodexAppServer,
             ProviderId::Copilot => SourceKind::CopilotApi,
             ProviderId::Meshy => SourceKind::MeshyApi,
+            ProviderId::Cursor => SourceKind::CursorApi,
+            ProviderId::Antigravity => SourceKind::AntigravityCli,
+            ProviderId::OpenCodeGo => SourceKind::OpenCodeGoApi,
+            ProviderId::Grok => SourceKind::GrokApi,
         },
         measured_at: at,
         fetched_at: at,
@@ -328,11 +332,17 @@ impl Demo {
         credits_history.push(Sample::balance(meshy_at, amount));
         history.insert(key(ProviderId::Meshy, &credits.meter_id()), credits_history);
 
-        // The demo has readings of Claude, Codex and Meshy; Copilot is listed but off.
+        // The demo has readings of Claude, Codex and Meshy; the other services are listed but off.
         let settings = Settings {
             providers: ProviderId::ALL
                 .into_iter()
-                .map(|p| ProviderEntry::Known(ProviderSettings::new(p, p != ProviderId::Copilot)))
+                .map(|p| {
+                    let on = matches!(
+                        p,
+                        ProviderId::Claude | ProviderId::Codex | ProviderId::Meshy
+                    );
+                    ProviderEntry::Known(ProviderSettings::new(p, on))
+                })
                 .collect(),
             ..Settings::default()
         };

@@ -24,10 +24,11 @@ the spike picked by measuring idle memory and flyout latency
 ([ADR 0001](docs/adr/0001-rust-and-slint-software-renderer.md)).
 
 The first useful build is done: tray icon, taskbar readout, flyout, hover card, settings and
-autostart, reading Claude, Codex, GitHub Copilot and Meshy, with notifications when a limit
+autostart, reading Claude, Codex, GitHub Copilot, Cursor, Google Antigravity, OpenCode Go, Grok and
+Meshy, with notifications when a limit
 reaches 80 % or 95 %, is used up or resets. It speaks English and Swedish, following Windows'
 display language unless one is picked in settings. Claude Code and Codex can have several
-accounts, one per config folder. Next come more services, then charts.
+accounts, one per config folder. Next come balance services described in JSON, then charts.
 
 ## Plan
 

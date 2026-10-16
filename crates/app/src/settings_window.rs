@@ -1,6 +1,7 @@
 //! The settings window (ROADMAP M1 "settings basics"; out of both specs' scope, F§12): services
 //! on/off, Claude Code's and Codex's accounts ([`crate::settings_accounts`], accounts-spec §7),
-//! the Meshy API key (Credential Manager, never echoed back), the refresh interval, the
+//! the API keys of Meshy and OpenCode Go (Credential Manager, never echoed back), the refresh
+//! interval, the
 //! readout (on/off, auto or pinned meters, time style), notifications (N§2), the global hotkey,
 //! the language (ROADMAP M4) and start with Windows. Its texts are the `settings.*` strings in the
 //! language the settings pick (else Windows' display language, [`Wording`]); when Apply changes
@@ -373,19 +374,27 @@ fn pinned_names(key: &MeterKey) -> MeterNames {
     }
 }
 
-/// The Meshy API key's credential name for the primary account.
-fn meshy_credential(settings: &Settings) -> CredentialName {
-    let name = settings
-        .provider(ProviderId::Meshy)
-        .and_then(|p| p.accounts.first())
+/// The services read with an API key stored here (Meshy, OpenCode Go) that the settings have,
+/// in service order: the rows of the API keys section.
+pub fn key_services(settings: &Settings) -> Vec<ProviderId> {
+    ProviderId::ALL
+        .into_iter()
+        .filter(|p| p.uses_api_key() && settings.provider(*p).is_some())
+        .collect()
+}
+
+/// The credential name of `provider`'s API key for its first account.
+fn key_credential(settings: &Settings, provider: ProviderId) -> CredentialName {
+    let account = settings.provider(provider).and_then(|p| p.accounts.first());
+    let name = account
         .and_then(|a| match &a.source {
-            SourceSettings::ApiKey { name } => Some(name.clone()),
+            SourceSettings::ApiKey { name } if !name.is_empty() => Some(name.clone()),
             _ => None,
         })
         .unwrap_or_else(|| "api_key".to_owned());
     CredentialName {
-        provider: ProviderId::Meshy,
-        account: AccountKey::primary(),
+        provider,
+        account: account.map_or_else(AccountKey::primary, |a| a.key.clone()),
         name,
     }
 }
@@ -407,6 +416,8 @@ struct Session {
     /// Who is signed in to each listed folder and the folders found on this PC: read when the
     /// window opened, a folder added later when it is added.
     accounts: RefCell<AccountsInfo>,
+    /// The API key rows: each service and whether a key is stored ([`keys_stored`]).
+    keys: RefCell<Vec<(ProviderId, bool)>>,
     /// `settings.json`.
     settings_path: PathBuf,
 }
@@ -460,8 +471,8 @@ pub fn open(paths: &Paths, focus: Focus) -> Result<(), AppError> {
     let draft = draft_with(settings, &reported, &duplicates);
     let window = wiring::create_window(false, ui::SettingsWindow::new)?;
     connect(&window);
-    let stored = meshy_key_stored(&draft.settings);
-    fill(&window, &draft, &reported, stored, &wording, &accounts);
+    let keys = keys_stored(&draft.settings);
+    fill(&window, &draft, &reported, &keys, &wording, &accounts);
     window.set_focus_pins(false);
     if focus_pins {
         show_pins(&window);
@@ -476,6 +487,7 @@ pub fn open(paths: &Paths, focus: Focus) -> Result<(), AppError> {
             reported,
             wording: RefCell::new(wording),
             accounts: RefCell::new(accounts),
+            keys: RefCell::new(keys),
             settings_path: paths.settings.clone(),
         }));
     });
@@ -524,26 +536,34 @@ pub fn draft_with(
     }
 }
 
-/// Whether a Meshy key is stored (its credential exists; the secret is not read into the app).
-fn meshy_key_stored(settings: &Settings) -> bool {
-    lastdrop_win::credentials::last_written(&meshy_credential(settings).target())
-        .ok()
-        .flatten()
-        .is_some()
+/// Each API key service and whether its key is stored (its credential exists; the secret is not
+/// read into the app).
+fn keys_stored(settings: &Settings) -> Vec<(ProviderId, bool)> {
+    key_services(settings)
+        .into_iter()
+        .map(|p| {
+            let target = key_credential(settings, p).target();
+            let stored = lastdrop_win::credentials::last_written(&target)
+                .ok()
+                .flatten()
+                .is_some();
+            (p, stored)
+        })
+        .collect()
 }
 
-/// Fills every property of the window from the draft, the meters the readings reported,
-/// whether a Meshy key is stored, the wording and what the accounts section knows (no I/O;
+/// Fills every property of the window from the draft, the meters the readings reported, which
+/// API keys are stored, the wording and what the accounts section knows (no I/O;
 /// `--preview-settings` uses it directly).
 pub fn fill(
     window: &ui::SettingsWindow,
     draft: &Draft,
     reported: &[(MeterKey, MeterNames)],
-    meshy_key_stored: bool,
+    keys: &[(ProviderId, bool)],
     wording: &Wording,
     accounts: &AccountsInfo,
 ) {
-    set_texts(window, draft, reported, wording, accounts);
+    set_texts(window, draft, reported, keys, wording, accounts);
     let s = &draft.settings;
     let rows: Vec<ui::ProviderRow> = s
         .providers
@@ -573,7 +593,6 @@ pub fn fill(
     window.set_notify_low_balance(n.low_balance);
     window.set_start_with_windows(s.start_with_windows);
     window.set_language_index(language_index(s.language.as_deref()));
-    window.set_meshy_key_stored(meshy_key_stored);
     match &s.hotkey {
         Some(h) => {
             window.set_hotkey_enabled(true);
@@ -600,10 +619,12 @@ fn set_texts(
     window: &ui::SettingsWindow,
     draft: &Draft,
     reported: &[(MeterKey, MeterNames)],
+    keys: &[(ProviderId, bool)],
     wording: &Wording,
     accounts: &AccountsInfo,
 ) {
     let strings = wording.strings();
+    fill_keys(window, keys, strings);
     window.set_texts(texts(strings));
     window.set_interval_choices(string_model(interval_choices(strings)));
     window.set_level_choices(string_model(level_choices(strings, &wording.locale)));
@@ -627,6 +648,31 @@ fn fill_accounts(
     window.set_hide_personal_info(draft.settings.hide_personal_info);
     let names = settings_accounts::meter_accounts(&draft.settings, accounts, strings);
     fill_meters(window, draft, reported, strings, &names);
+}
+
+/// Fills the API key rows: each service's name, the box's placeholder (`Paste your Meshy API
+/// key`, or that a key is stored) and whether a key is stored.
+fn fill_keys(window: &ui::SettingsWindow, keys: &[(ProviderId, bool)], strings: &dyn Strings) {
+    let rows: Vec<ui::ApiKeyRow> = keys
+        .iter()
+        .map(|(provider, stored)| {
+            let placeholder = if *stored {
+                strings.template(Msg::SettingsKeyReplace).to_owned()
+            } else {
+                text(
+                    strings,
+                    Msg::SettingsKeyPaste,
+                    &[("service", provider.display_name())],
+                )
+            };
+            ui::ApiKeyRow {
+                title: provider.display_name().into(),
+                placeholder: placeholder.into(),
+                stored: *stored,
+            }
+        })
+        .collect();
+    window.set_api_keys(ModelRc::new(VecModel::from(rows)));
 }
 
 /// A Slint model of `items`.
@@ -656,8 +702,6 @@ pub fn texts(strings: &dyn Strings) -> ui::SettingsTexts {
         accounts_new_create: t(Msg::SettingsAccountsNewCreate),
         privacy_hide: t(Msg::SettingsPrivacyHide),
         key: t(Msg::SettingsKey),
-        key_paste: t(Msg::SettingsKeyPaste),
-        key_replace: t(Msg::SettingsKeyReplace),
         key_save: t(Msg::SettingsKeySave),
         key_remove: t(Msg::SettingsKeyRemove),
         key_hint: t(Msg::SettingsKeyHint),
@@ -827,8 +871,8 @@ fn connect(window: &ui::SettingsWindow) {
     window.on_privacy_toggled(|hide| {
         edit(|draft| draft.settings.hide_personal_info = hide);
     });
-    window.on_set_meshy_key(|key| with_session(|session| store_key(session, &key)));
-    window.on_clear_meshy_key(|| with_session(clear_key));
+    window.on_set_api_key(|row, key| with_session(|session| store_key(session, row, &key)));
+    window.on_clear_api_key(|row| with_session(|session| clear_key(session, row)));
     window.on_apply(|| with_session(apply));
     window.on_dismiss(close);
     window.window().on_close_requested(|| {
@@ -1038,32 +1082,56 @@ fn set_pins(settings: &mut Settings, pins: Vec<MeterKey>) {
     };
 }
 
-/// Stores the Meshy API key in Credential Manager at once and drops it, then tells the tray
-/// process, which lifts Meshy's sign-in stop (Meshy has no credential fingerprint, so only this
-/// can lift it). Enables Meshy in the draft (Apply saves that).
-fn store_key(session: &Session, key: &SharedString) {
+/// The service of API key row `row`.
+fn key_service(session: &Session, row: i32) -> Option<ProviderId> {
+    let keys = session.keys.borrow();
+    usize::try_from(row)
+        .ok()
+        .and_then(|r| keys.get(r))
+        .map(|(p, _)| *p)
+}
+
+/// Marks `provider`'s key as stored or not and refills the key rows.
+fn set_key_stored(session: &Session, provider: ProviderId, stored: bool) {
+    {
+        let mut keys = session.keys.borrow_mut();
+        for (p, s) in keys.iter_mut() {
+            if *p == provider {
+                *s = stored;
+            }
+        }
+    }
+    let strings = session.wording.borrow().strings();
+    fill_keys(&session.window, &session.keys.borrow(), strings);
+}
+
+/// Stores the API key of row `row` in Credential Manager at once and drops it, then tells the
+/// tray process, which lifts the API-key services' sign-in stop (they have no credential
+/// fingerprint Lastdrop owns, so only this can lift it). Turns the service on in the draft (Apply
+/// saves that).
+fn store_key(session: &Session, row: i32, key: &SharedString) {
+    let Some(provider) = key_service(session, row) else {
+        return;
+    };
     let secret = SecretString::new(key.trim().to_owned());
     if secret.is_empty() {
         return;
     }
-    let credential = meshy_credential(&session.draft.borrow().settings);
+    let credential = key_credential(&session.draft.borrow().settings, provider);
     let stored = lastdrop_win::credentials::write(&credential.target(), &secret);
     drop(secret);
     let window = &session.window;
     let strings = session.wording.borrow().strings();
     match stored {
         Ok(()) => {
-            log::info!("Meshy API key stored");
-            dialog::notify(Changes {
-                meshy_key: true,
-                ..Changes::default()
-            });
+            log::info!("{provider:?} API key stored");
+            dialog::notify(Changes::key_of(provider));
             edit(|draft| {
-                if let Some(p) = draft.settings.provider_mut(ProviderId::Meshy) {
+                if let Some(p) = draft.settings.provider_mut(provider) {
                     p.enabled = true;
                 }
             });
-            window.set_meshy_key_stored(true);
+            set_key_stored(session, provider, true);
             let rows = window.get_providers();
             let draft = session.draft.borrow().clone();
             for (i, id) in draft.providers.iter().enumerate() {
@@ -1072,10 +1140,15 @@ fn store_key(session: &Session, key: &SharedString) {
                     slint::Model::set_row_data(&rows, i, row);
                 }
             }
-            window.set_status_text(strings.template(Msg::SettingsKeySaved).into());
+            let status = text(
+                strings,
+                Msg::SettingsKeySaved,
+                &[("service", provider.display_name())],
+            );
+            window.set_status_text(status.into());
         }
         Err(e) => {
-            log::warn!("cannot store the Meshy key: {e}");
+            log::warn!("cannot store the {provider:?} key: {e}");
             let status = text(
                 strings,
                 Msg::SettingsKeyNotSaved,
@@ -1086,24 +1159,24 @@ fn store_key(session: &Session, key: &SharedString) {
     }
 }
 
-/// Removes the stored Meshy API key and tells the tray process, which reads Meshy again (and so
-/// shows that the key is missing).
-fn clear_key(session: &Session) {
-    let credential = meshy_credential(&session.draft.borrow().settings);
+/// Removes the stored API key of row `row` and tells the tray process, which reads the service
+/// again (and so shows that the key is missing).
+fn clear_key(session: &Session, row: i32) {
+    let Some(provider) = key_service(session, row) else {
+        return;
+    };
+    let credential = key_credential(&session.draft.borrow().settings, provider);
     let window = &session.window;
     let strings = session.wording.borrow().strings();
     let status = match lastdrop_win::credentials::delete(&credential.target()) {
         Ok(()) => {
-            log::info!("Meshy API key removed");
-            window.set_meshy_key_stored(false);
-            dialog::notify(Changes {
-                meshy_key: true,
-                ..Changes::default()
-            });
+            log::info!("{provider:?} API key removed");
+            set_key_stored(session, provider, false);
+            dialog::notify(Changes::key_of(provider));
             strings.template(Msg::SettingsKeyRemoved).to_owned()
         }
         Err(e) => {
-            log::warn!("cannot remove the Meshy key: {e}");
+            log::warn!("cannot remove the {provider:?} key: {e}");
             text(
                 strings,
                 Msg::SettingsKeyNotRemoved,
@@ -1350,10 +1423,12 @@ fn switch_language(session: &Session) {
     log::info!("settings window: language {}", language.tag());
     wording.language = language;
     let accounts = session.accounts.borrow();
+    let keys = session.keys.borrow();
     set_texts(
         &session.window,
         &draft,
         &session.reported,
+        &keys,
         &wording,
         &accounts,
     );
@@ -1520,11 +1595,28 @@ mod tests {
     }
 
     #[test]
-    fn the_meshy_key_name_follows_the_account_source() {
-        let settings = Settings::default();
+    fn api_key_names_follow_the_account_source() {
+        let mut settings = Settings::default();
         assert_eq!(
-            meshy_credential(&settings).target(),
+            key_services(&settings),
+            [ProviderId::Meshy, ProviderId::OpenCodeGo]
+        );
+        assert_eq!(
+            key_credential(&settings, ProviderId::Meshy).target(),
             "Lastdrop:meshy:default:api_key"
+        );
+        assert_eq!(
+            key_credential(&settings, ProviderId::OpenCodeGo).target(),
+            "Lastdrop:opencode_go:default:api_key"
+        );
+        if let Some(p) = settings.provider_mut(ProviderId::OpenCodeGo) {
+            p.accounts[0].source = SourceSettings::ApiKey {
+                name: "studio".to_owned(),
+            };
+        }
+        assert_eq!(
+            key_credential(&settings, ProviderId::OpenCodeGo).target(),
+            "Lastdrop:opencode_go:default:studio"
         );
     }
 
