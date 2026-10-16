@@ -135,8 +135,9 @@ Messages between threads: workers send results to the main thread with
   display languages that has a table, else English; numbers, dates and times follow the
   regional format on their own. Providers name meters in English (that is what readings, the
   history and the state file keep), and the app renames them in the chosen language on every
-  evaluation (`grammar::meters`). The settings and about windows are still English Slint
-  literals.
+  evaluation (`grammar::meters`). The Slint windows have no text of their own: Rust passes
+  each one its texts (the flyout's labels, the settings window's `SettingsTexts`, the about
+  window's `AboutTexts`), and the settings window switches language when Apply changes it.
 - **Settings** — versioned `serde` schema with defaults; unknown fields are kept.
 
 ## Providers (`lastdrop-providers`)

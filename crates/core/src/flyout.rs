@@ -18,7 +18,7 @@ use crate::grammar::a11y::{row_sentence, runout_point, unit_word};
 use crate::grammar::cells::{course_pct, pct, resets_at, t_out};
 use crate::grammar::meters::localized;
 use crate::grammar::numbers::{amount, balance_forecast_long, percent};
-use crate::grammar::strings::{Msg, text};
+use crate::grammar::strings::{Msg, capitalise, text};
 use crate::grammar::time::{
     CountdownForm, age_long, card_date, card_time, countdown, long_duration, runout_text,
     shown_age, shown_duration, spoken_duration,
@@ -26,7 +26,7 @@ use crate::grammar::time::{
 use crate::model::{MeterId, MeterKey, SourceKey, Unit, catalog};
 use crate::readout::bar::{BarInput, Seg, bar_input};
 use crate::readout::build::BuildContext;
-use crate::readout::hovercard::{balance, before_reset, capitalise, last_reading, window};
+use crate::readout::hovercard::{balance, before_reset, last_reading, window};
 use crate::stats::{
     Assessment, DisplayClass, Evaluation, FailureKind, Freshness, HistoryView, LiveChange,
     ResetView, RowState, Sample, ServiceEval, StaleReason, instance_of, runway_minutes,

@@ -14,11 +14,11 @@ use serde::{Deserialize, Serialize};
 use crate::consts::{NOTIFY_FORGET_AFTER, NOTIFY_MAX_LISTED, NOTIFY_USED_UP_LEVEL};
 use crate::grammar::a11y::unit_word;
 use crate::grammar::numbers::{amount, balance_duration_words, percent};
-use crate::grammar::strings::text;
+use crate::grammar::strings::{capitalise, text};
 use crate::grammar::time::{card_time, long_duration, shown_duration};
 use crate::grammar::{Msg, TextContext};
 use crate::model::MeterKey;
-use crate::readout::hovercard::{before_reset, capitalise};
+use crate::readout::hovercard::before_reset;
 use crate::settings::NotificationSettings;
 use crate::stats::{
     AssessedMeter, Assessment, Evaluation, Freshness, LiveChange, ResetView, ServiceEval, Severity,

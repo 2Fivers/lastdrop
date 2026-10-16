@@ -1,8 +1,9 @@
 //! The settings window (ROADMAP M1 "settings basics"; out of both specs' scope, F§12): services
 //! on/off, the Meshy API key (Credential Manager, never echoed back), the refresh interval, the
 //! readout (on/off, auto or pinned meters, time style), notifications (N§2), the global hotkey,
-//! the language (ROADMAP M4) and start with Windows. The window's own labels are English in every
-//! language (they are Slint literals; ROADMAP M4 lists translating them).
+//! the language (ROADMAP M4) and start with Windows. Its texts are the `settings.*` strings in the
+//! language the settings pick (else Windows' display language, [`Wording`]); when Apply changes
+//! the language, the window switches to it.
 //!
 //! It runs in the dialog process ([`crate::dialog`]), not in the tray process. Opening reads
 //! `settings.json` and the meters earlier readings reported (`state.json`); the window edits a
@@ -20,13 +21,18 @@ use std::cell::RefCell;
 use std::path::PathBuf;
 use std::rc::Rc;
 
-use lastdrop_core::grammar::{Language, TimeStyle};
+use jiff::tz::TimeZone;
+use lastdrop_core::grammar::meters::localized;
+use lastdrop_core::grammar::numbers::percent;
+use lastdrop_core::grammar::strings::{capitalise, text};
+use lastdrop_core::grammar::{Language, LocaleFormat, Msg, Strings, TimeStyle};
 use lastdrop_core::model::{AccountKey, MeterKey, MeterNames, ProviderId, catalog};
 use lastdrop_core::secret::SecretString;
 use lastdrop_core::settings::{
     Hotkey, ProviderEntry, ReadoutContent, RefreshInterval, Settings, SourceSettings,
 };
 use lastdrop_providers::io::CredentialName;
+use lastdrop_win::hotkey::HotkeyError;
 use serde_json::Value;
 use slint::{ComponentHandle, ModelRc, SharedString, VecModel};
 
@@ -35,35 +41,94 @@ use crate::persist::{self, LoadOutcome, Paths, SavedState};
 use crate::wiring::{self, toggle_in};
 use crate::{AppError, ui};
 
-/// The refresh interval choices: label and minutes (`None` = manual).
-pub const INTERVALS: [(&str, Option<u16>); 7] = [
-    ("Manual", None),
-    ("1 min", Some(1)),
-    ("2 min", Some(2)),
-    ("5 min", Some(5)),
-    ("10 min", Some(10)),
-    ("15 min", Some(15)),
-    ("30 min", Some(30)),
+/// The refresh interval choices in minutes (`None` = manual).
+pub const INTERVALS: [Option<u16>; 7] = [
+    None,
+    Some(1),
+    Some(2),
+    Some(5),
+    Some(10),
+    Some(15),
+    Some(30),
 ];
 
-/// The notification level choices (N§2): label and level (`None` = off).
-pub const LEVELS: [(&str, Option<u8>); 9] = [
-    ("Off", None),
-    ("50%", Some(50)),
-    ("60%", Some(60)),
-    ("70%", Some(70)),
-    ("75%", Some(75)),
-    ("80%", Some(80)),
-    ("85%", Some(85)),
-    ("90%", Some(90)),
-    ("95%", Some(95)),
+/// The notification level choices (N§2; `None` = off).
+pub const LEVELS: [Option<u8>; 9] = [
+    None,
+    Some(50),
+    Some(60),
+    Some(70),
+    Some(75),
+    Some(80),
+    Some(85),
+    Some(90),
+    Some(95),
 ];
+
+/// What the window's texts depend on besides the settings: the language, Windows' display
+/// languages (what "Same as Windows" follows) and the regional format (the levels' percents).
+#[derive(Clone, Debug)]
+pub struct Wording {
+    /// The language of the texts.
+    pub language: Language,
+    /// Windows' preferred display languages, most preferred first.
+    pub ui_languages: Vec<String>,
+    /// The regional format.
+    pub locale: LocaleFormat,
+}
+
+impl Wording {
+    /// The wording of `settings` on this PC: the language they pick, else the first of Windows'
+    /// display languages that has a table (as the tray process resolves it), and the user's
+    /// regional format.
+    pub fn read(settings: &Settings) -> Wording {
+        let ui_languages = lastdrop_win::locale::ui_languages();
+        Wording {
+            language: Language::resolve(settings.language.as_deref(), &ui_languages),
+            ui_languages,
+            locale: lastdrop_win::locale::read(TimeZone::system()),
+        }
+    }
+
+    /// The language's strings.
+    pub fn strings(&self) -> &'static dyn Strings {
+        self.language.strings()
+    }
+}
+
+/// The labels of [`INTERVALS`]: manual, then the minutes as a duration (`5 min`).
+pub fn interval_choices(strings: &dyn Strings) -> Vec<String> {
+    INTERVALS
+        .iter()
+        .map(|minutes| match minutes {
+            None => strings.template(Msg::SettingsRefreshManual).to_owned(),
+            Some(m) => text(strings, Msg::DurationMin, &[("n", &m.to_string())]),
+        })
+        .collect()
+}
+
+/// The labels of [`LEVELS`]: off, then the percents in the regional format (`80%`, sv-SE
+/// `80 %`).
+pub fn level_choices(strings: &dyn Strings, locale: &LocaleFormat) -> Vec<String> {
+    LEVELS
+        .iter()
+        .map(|level| match level {
+            None => strings.template(Msg::SettingsNotifyOff).to_owned(),
+            Some(l) => percent(*l, locale),
+        })
+        .collect()
+}
 
 /// The language choices: Windows' display language (with the language it resolves to, from
 /// `ui_languages`), then every language with a table by its own name ([`Language::ALL`]).
-pub fn language_choices(ui_languages: &[String]) -> Vec<String> {
+pub fn language_choices(ui_languages: &[String], strings: &dyn Strings) -> Vec<String> {
     let windows = Language::resolve(None, ui_languages);
-    std::iter::once(format!("Same as Windows ({})", windows.native_name()))
+    let same = text(
+        strings,
+        Msg::SettingsLanguageWindows,
+        &[("language", windows.native_name())],
+    );
+    std::iter::once(same)
         .chain(Language::ALL.iter().map(|l| l.native_name().to_owned()))
         .collect()
 }
@@ -95,7 +160,7 @@ pub fn level_indices(levels: &[u8]) -> (i32, i32) {
         LEVELS
             .iter()
             .enumerate()
-            .filter_map(|(i, (_, v))| v.map(|v| (i, v.abs_diff(level))))
+            .filter_map(|(i, v)| v.map(|v| (i, v.abs_diff(level))))
             .min_by_key(|(_, d)| *d)
             .map_or(0, |(i, _)| i32::try_from(i).unwrap_or(0))
     };
@@ -108,7 +173,8 @@ pub fn levels_at(first: i32, second: i32) -> Vec<u8> {
         usize::try_from(i)
             .ok()
             .and_then(|i| LEVELS.get(i))
-            .and_then(|(_, v)| *v)
+            .copied()
+            .flatten()
     };
     let mut levels: Vec<u8> = [level(first), level(second)]
         .into_iter()
@@ -137,7 +203,7 @@ pub fn interval_index(interval: RefreshInterval) -> usize {
         RefreshInterval::Minutes(m) => INTERVALS
             .iter()
             .enumerate()
-            .filter_map(|(i, (_, v))| v.map(|v| (i, v.abs_diff(m))))
+            .filter_map(|(i, v)| v.map(|v| (i, v.abs_diff(m))))
             .min_by_key(|(_, d)| *d)
             .map_or(3, |(i, _)| i),
     }
@@ -146,7 +212,7 @@ pub fn interval_index(interval: RefreshInterval) -> usize {
 /// The interval of an [`INTERVALS`] index.
 pub fn interval_at(index: i32) -> RefreshInterval {
     let i = usize::try_from(index).unwrap_or(3).min(INTERVALS.len() - 1);
-    match INTERVALS[i].1 {
+    match INTERVALS[i] {
         None => RefreshInterval::Manual,
         Some(m) => RefreshInterval::Minutes(m),
     }
@@ -161,12 +227,13 @@ fn pins(settings: &Settings) -> Vec<MeterKey> {
 }
 
 /// The meters to list for `settings`: every enabled service's catalogue meters plus the meters
-/// its readings reported (Claude's per-model weekly windows), with their labels.
-pub fn meter_choices(
+/// its readings reported (Claude's per-model weekly windows), with the names their provider
+/// gives them.
+pub fn listed_meters(
     settings: &Settings,
-    reported: &[(MeterKey, String)],
-) -> Vec<(MeterKey, String)> {
-    let mut out: Vec<(MeterKey, String)> = Vec::new();
+    reported: &[(MeterKey, MeterNames)],
+) -> Vec<(MeterKey, MeterNames)> {
+    let mut out: Vec<(MeterKey, MeterNames)> = Vec::new();
     for (_, p) in settings.enabled_providers() {
         for account in &p.accounts {
             for def in catalog(p.id) {
@@ -176,15 +243,15 @@ pub fn meter_choices(
                         account: account.key.clone(),
                         meter: def.meter_id(),
                     },
-                    format!("{} {}", p.id.display_name(), def.short_name),
+                    def.names(),
                 ));
             }
-            for (key, label) in reported {
+            for (key, names) in reported {
                 if key.provider == p.id
                     && key.account == account.key
                     && !out.iter().any(|(k, _)| k == key)
                 {
-                    out.push((key.clone(), label.clone()));
+                    out.push((key.clone(), names.clone()));
                 }
             }
         }
@@ -192,31 +259,66 @@ pub fn meter_choices(
     out
 }
 
+/// The keys of [`listed_meters`] (row index → meter).
+fn listed_keys(settings: &Settings, reported: &[(MeterKey, MeterNames)]) -> Vec<MeterKey> {
+    listed_meters(settings, reported)
+        .into_iter()
+        .map(|(k, _)| k)
+        .collect()
+}
+
+/// The [`listed_meters`] with their labels in the language of `strings` ([`meter_label`]).
+pub fn meter_choices(
+    settings: &Settings,
+    reported: &[(MeterKey, MeterNames)],
+    strings: &dyn Strings,
+) -> Vec<(MeterKey, String)> {
+    listed_meters(settings, reported)
+        .into_iter()
+        .map(|(key, names)| {
+            let label = meter_label(&key, &names, strings);
+            (key, label)
+        })
+        .collect()
+}
+
+/// A meter's row label: its localized `short_name` with its service (`settings.meter`,
+/// capitalised): `Claude weekly`, `Veckogränsen för Claude`.
+pub fn meter_label(key: &MeterKey, names: &MeterNames, strings: &dyn Strings) -> String {
+    let names = localized(key.provider, &key.meter, names, strings);
+    capitalise(&text(
+        strings,
+        Msg::SettingsMeter,
+        &[
+            ("service", key.provider.display_name()),
+            ("short_name", &names.short_name),
+        ],
+    ))
+}
+
 /// The meters the tray process's readings reported, as it remembers them in `state.json`
-/// (`SavedState::seen`), plus any pinned meter it does not remember, each with a
-/// `{service} {short_name}` label.
-pub fn reported_meters(saved: &SavedState, settings: &Settings) -> Vec<(MeterKey, String)> {
-    let label =
-        |key: &MeterKey, short_name: &str| format!("{} {short_name}", key.provider.display_name());
-    let mut out: Vec<(MeterKey, String)> = saved
+/// (`SavedState::seen`), plus any pinned meter it does not remember, each with the names its
+/// provider gave (English; [`meter_label`] localizes them).
+pub fn reported_meters(saved: &SavedState, settings: &Settings) -> Vec<(MeterKey, MeterNames)> {
+    let mut out: Vec<(MeterKey, MeterNames)> = saved
         .seen
         .iter()
-        .map(|m| (m.key.clone(), label(&m.key, &m.names.short_name)))
+        .map(|m| (m.key.clone(), m.names.clone()))
         .collect();
     for key in pins(settings) {
         if !out.iter().any(|(k, _)| *k == key) {
-            let short_name = pinned_short_name(&key);
-            out.push((key.clone(), label(&key, &short_name)));
+            let names = pinned_names(&key);
+            out.push((key, names));
         }
     }
     out
 }
 
-/// The `short_name` of a pinned meter no reading is remembered for: the catalogue's, a per-model
-/// weekly window's (`weekly:fable` → `Fable weekly`), else its id.
-fn pinned_short_name(key: &MeterKey) -> String {
+/// The names of a pinned meter no reading is remembered for: the catalogue's, a per-model weekly
+/// window's (`weekly:fable` → `Fable weekly`), else its id.
+fn pinned_names(key: &MeterKey) -> MeterNames {
     if let Some(def) = catalog(key.provider).iter().find(|d| d.id == key.meter.0) {
-        return def.short_name.to_owned();
+        return def.names();
     }
     match key.meter.0.strip_prefix("weekly:") {
         Some(model) => {
@@ -225,9 +327,12 @@ fn pinned_short_name(key: &MeterKey) -> String {
                 .next()
                 .map(|c| c.to_uppercase().chain(chars).collect())
                 .unwrap_or_default();
-            MeterNames::weekly_model(&model).short_name
+            MeterNames::weekly_model(&model)
         }
-        None => key.meter.0.clone(),
+        None => {
+            let id = &key.meter.0;
+            MeterNames::new(id, id, id)
+        }
     }
 }
 
@@ -258,7 +363,10 @@ struct Session {
     /// Apply wrote them. What the draft changed from these is what Apply writes ([`apply_onto`]).
     base: RefCell<Settings>,
     /// The meters the readings reported ([`reported_meters`]), read when the window opened.
-    reported: Vec<(MeterKey, String)>,
+    reported: Vec<(MeterKey, MeterNames)>,
+    /// What the texts are made of: read when the window opened, the language again after each
+    /// Apply.
+    wording: RefCell<Wording>,
     /// `settings.json`.
     settings_path: PathBuf,
 }
@@ -305,17 +413,12 @@ pub fn open(paths: &Paths, focus_pins: bool) -> Result<(), AppError> {
     if focus_pins && !matches!(settings.readout.content, ReadoutContent::Pinned(_)) {
         settings.readout.enabled = true;
     }
+    let wording = Wording::read(&base);
     let draft = draft_with(settings, &reported);
     let window = wiring::create_window(false, ui::SettingsWindow::new)?;
     connect(&window);
     let stored = meshy_key_stored(&draft.settings);
-    fill(
-        &window,
-        &draft,
-        &reported,
-        stored,
-        &lastdrop_win::locale::ui_languages(),
-    );
+    fill(&window, &draft, &reported, stored, &wording);
     window.set_focus_pins(false);
     if focus_pins {
         show_pins(&window);
@@ -328,6 +431,7 @@ pub fn open(paths: &Paths, focus_pins: bool) -> Result<(), AppError> {
             draft: RefCell::new(draft),
             base: RefCell::new(base),
             reported,
+            wording: RefCell::new(wording),
             settings_path: paths.settings.clone(),
         }));
     });
@@ -350,17 +454,14 @@ fn show_pins(window: &ui::SettingsWindow) {
 }
 
 /// A draft of `settings` with the meters the readings reported.
-pub fn draft_with(settings: Settings, reported: &[(MeterKey, String)]) -> Draft {
+pub fn draft_with(settings: Settings, reported: &[(MeterKey, MeterNames)]) -> Draft {
     let providers = settings
         .providers
         .iter()
         .filter_map(ProviderEntry::known)
         .map(|p| p.id)
         .collect();
-    let meters = meter_choices(&settings, reported)
-        .into_iter()
-        .map(|(k, _)| k)
-        .collect();
+    let meters = listed_keys(&settings, reported);
     Draft {
         settings,
         providers,
@@ -377,15 +478,16 @@ fn meshy_key_stored(settings: &Settings) -> bool {
 }
 
 /// Fills every property of the window from the draft, the meters the readings reported,
-/// whether a Meshy key is stored and Windows' display languages (no I/O; `--preview-settings`
-/// uses it directly).
+/// whether a Meshy key is stored and the wording (no I/O; `--preview-settings` uses it
+/// directly).
 pub fn fill(
     window: &ui::SettingsWindow,
     draft: &Draft,
-    reported: &[(MeterKey, String)],
+    reported: &[(MeterKey, MeterNames)],
     meshy_key_stored: bool,
-    ui_languages: &[String],
+    wording: &Wording,
 ) {
+    set_texts(window, draft, reported, wording);
     let s = &draft.settings;
     let rows: Vec<ui::ProviderRow> = s
         .providers
@@ -398,8 +500,6 @@ pub fn fill(
         })
         .collect();
     window.set_providers(ModelRc::new(VecModel::from(rows)));
-    let choices: Vec<SharedString> = INTERVALS.iter().map(|(l, _)| (*l).into()).collect();
-    window.set_interval_choices(ModelRc::new(VecModel::from(choices)));
     window.set_interval_index(i32::try_from(interval_index(s.refresh.interval)).unwrap_or(3));
     window.set_readout_enabled(s.readout.enabled);
     window.set_readout_content_index(i32::from(matches!(
@@ -407,11 +507,8 @@ pub fn fill(
         ReadoutContent::Pinned(_)
     )));
     window.set_time_style_index(i32::from(s.readout.time_style == TimeStyle::Relative));
-    fill_meters(window, draft, reported);
     let n = &s.notifications;
     window.set_notify_enabled(n.enabled);
-    let levels: Vec<SharedString> = LEVELS.iter().map(|(l, _)| (*l).into()).collect();
-    window.set_level_choices(ModelRc::new(VecModel::from(levels)));
     let (first, second) = level_indices(&n.levels());
     window.set_notify_first_index(first);
     window.set_notify_second_index(second);
@@ -419,11 +516,6 @@ pub fn fill(
     window.set_notify_resets(n.resets);
     window.set_notify_low_balance(n.low_balance);
     window.set_start_with_windows(s.start_with_windows);
-    let languages: Vec<SharedString> = language_choices(ui_languages)
-        .into_iter()
-        .map(SharedString::from)
-        .collect();
-    window.set_language_choices(ModelRc::new(VecModel::from(languages)));
     window.set_language_index(language_index(s.language.as_deref()));
     window.set_meshy_key_stored(meshy_key_stored);
     match &s.hotkey {
@@ -446,10 +538,92 @@ pub fn fill(
     }
 }
 
-/// Fills the meter rows of the draft from the reported meters.
-fn fill_meters(window: &ui::SettingsWindow, draft: &Draft, reported: &[(MeterKey, String)]) {
+/// Sets every text of the window in the language of `wording`: the fixed texts, the choices of
+/// the combo boxes (their selections stay) and the meter rows.
+fn set_texts(
+    window: &ui::SettingsWindow,
+    draft: &Draft,
+    reported: &[(MeterKey, MeterNames)],
+    wording: &Wording,
+) {
+    let strings = wording.strings();
+    window.set_texts(texts(strings));
+    window.set_interval_choices(string_model(interval_choices(strings)));
+    window.set_level_choices(string_model(level_choices(strings, &wording.locale)));
+    window.set_language_choices(string_model(language_choices(
+        &wording.ui_languages,
+        strings,
+    )));
+    fill_meters(window, draft, reported, strings);
+}
+
+/// A Slint model of `items`.
+fn string_model(items: Vec<String>) -> ModelRc<SharedString> {
+    let items: Vec<SharedString> = items.into_iter().map(SharedString::from).collect();
+    ModelRc::new(VecModel::from(items))
+}
+
+/// The window's fixed texts in the language of `strings`.
+pub fn texts(strings: &dyn Strings) -> ui::SettingsTexts {
+    let t = |msg: Msg| SharedString::from(strings.template(msg));
+    ui::SettingsTexts {
+        title: t(Msg::SettingsTitle),
+        heading: t(Msg::SettingsHeading),
+        services: t(Msg::SettingsServices),
+        services_hint: t(Msg::SettingsServicesHint),
+        key: t(Msg::SettingsKey),
+        key_paste: t(Msg::SettingsKeyPaste),
+        key_replace: t(Msg::SettingsKeyReplace),
+        key_save: t(Msg::SettingsKeySave),
+        key_remove: t(Msg::SettingsKeyRemove),
+        key_hint: t(Msg::SettingsKeyHint),
+        refresh: t(Msg::SettingsRefresh),
+        refresh_check: t(Msg::SettingsRefreshCheck),
+        readout: t(Msg::SettingsReadout),
+        readout_show: t(Msg::SettingsReadoutShow),
+        readout_rows: t(Msg::SettingsReadoutRows),
+        readout_auto: t(Msg::SettingsReadoutAuto),
+        readout_pinned: t(Msg::SettingsReadoutPinned),
+        readout_times: t(Msg::SettingsReadoutTimes),
+        readout_clock: t(Msg::SettingsReadoutClock),
+        readout_relative: t(Msg::SettingsReadoutRelative),
+        meters_hint: t(Msg::SettingsMetersHint),
+        meter_show: t(Msg::SettingsMeterShow),
+        meter_pin: t(Msg::SettingsMeterPin),
+        notify: t(Msg::SettingsNotify),
+        notify_on: t(Msg::SettingsNotifyOn),
+        notify_levels: t(Msg::SettingsNotifyLevels),
+        notify_and: t(Msg::SettingsNotifyAnd),
+        notify_used_up: t(Msg::SettingsNotifyUsedUp),
+        notify_resets: t(Msg::SettingsNotifyResets),
+        notify_low: t(Msg::SettingsNotifyLow),
+        notify_hint: t(Msg::SettingsNotifyHint),
+        shortcut: t(Msg::SettingsShortcut),
+        shortcut_on: t(Msg::SettingsShortcutOn),
+        shortcut_ctrl: t(Msg::SettingsShortcutCtrl),
+        shortcut_alt: t(Msg::SettingsShortcutAlt),
+        shortcut_shift: t(Msg::SettingsShortcutShift),
+        shortcut_win: t(Msg::SettingsShortcutWin),
+        shortcut_key: t(Msg::SettingsShortcutKey),
+        language: t(Msg::SettingsLanguage),
+        language_hint: t(Msg::SettingsLanguageHint),
+        startup: t(Msg::SettingsStartup),
+        startup_on: t(Msg::SettingsStartupOn),
+        apply: t(Msg::SettingsApply),
+        close: t(Msg::SettingsClose),
+    }
+}
+
+/// Fills the meter rows of the draft from the reported meters, labelled in the language of
+/// `strings`.
+fn fill_meters(
+    window: &ui::SettingsWindow,
+    draft: &Draft,
+    reported: &[(MeterKey, MeterNames)],
+    strings: &dyn Strings,
+) {
     let pinned = pins(&draft.settings);
-    let choices = meter_choices(&draft.settings, reported);
+    let choices = meter_choices(&draft.settings, reported, strings);
     let rows: Vec<ui::MeterChoice> = choices
         .iter()
         .map(|(key, label)| {
@@ -473,13 +647,11 @@ fn edit(f: impl FnOnce(&mut Draft)) {
         let draft = {
             let mut draft = session.draft.borrow_mut();
             f(&mut draft);
-            draft.meters = meter_choices(&draft.settings, &session.reported)
-                .into_iter()
-                .map(|(k, _)| k)
-                .collect();
+            draft.meters = listed_keys(&draft.settings, &session.reported);
             draft.clone()
         };
-        fill_meters(&session.window, &draft, &session.reported);
+        let strings = session.wording.borrow().strings();
+        fill_meters(&session.window, &draft, &session.reported, strings);
     });
 }
 
@@ -579,6 +751,7 @@ fn store_key(session: &Session, key: &SharedString) {
     let stored = lastdrop_win::credentials::write(&credential.target(), &secret);
     drop(secret);
     let window = &session.window;
+    let strings = session.wording.borrow().strings();
     match stored {
         Ok(()) => {
             log::info!("Meshy API key stored");
@@ -600,11 +773,16 @@ fn store_key(session: &Session, key: &SharedString) {
                     slint::Model::set_row_data(&rows, i, row);
                 }
             }
-            window.set_status_text("Key saved. Apply to start reading Meshy.".into());
+            window.set_status_text(strings.template(Msg::SettingsKeySaved).into());
         }
         Err(e) => {
             log::warn!("cannot store the Meshy key: {e}");
-            window.set_status_text(format!("Couldn't store the key: {e}").into());
+            let status = text(
+                strings,
+                Msg::SettingsKeyNotSaved,
+                &[("detail", &e.to_string())],
+            );
+            window.set_status_text(status.into());
         }
     }
 }
@@ -614,6 +792,7 @@ fn store_key(session: &Session, key: &SharedString) {
 fn clear_key(session: &Session) {
     let credential = meshy_credential(&session.draft.borrow().settings);
     let window = &session.window;
+    let strings = session.wording.borrow().strings();
     let status = match lastdrop_win::credentials::delete(&credential.target()) {
         Ok(()) => {
             log::info!("Meshy API key removed");
@@ -622,18 +801,60 @@ fn clear_key(session: &Session) {
                 meshy_key: true,
                 ..Changes::default()
             });
-            "Key removed.".to_owned()
+            strings.template(Msg::SettingsKeyRemoved).to_owned()
         }
         Err(e) => {
             log::warn!("cannot remove the Meshy key: {e}");
-            format!("Couldn't remove the key: {e}")
+            text(
+                strings,
+                Msg::SettingsKeyNotRemoved,
+                &[("detail", &e.to_string())],
+            )
         }
     };
     window.set_status_text(status.into());
 }
 
+/// Why Apply kept the shortcut saved before.
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum ShortcutProblem {
+    /// No modifier, or not a letter, a digit or F1–F24.
+    Invalid,
+    /// Registering it failed.
+    Refused(HotkeyError),
+}
+
+impl ShortcutProblem {
+    /// The line under the shortcut, in the language of `strings`.
+    fn message(&self, strings: &dyn Strings) -> String {
+        match self {
+            // Unsupported is what the window does not check: Shift alone with a letter or digit.
+            ShortcutProblem::Invalid | ShortcutProblem::Refused(HotkeyError::Unsupported(_)) => {
+                strings.template(Msg::SettingsShortcutInvalid).to_owned()
+            }
+            ShortcutProblem::Refused(HotkeyError::InUse) => {
+                strings.template(Msg::SettingsShortcutInUse).to_owned()
+            }
+            ShortcutProblem::Refused(HotkeyError::Win32(detail)) => {
+                text(strings, Msg::SettingsShortcutFailed, &[("detail", detail)])
+            }
+        }
+    }
+}
+
+/// The status line after Apply saved the settings: what it could not apply, if anything.
+fn saved_status(strings: &dyn Strings, shortcut_kept: bool, startup_kept: bool) -> &str {
+    let msg = match (shortcut_kept, startup_kept) {
+        (false, false) => Msg::SettingsSaved,
+        (true, false) => Msg::SettingsSavedNoShortcut,
+        (false, true) => Msg::SettingsSavedNoStartup,
+        (true, true) => Msg::SettingsSavedNeither,
+    };
+    strings.template(msg)
+}
+
 /// The hotkey the window describes, or why it is not valid.
-fn hotkey_of(window: &ui::SettingsWindow) -> Result<Option<Hotkey>, String> {
+fn hotkey_of(window: &ui::SettingsWindow) -> Result<Option<Hotkey>, ShortcutProblem> {
     if !window.get_hotkey_enabled() {
         return Ok(None);
     }
@@ -653,10 +874,7 @@ fn hotkey_of(window: &ui::SettingsWindow) -> Result<Option<Hotkey>, String> {
             .and_then(|n| n.parse::<u8>().ok())
             .is_some_and(|n| (1..=24).contains(&n));
     if !valid_key || !(hotkey.ctrl || hotkey.alt || hotkey.shift || hotkey.win) {
-        return Err(
-            "Choose at least one of Ctrl, Alt, Shift or Win, and a letter, a digit or F1–F24."
-                .to_owned(),
-        );
+        return Err(ShortcutProblem::Invalid);
     }
     Ok(Some(hotkey))
 }
@@ -714,7 +932,8 @@ fn merge_changes(base: &Value, changed: &Value, target: &mut Value) {
 /// Apply: what the window changed, onto `settings.json` as it is now ([`apply_onto`]);
 /// autostart when "Start Lastdrop when I sign in" changed; a changed hotkey is tested by
 /// registering it here and unregistering it at once (the tray process registers it for real);
-/// the file is written atomically and the tray process is told.
+/// the file is written atomically and the tray process is told. A changed language switches the
+/// window's texts, and the lines under the shortcut and the buttons come in it.
 fn apply(session: &Session) {
     let window = &session.window;
     let mut draft = session.draft.borrow().settings.clone();
@@ -754,18 +973,15 @@ fn apply(session: &Session) {
         log::info!("settings before Apply: {outcome:?}");
     }
     let mut settings = apply_onto(&session.base.borrow(), draft, &disk);
-    let mut problems = Vec::new();
+    let mut shortcut = None;
     match hotkey_of(window) {
-        Ok(hotkey) => {
-            settings.hotkey = hotkey;
-            window.set_hotkey_error(SharedString::new());
-        }
-        Err(why) => {
+        Ok(hotkey) => settings.hotkey = hotkey,
+        Err(problem) => {
             settings.hotkey.clone_from(&disk.hotkey);
-            window.set_hotkey_error(why.as_str().into());
-            problems.push("the shortcut");
+            shortcut = Some(problem);
         }
     }
+    let mut startup_kept = false;
 
     if settings.start_with_windows != disk.start_with_windows {
         let changed = if settings.start_with_windows {
@@ -777,7 +993,7 @@ fn apply(session: &Session) {
             log::warn!("autostart: {e}");
             settings.start_with_windows = disk.start_with_windows;
             window.set_start_with_windows(disk.start_with_windows);
-            problems.push("start with Windows");
+            startup_kept = true;
         }
     }
     if settings.hotkey != disk.hotkey
@@ -787,35 +1003,58 @@ fn apply(session: &Session) {
             Ok(registration) => registration.unregister(),
             Err(e) => {
                 log::warn!("hotkey: {e}");
-                window.set_hotkey_error(e.to_string().into());
                 settings.hotkey.clone_from(&disk.hotkey);
-                problems.push("the shortcut");
+                shortcut = Some(ShortcutProblem::Refused(e));
             }
         }
     }
 
-    if let Err(e) = persist::save_settings(&session.settings_path, &settings) {
-        log::error!("cannot save settings: {e}");
-        window.set_status_text(format!("Couldn't save the settings: {e}").into());
+    let saved = persist::save_settings(&session.settings_path, &settings);
+    match &saved {
+        Ok(()) => {
+            dialog::notify(Changes {
+                settings: true,
+                ..Changes::default()
+            });
+            session.base.borrow_mut().clone_from(&settings);
+            session.draft.borrow_mut().settings = settings;
+            switch_language(session);
+        }
+        Err(e) => log::error!("cannot save settings: {e}"),
+    }
+    // In the language the window shows now: the new one when it was saved.
+    let strings = session.wording.borrow().strings();
+    let status = match saved {
+        Ok(()) => saved_status(strings, shortcut.is_some(), startup_kept).to_owned(),
+        Err(e) => text(
+            strings,
+            Msg::SettingsNotSaved,
+            &[("detail", &e.to_string())],
+        ),
+    };
+    let hotkey_error = shortcut.map(|p| p.message(strings)).unwrap_or_default();
+    window.set_hotkey_error(hotkey_error.into());
+    window.set_status_text(status.into());
+}
+
+/// Switches the window's texts to the language the draft's settings pick (else Windows'
+/// display language) when it is not the one shown.
+fn switch_language(session: &Session) {
+    let draft = session.draft.borrow();
+    let mut wording = session.wording.borrow_mut();
+    let language = Language::resolve(draft.settings.language.as_deref(), &wording.ui_languages);
+    if language == wording.language {
         return;
     }
-    dialog::notify(Changes {
-        settings: true,
-        ..Changes::default()
-    });
-    session.base.borrow_mut().clone_from(&settings);
-    session.draft.borrow_mut().settings = settings;
-    let status = if problems.is_empty() {
-        "Saved.".to_owned()
-    } else {
-        format!("Saved, except {}.", problems.join(" and "))
-    };
-    window.set_status_text(status.into());
+    log::info!("settings window: language {}", language.tag());
+    wording.language = language;
+    set_texts(&session.window, &draft, &session.reported, &wording);
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use lastdrop_core::grammar::{English, LocaleFormat, Swedish};
     use lastdrop_core::model::MeterId;
     use lastdrop_core::settings::{Pause, ProviderSettings};
 
@@ -839,10 +1078,36 @@ mod tests {
     }
 
     #[test]
+    fn choices_are_labelled_in_the_language_and_the_regional_format() {
+        assert_eq!(
+            interval_choices(&English),
+            [
+                "Manual", "1 min", "2 min", "5 min", "10 min", "15 min", "30 min"
+            ]
+        );
+        assert_eq!(interval_choices(&Swedish)[..2], ["Manuellt", "1 min"]);
+        assert_eq!(interval_choices(&English).len(), INTERVALS.len());
+
+        let en = LocaleFormat::en_gb(TimeZone::UTC);
+        let sv = LocaleFormat::sv_se(TimeZone::UTC);
+        let levels = level_choices(&English, &en);
+        assert_eq!(levels.len(), LEVELS.len());
+        assert_eq!(levels[..3], ["Off", "50%", "60%"]);
+        assert_eq!(level_choices(&Swedish, &sv)[..2], ["Av", "50\u{202F}%"]);
+    }
+
+    #[test]
     fn languages_round_trip_through_the_choices() {
-        let choices = language_choices(&["sv-SE".to_owned(), "en-US".to_owned()]);
+        let choices = language_choices(&["sv-SE".to_owned(), "en-US".to_owned()], &English);
         assert_eq!(choices, ["Same as Windows (Svenska)", "English", "Svenska"]);
-        assert_eq!(language_choices(&[])[0], "Same as Windows (English)");
+        assert_eq!(
+            language_choices(&[], &English)[0],
+            "Same as Windows (English)"
+        );
+        assert_eq!(
+            language_choices(&["sv-SE".to_owned()], &Swedish),
+            ["Samma som Windows (Svenska)", "English", "Svenska"]
+        );
         for setting in [None, Some("en"), Some("sv")] {
             assert_eq!(
                 language_at(language_index(setting)).as_deref(),
@@ -883,16 +1148,61 @@ mod tests {
             account: AccountKey::primary(),
             meter: MeterId::weekly_model("fable"),
         };
-        let choices = meter_choices(
-            &settings,
-            &[(fable.clone(), "Claude Fable weekly".to_owned())],
-        );
+        let reported = [(fable.clone(), MeterNames::weekly_model("Fable"))];
+        let choices = meter_choices(&settings, &reported, &English);
         let labels: Vec<&str> = choices.iter().map(|(_, l)| l.as_str()).collect();
         assert_eq!(
             labels,
             ["Claude 5-hour", "Claude weekly", "Claude Fable weekly"]
         );
         assert_eq!(choices[2].0, fable);
+        assert_eq!(
+            listed_keys(&settings, &reported),
+            choices.iter().map(|(k, _)| k.clone()).collect::<Vec<_>>()
+        );
+
+        // In Swedish the meter comes first, with "limit" in it, and is capitalised.
+        let choices = meter_choices(&settings, &reported, &Swedish);
+        let labels: Vec<&str> = choices.iter().map(|(_, l)| l.as_str()).collect();
+        assert_eq!(
+            labels,
+            [
+                "5-timmarsgränsen för Claude",
+                "Veckogränsen för Claude",
+                "Fable-veckogränsen för Claude"
+            ]
+        );
+    }
+
+    #[test]
+    fn shortcut_problems_and_the_status_line_come_in_the_language() {
+        assert_eq!(
+            ShortcutProblem::Refused(HotkeyError::InUse).message(&English),
+            "The shortcut is already in use."
+        );
+        assert_eq!(
+            ShortcutProblem::Refused(HotkeyError::InUse).message(&Swedish),
+            "Kortkommandot används redan."
+        );
+        assert_eq!(
+            ShortcutProblem::Refused(HotkeyError::Win32("Access is denied.".to_owned()))
+                .message(&English),
+            "Couldn't register the shortcut: Access is denied."
+        );
+        // Shift alone with a letter is refused by the registration, not by the window.
+        assert_eq!(
+            ShortcutProblem::Refused(HotkeyError::Unsupported("L".to_owned())).message(&Swedish),
+            ShortcutProblem::Invalid.message(&Swedish)
+        );
+        assert_eq!(saved_status(&English, false, false), "Saved.");
+        assert_eq!(
+            saved_status(&English, true, true),
+            "Saved, except the shortcut and start with Windows."
+        );
+        assert_eq!(
+            saved_status(&Swedish, false, true),
+            "Sparat, utom start med Windows."
+        );
     }
 
     #[test]
@@ -931,13 +1241,21 @@ mod tests {
             vec![fable.clone(), opus.clone(), five.clone()],
         );
         let reported = reported_meters(&saved, &settings);
+        let labels: Vec<String> = reported
+            .iter()
+            .map(|(key, names)| meter_label(key, names, &English))
+            .collect();
         assert_eq!(
-            reported,
-            [
-                (fable, "Claude Fable weekly".to_owned()),
-                (opus, "Claude Opus weekly".to_owned()),
-                (five, "Claude 5-hour".to_owned()),
-            ]
+            labels,
+            ["Claude Fable weekly", "Claude Opus weekly", "Claude 5-hour"]
+        );
+        assert_eq!(
+            reported.iter().map(|(k, _)| k.clone()).collect::<Vec<_>>(),
+            [fable, opus.clone(), five]
+        );
+        assert_eq!(
+            meter_label(&opus, &reported[1].1, &Swedish),
+            "Opus-veckogränsen för Claude"
         );
         assert!(reported_meters(&SavedState::default(), &Settings::default()).is_empty());
     }

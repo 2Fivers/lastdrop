@@ -19,11 +19,13 @@
 //! grouped numbers; `{unit}` a unit word; `{window}` `card.window.*`; `{other}` the other
 //! meter's `short_name`; `{detail}` a secret-free failure detail; `{rows}` a joined list;
 //! `{today}`, `{max}`, `{avg}` bare numbers and `{day}` a full weekday (sparkline); `{model}` a
-//! model's display name (`meter.*`).
+//! model's display name (`meter.*`); `{language}` a language's own name ([`Language::native_name`])
+//! and `{version}` the app's version (`settings.*`, `about.*`).
 //!
-//! Titles, verdicts, notification titles and "Also tracked" lines are capitalised as a whole
-//! after filling (Appendix B: `{meter}` "capitalised at the start of a sentence"), so a
-//! template may start with `{meter}` or `{label}` in any language.
+//! Titles, verdicts, notification titles, "Also tracked" lines and the settings window's meter
+//! rows are capitalised as a whole after filling ([`capitalise`]; Appendix B: `{meter}`
+//! "capitalised at the start of a sentence"), so a template may start with `{meter}`, `{label}`
+//! or `{short_name}` in any language.
 
 macro_rules! messages {
     ($( $name:ident = $key:literal => $en:literal, )*) => {
@@ -359,6 +361,82 @@ messages! {
     MenuCardUsage = "menu.card.usage" => "Open usage page",
     MenuCardRefresh = "menu.card.refresh" => "Refresh {service}",
     MenuCardReadout = "menu.card.readout" => "Show in taskbar readout",
+
+    // ---- Settings window (ROADMAP M1 "settings basics"; out of both specs, F§12)
+    SettingsTitle = "settings.title" => "Lastdrop settings",
+    SettingsHeading = "settings.heading" => "Settings",
+    SettingsServices = "settings.services" => "Services",
+    SettingsServicesHint = "settings.services.hint" => "Claude and Codex are read from their own files on this PC, Copilot with the GitHub CLI's sign-in (gh auth login). Lastdrop never signs in for you and never changes their sign-in.",
+    SettingsKey = "settings.key" => "Meshy API key",
+    SettingsKeyPaste = "settings.key.paste" => "Paste your Meshy API key",
+    SettingsKeyReplace = "settings.key.replace" => "A key is stored. Paste a new one to replace it",
+    SettingsKeySave = "settings.key.save" => "Save key",
+    SettingsKeyRemove = "settings.key.remove" => "Remove",
+    SettingsKeyHint = "settings.key.hint" => "Stored in Windows Credential Manager, never in a file. Lastdrop only reads your credit balance.",
+    SettingsKeySaved = "settings.key.saved" => "Key saved. Apply to start reading Meshy.",
+    SettingsKeyNotSaved = "settings.key.notsaved" => "Couldn't store the key: {detail}",
+    SettingsKeyRemoved = "settings.key.removed" => "Key removed.",
+    SettingsKeyNotRemoved = "settings.key.notremoved" => "Couldn't remove the key: {detail}",
+    SettingsRefresh = "settings.refresh" => "Refresh",
+    SettingsRefreshCheck = "settings.refresh.check" => "Check usage",
+    // The other choices are `duration.min`.
+    SettingsRefreshManual = "settings.refresh.manual" => "Manual",
+    SettingsReadout = "settings.readout" => "Taskbar readout",
+    SettingsReadoutShow = "settings.readout.show" => "Show the readout in the taskbar",
+    SettingsReadoutRows = "settings.readout.rows" => "Rows",
+    SettingsReadoutAuto = "settings.readout.auto" => "The most constrained meters (auto)",
+    SettingsReadoutPinned = "settings.readout.pinned" => "Meters I pin",
+    SettingsReadoutTimes = "settings.readout.times" => "Show times as",
+    // The examples are the readout's tokens (R§5.2).
+    SettingsReadoutClock = "settings.readout.clock" => "Clock times (14:56)",
+    SettingsReadoutRelative = "settings.readout.relative" => "Time remaining (2h)",
+    SettingsMetersHint = "settings.meters.hint" => "Meters: show them in the flyout, and pin up to two to the readout.",
+    // A meter row: the meter's `short_name` with its service, capitalised.
+    SettingsMeter = "settings.meter" => "{service} {short_name}",
+    SettingsMeterShow = "settings.meter.show" => "Show",
+    SettingsMeterPin = "settings.meter.pin" => "Pin",
+    SettingsNotify = "settings.notify" => "Notifications",
+    SettingsNotifyOn = "settings.notify.on" => "Notify me about my limits",
+    // "When a limit reaches [80%] and [95%]".
+    SettingsNotifyLevels = "settings.notify.levels" => "When a limit reaches",
+    SettingsNotifyAnd = "settings.notify.and" => "and",
+    SettingsNotifyOff = "settings.notify.off" => "Off",
+    SettingsNotifyUsedUp = "settings.notify.usedup" => "When a limit or a balance is used up",
+    SettingsNotifyResets = "settings.notify.resets" => "When a limit resets after a notification",
+    SettingsNotifyLow = "settings.notify.low" => "When a balance runs low",
+    SettingsNotifyHint = "settings.notify.hint" => "Windows notifications, once per level in each window. Do not disturb holds them back.",
+    SettingsShortcut = "settings.shortcut" => "Shortcut",
+    SettingsShortcutOn = "settings.shortcut.on" => "Open Lastdrop with a keyboard shortcut",
+    SettingsShortcutCtrl = "settings.shortcut.ctrl" => "Ctrl",
+    SettingsShortcutAlt = "settings.shortcut.alt" => "Alt",
+    SettingsShortcutShift = "settings.shortcut.shift" => "Shift",
+    SettingsShortcutWin = "settings.shortcut.win" => "Win",
+    SettingsShortcutKey = "settings.shortcut.key" => "Key",
+    SettingsShortcutInvalid = "settings.shortcut.invalid" => "Choose Ctrl, Alt or Win (Shift alone only with F1–F24) and a letter, a digit or F1–F24.",
+    SettingsShortcutInUse = "settings.shortcut.inuse" => "The shortcut is already in use.",
+    SettingsShortcutFailed = "settings.shortcut.failed" => "Couldn't register the shortcut: {detail}",
+    SettingsLanguage = "settings.language" => "Language",
+    // `{language}`: the language Windows' display language resolves to, by its own name.
+    SettingsLanguageWindows = "settings.language.windows" => "Same as Windows ({language})",
+    SettingsLanguageHint = "settings.language.hint" => "For everything Lastdrop shows. Numbers and times follow the regional format in Windows.",
+    SettingsStartup = "settings.startup" => "Start-up",
+    SettingsStartupOn = "settings.startup.on" => "Start Lastdrop when I sign in to Windows",
+    SettingsApply = "settings.apply" => "Apply",
+    SettingsClose = "settings.close" => "Close",
+    SettingsSaved = "settings.saved" => "Saved.",
+    SettingsSavedNoShortcut = "settings.saved.noshortcut" => "Saved, except the shortcut.",
+    SettingsSavedNoStartup = "settings.saved.nostartup" => "Saved, except start with Windows.",
+    SettingsSavedNeither = "settings.saved.neither" => "Saved, except the shortcut and start with Windows.",
+    SettingsNotSaved = "settings.notsaved" => "Couldn't save the settings: {detail}",
+
+    // ---- About window (R§10 "About Lastdrop")
+    AboutTitle = "about.title" => "About Lastdrop",
+    AboutHeading = "about.heading" => "Lastdrop {version}",
+    AboutTagline = "about.tagline" => "How much AI is left in the tank, one click away.",
+    AboutCopyright = "about.copyright" => "© 2026 Adinosaur AB. All rights reserved.",
+    // Third-party credit line (open-source components and their licences).
+    AboutCredits = "about.credits" => "Built with Slint (Royalty-free License 2.0), jiff, serde, ureq and windows-rs (MIT / Apache-2.0). No telemetry: Lastdrop only talks to the services whose usage it reads.",
+    AboutClose = "about.close" => "Close",
 }
 
 /// The Swedish template of every message ([`Swedish`]). The match lists every [`Msg`] with no
@@ -760,6 +838,100 @@ const fn swedish(msg: Msg) -> &'static str {
         Msg::MenuCardUsage => "Öppna användningssidan",
         Msg::MenuCardRefresh => "Uppdatera {service}",
         Msg::MenuCardReadout => "Visa i aktivitetsfältet",
+
+        // ---- Settings window: Windows' own Swedish names (Verkställ, Stäng, Skift, Stör ej,
+        // Autentiseringshanteraren)
+        Msg::SettingsTitle => "Inställningar för Lastdrop",
+        Msg::SettingsHeading => "Inställningar",
+        Msg::SettingsServices => "Tjänster",
+        Msg::SettingsServicesHint => {
+            "Claude och Codex läses från sina egna filer på den här datorn, Copilot med GitHub \
+             CLI:s inloggning (gh auth login). Lastdrop loggar aldrig in åt dig och ändrar aldrig \
+             deras inloggning."
+        }
+        Msg::SettingsKey => "API-nyckel för Meshy",
+        Msg::SettingsKeyPaste => "Klistra in din API-nyckel för Meshy",
+        // Shares its row with two buttons: short.
+        Msg::SettingsKeyReplace => "Nyckel sparad. Klistra in en ny för att byta",
+        Msg::SettingsKeySave => "Spara nyckel",
+        Msg::SettingsKeyRemove => "Ta bort",
+        Msg::SettingsKeyHint => {
+            "Sparas i Autentiseringshanteraren i Windows, aldrig i en fil. Lastdrop läser bara \
+             ditt kreditsaldo."
+        }
+        Msg::SettingsKeySaved => "Nyckeln har sparats. Verkställ för att börja läsa Meshy.",
+        Msg::SettingsKeyNotSaved => "Kunde inte spara nyckeln: {detail}",
+        Msg::SettingsKeyRemoved => "Nyckeln har tagits bort.",
+        Msg::SettingsKeyNotRemoved => "Kunde inte ta bort nyckeln: {detail}",
+        Msg::SettingsRefresh => "Uppdatering",
+        Msg::SettingsRefreshCheck => "Hämta användning",
+        Msg::SettingsRefreshManual => "Manuellt",
+        Msg::SettingsReadout => "Visning i aktivitetsfältet",
+        Msg::SettingsReadoutShow => "Visa användningen i aktivitetsfältet",
+        Msg::SettingsReadoutRows => "Rader",
+        Msg::SettingsReadoutAuto => "De mest belastade mätarna (auto)",
+        Msg::SettingsReadoutPinned => "Mätare jag fäster",
+        Msg::SettingsReadoutTimes => "Visa tider som",
+        Msg::SettingsReadoutClock => "Klockslag (14:56)",
+        Msg::SettingsReadoutRelative => "Tid kvar (2h)",
+        Msg::SettingsMetersHint => {
+            "Mätare: visa dem i panelen och fäst upp till två i aktivitetsfältet."
+        }
+        // As `card.also.line`: `Veckogränsen för Claude`.
+        Msg::SettingsMeter => "{short_name} för {service}",
+        Msg::SettingsMeterShow => "Visa",
+        Msg::SettingsMeterPin => "Fäst",
+        Msg::SettingsNotify => "Aviseringar",
+        Msg::SettingsNotifyOn => "Avisera mig om mina gränser",
+        Msg::SettingsNotifyLevels => "När en gräns når",
+        Msg::SettingsNotifyAnd => "och",
+        Msg::SettingsNotifyOff => "Av",
+        Msg::SettingsNotifyUsedUp => "När en gräns eller ett saldo är slut",
+        Msg::SettingsNotifyResets => "När en gräns återställs efter en avisering",
+        Msg::SettingsNotifyLow => "När ett saldo börjar ta slut",
+        Msg::SettingsNotifyHint => {
+            "Aviseringar i Windows, en gång per nivå och period. Stör ej håller dem tillbaka."
+        }
+        Msg::SettingsShortcut => "Kortkommando",
+        Msg::SettingsShortcutOn => "Öppna Lastdrop med ett kortkommando",
+        Msg::SettingsShortcutCtrl => "Ctrl",
+        Msg::SettingsShortcutAlt => "Alt",
+        Msg::SettingsShortcutShift => "Skift",
+        Msg::SettingsShortcutWin => "Win",
+        Msg::SettingsShortcutKey => "Tangent",
+        Msg::SettingsShortcutInvalid => {
+            "Välj Ctrl, Alt eller Win (Skift ensam bara med F1–F24) och en bokstav, en siffra \
+             eller F1–F24."
+        }
+        Msg::SettingsShortcutInUse => "Kortkommandot används redan.",
+        Msg::SettingsShortcutFailed => "Kunde inte registrera kortkommandot: {detail}",
+        Msg::SettingsLanguage => "Språk",
+        Msg::SettingsLanguageWindows => "Samma som Windows ({language})",
+        Msg::SettingsLanguageHint => {
+            "För allt som Lastdrop visar. Tal och tider följer det regionala formatet i Windows."
+        }
+        Msg::SettingsStartup => "Start",
+        Msg::SettingsStartupOn => "Starta Lastdrop när jag loggar in i Windows",
+        Msg::SettingsApply => "Verkställ",
+        Msg::SettingsClose => "Stäng",
+        Msg::SettingsSaved => "Sparat.",
+        Msg::SettingsSavedNoShortcut => "Sparat, utom kortkommandot.",
+        Msg::SettingsSavedNoStartup => "Sparat, utom start med Windows.",
+        Msg::SettingsSavedNeither => "Sparat, utom kortkommandot och start med Windows.",
+        Msg::SettingsNotSaved => "Kunde inte spara inställningarna: {detail}",
+
+        // ---- About window
+        Msg::AboutTitle => "Om Lastdrop",
+        Msg::AboutHeading => "Lastdrop {version}",
+        Msg::AboutTagline => "Hur mycket AI som finns kvar i tanken, ett klick bort.",
+        Msg::AboutCopyright => "© 2026 Adinosaur AB. Alla rättigheter förbehållna.",
+        // The licence names stay as their authors wrote them.
+        Msg::AboutCredits => {
+            "Byggt med Slint (Royalty-free License 2.0), jiff, serde, ureq och windows-rs \
+             (MIT / Apache-2.0). Ingen telemetri: Lastdrop pratar bara med de tjänster vars \
+             användning den läser."
+        }
+        Msg::AboutClose => "Stäng",
     }
 }
 
@@ -920,6 +1092,17 @@ pub fn fill(template: &str, args: &[(&str, &str)]) -> String {
 /// `fill(strings.template(msg), args)`.
 pub fn text(strings: &dyn Strings, msg: Msg, args: &[(&str, &str)]) -> String {
     fill(strings.template(msg), args)
+}
+
+/// `s` with its first letter upper-cased: titles, verdicts, "Also tracked" lines and meter rows,
+/// whose templates may start with `{meter}`, `{label}` or `{short_name}` (Appendix B: `{meter}`
+/// "capitalised at the start of a sentence").
+pub fn capitalise(s: &str) -> String {
+    let mut chars = s.chars();
+    match chars.next() {
+        Some(first) => first.to_uppercase().chain(chars).collect(),
+        None => String::new(),
+    }
 }
 
 #[cfg(test)]

@@ -15,7 +15,7 @@ use crate::grammar::TextContext;
 use crate::grammar::a11y::{balance_sentence, runout_point, unit_word};
 use crate::grammar::cells::{back_text, course_pct, pct, reason_text, resets_at, t_out};
 use crate::grammar::numbers::{amount, balance_duration_words, percent, share_pct};
-use crate::grammar::strings::{Msg, Strings, fill, text};
+use crate::grammar::strings::{Msg, Strings, capitalise, fill, text};
 use crate::grammar::time::{
     age_long_min1, age_token, card_date, card_time, long_duration, round_min, runout_text,
     shown_age, shown_duration, time_token,
@@ -36,17 +36,6 @@ fn without_sentence(template: &str, placeholder: &str) -> String {
         .collect::<String>()
         .trim_end()
         .to_owned()
-}
-
-/// `s` with its first letter upper-cased: titles, verdicts and "Also tracked" lines, whose
-/// templates may start with `{meter}` or `{label}` (Appendix B: `{meter}` "capitalised at the
-/// start of a sentence").
-pub(crate) fn capitalise(s: &str) -> String {
-    let mut chars = s.chars();
-    match chars.next() {
-        Some(first) => first.to_uppercase().chain(chars).collect(),
-        None => String::new(),
-    }
 }
 
 /// The meter is in trouble: WARNING or worse from fresh data (values turn semibold, R§8.2).
