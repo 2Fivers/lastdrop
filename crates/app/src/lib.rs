@@ -67,7 +67,8 @@ pub struct Args {
     /// for the system broadcasts).
     pub no_readout: bool,
     /// `--bench <out.json>`: the spike-compatible timeline (+10 s show without activation, +20 s
-    /// hide, +30 s show warm, +40 s hide, +50 s exit) with its JSON ([`bench`]).
+    /// hide, +30 s show warm, +40 s hide), then +50 s Settings (the dialog process), +70 s exit,
+    /// with its JSON ([`bench`]).
     pub bench: Option<PathBuf>,
     /// `--preview-flyout <png>`: render the flyout headless, save it as a PNG and exit
     /// ([`preview`]).
