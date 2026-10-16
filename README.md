@@ -28,7 +28,8 @@ autostart, reading Claude, Codex, GitHub Copilot, Cursor, Google Antigravity, Op
 Meshy, with notifications when a limit
 reaches 80 % or 95 %, is used up or resets. It speaks English and Swedish, following Windows'
 display language unless one is picked in settings. Claude Code and Codex can have several
-accounts, one per config folder. Next come balance services described in JSON, then charts.
+accounts, one per config folder. Services with a simple balance or usage API are described in a
+JSON file (DeepSeek, ElevenLabs and OpenRouter come with it). Next come charts.
 
 ## Plan
 

@@ -1307,7 +1307,7 @@ pub fn open_dialog(app: &App, kind: DialogKind) {
 ///   ignored) and apply it as Apply did in this process: hotkey re-registered when it changed,
 ///   providers and sources rebuilt, readout on or off, models rebuilt, refreshes re-planned. The
 ///   file is not saved again here (it is the dialog's write, and saving would race it).
-/// - an API key (Meshy, OpenCode Go): lift that service's sign-in stop
+/// - an API key (Meshy, OpenCode Go, a described service): lift that service's sign-in stop
 ///   ([`crate::state::lift_sign_in_stop`]) and re-plan; the other's back-off stays.
 pub fn on_settings_changed(app: &App, changes: Changes) {
     log::info!("the dialog process changed {changes:?}");

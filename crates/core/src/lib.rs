@@ -32,6 +32,7 @@
 
 pub mod color;
 pub mod consts;
+pub mod custom;
 pub mod flyout;
 pub mod glyph;
 pub mod grammar;

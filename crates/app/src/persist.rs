@@ -28,6 +28,8 @@ pub const APP_FOLDER: &str = "Lastdrop";
 pub struct Paths {
     /// `%APPDATA%\Lastdrop\settings.json`.
     pub settings: PathBuf,
+    /// `%APPDATA%\Lastdrop\providers`: the user's described services (custom-services-spec §3).
+    pub providers: PathBuf,
     /// `%LOCALAPPDATA%\Lastdrop`.
     pub data: PathBuf,
     /// `%LOCALAPPDATA%\Lastdrop\history`: one JSONL file per meter.
@@ -63,6 +65,7 @@ impl Paths {
         let data = PathBuf::from(local_appdata.into()).join(APP_FOLDER);
         Paths {
             settings: roaming.join("settings.json"),
+            providers: roaming.join("providers"),
             history: data.join("history"),
             logs: data.join("logs"),
             state: data.join("state.json"),
@@ -75,6 +78,8 @@ impl Paths {
         if let Some(dir) = self.settings.parent() {
             std::fs::create_dir_all(dir)?;
         }
+        // Made so the user finds where described services go; not needed to run.
+        let _ = std::fs::create_dir_all(&self.providers);
         std::fs::create_dir_all(&self.history)?;
         std::fs::create_dir_all(&self.logs)
     }

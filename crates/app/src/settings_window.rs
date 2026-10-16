@@ -374,10 +374,10 @@ fn pinned_names(key: &MeterKey) -> MeterNames {
     }
 }
 
-/// The services read with an API key stored here (Meshy, OpenCode Go) that the settings have,
-/// in service order: the rows of the API keys section.
+/// The services read with an API key stored here (Meshy, OpenCode Go, the described services)
+/// that the settings have, in service order: the rows of the API keys section.
 pub fn key_services(settings: &Settings) -> Vec<ProviderId> {
-    ProviderId::ALL
+    ProviderId::every()
         .into_iter()
         .filter(|p| p.uses_api_key() && settings.provider(*p).is_some())
         .collect()

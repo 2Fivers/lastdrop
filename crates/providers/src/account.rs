@@ -96,6 +96,15 @@ pub enum AccountSource {
         /// entry holds the key when Lastdrop has none (read-only).
         auth_file: PathBuf,
     },
+    /// A described service's account (custom-services-spec): its API key.
+    Custom {
+        /// The account key from settings.
+        account: AccountKey,
+        /// The service.
+        provider: ProviderId,
+        /// The API key's name in Credential Manager (`Lastdrop:<id>:<account>:api_key`).
+        credential: CredentialName,
+    },
     /// A Grok account: the Grok CLI's sign-in.
     Grok {
         /// The account key from settings.
@@ -232,6 +241,21 @@ impl AccountSource {
                     auth_file: home(env)?.join(crate::opencode_go::AUTH_FILE),
                 })
             }
+            (ProviderId::Custom(_), SourceSettings::Default | SourceSettings::ApiKey { .. }) => {
+                let name = match &account.source {
+                    SourceSettings::ApiKey { name } if !name.is_empty() => name.clone(),
+                    _ => crate::meshy::API_KEY_NAME.to_owned(),
+                };
+                Ok(AccountSource::Custom {
+                    credential: CredentialName {
+                        provider,
+                        account: key.clone(),
+                        name,
+                    },
+                    provider,
+                    account: key,
+                })
+            }
             (ProviderId::Grok, SourceSettings::Default) => {
                 let auth_file = match non_empty_var(env, crate::grok::AUTH_PATH_VAR) {
                     Some(file) => file,
@@ -266,6 +290,7 @@ impl AccountSource {
             AccountSource::Antigravity { .. } => ProviderId::Antigravity,
             AccountSource::OpenCodeGo { .. } => ProviderId::OpenCodeGo,
             AccountSource::Grok { .. } => ProviderId::Grok,
+            AccountSource::Custom { provider, .. } => *provider,
         }
     }
 
@@ -289,7 +314,8 @@ impl AccountSource {
             | AccountSource::Cursor { account, .. }
             | AccountSource::Antigravity { account }
             | AccountSource::OpenCodeGo { account, .. }
-            | AccountSource::Grok { account, .. } => account,
+            | AccountSource::Grok { account, .. }
+            | AccountSource::Custom { account, .. } => account,
         }
     }
 }

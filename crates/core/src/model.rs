@@ -8,12 +8,13 @@ use jiff::tz::TimeZone;
 use jiff::{SignedDuration, Span, Timestamp};
 use serde::{Deserialize, Serialize};
 
+use crate::custom::CustomId;
 use crate::glyph::ProviderGlyph;
 use crate::secret::SecretString;
 
-/// A service Lastdrop reads (R§2 "Service").
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
+/// A service Lastdrop reads (R§2 "Service"). Written as [`ProviderId::as_str`] (settings, the state
+/// file, history file names, credential names).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum ProviderId {
     /// Claude plans (Claude Code / Claude Desktop): 5-hour, weekly and per-model weekly windows.
     Claude,
@@ -32,6 +33,25 @@ pub enum ProviderId {
     /// Grok (SuperGrok, Grok Build): the shared credit pool of the week or month, on-demand spend
     /// and prepaid credit.
     Grok,
+    /// A service described in JSON (custom-services-spec): an index into the services loaded at
+    /// start-up ([`crate::custom`]).
+    Custom(CustomId),
+}
+
+impl Serialize for ProviderId {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(self.as_str())
+    }
+}
+
+impl<'de> Deserialize<'de> for ProviderId {
+    /// A built-in service's id, or a loaded described service's; anything else is an error (a
+    /// settings entry of a service whose file is gone is then kept as an unknown entry).
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<ProviderId, D::Error> {
+        let id = String::deserialize(deserializer)?;
+        ProviderId::from_id(&id)
+            .ok_or_else(|| serde::de::Error::custom("a service this build does not know"))
+    }
 }
 
 impl ProviderId {
@@ -47,10 +67,19 @@ impl ProviderId {
         ProviderId::Grok,
     ];
 
+    /// Every service: the built-in ones ([`ProviderId::ALL`]), then the described ones loaded at
+    /// start-up, in the order loaded.
+    pub fn every() -> Vec<ProviderId> {
+        ProviderId::ALL
+            .into_iter()
+            .chain(crate::custom::all().into_iter().map(ProviderId::Custom))
+            .collect()
+    }
+
     /// Stable lower-case id used in settings, history file names and credential names
-    /// (`claude`, `codex`, `copilot`, `meshy`, `cursor`, `antigravity`, `opencode_go`, `grok`).
-    /// Never changes once shipped.
-    pub const fn as_str(self) -> &'static str {
+    /// (`claude`, `codex`, `copilot`, `meshy`, `cursor`, `antigravity`, `opencode_go`, `grok`, or a
+    /// described service's file `id`). Never changes once shipped.
+    pub fn as_str(self) -> &'static str {
         match self {
             ProviderId::Claude => "claude",
             ProviderId::Codex => "codex",
@@ -60,17 +89,22 @@ impl ProviderId {
             ProviderId::Antigravity => "antigravity",
             ProviderId::OpenCodeGo => "opencode_go",
             ProviderId::Grok => "grok",
+            ProviderId::Custom(c) => crate::custom::get(c).map_or("custom", |r| r.id),
         }
     }
 
-    /// Parses [`ProviderId::as_str`] back; `None` for an id this build does not know.
+    /// Parses [`ProviderId::as_str`] back; `None` for an id this build does not know (and no
+    /// loaded file describes).
     pub fn from_id(id: &str) -> Option<ProviderId> {
-        ProviderId::ALL.into_iter().find(|p| p.as_str() == id)
+        ProviderId::ALL
+            .into_iter()
+            .find(|p| p.as_str() == id)
+            .or_else(|| crate::custom::find(id).map(ProviderId::Custom))
     }
 
     /// The service name shown to people: Appendix B's `{service}` before an account alias is
     /// added (R§6.4: `Claude · Work` in M2).
-    pub const fn display_name(self) -> &'static str {
+    pub fn display_name(self) -> &'static str {
         match self {
             ProviderId::Claude => "Claude",
             ProviderId::Codex => "Codex",
@@ -80,6 +114,7 @@ impl ProviderId {
             ProviderId::Antigravity => "Antigravity",
             ProviderId::OpenCodeGo => "OpenCode Go",
             ProviderId::Grok => "Grok",
+            ProviderId::Custom(c) => crate::custom::get(c).map_or("Service", |r| r.name),
         }
     }
 
@@ -94,6 +129,9 @@ impl ProviderId {
             ProviderId::Antigravity => ProviderGlyph::Monogram("A".to_owned()),
             ProviderId::OpenCodeGo => ProviderGlyph::Monogram("O".to_owned()),
             ProviderId::Grok => ProviderGlyph::Monogram("G".to_owned()),
+            ProviderId::Custom(c) => ProviderGlyph::Monogram(
+                crate::custom::get(c).map_or("?", |r| r.monogram).to_owned(),
+            ),
         }
     }
 
@@ -101,7 +139,7 @@ impl ProviderId {
     /// (`open {client} in this account`). `None` for services signed in with an API key that the
     /// user enters in Lastdrop's settings (Meshy, OpenCode Go): their cards show the API-key
     /// message instead (`flyout::MessageKind::ApiKey`).
-    pub const fn client_name(self) -> Option<&'static str> {
+    pub fn client_name(self) -> Option<&'static str> {
         match self {
             ProviderId::Claude => Some("Claude Code"),
             ProviderId::Codex => Some("Codex"),
@@ -109,14 +147,18 @@ impl ProviderId {
             ProviderId::Cursor => Some("Cursor"),
             ProviderId::Antigravity => Some("Antigravity"),
             ProviderId::Grok => Some("Grok"),
-            ProviderId::Meshy | ProviderId::OpenCodeGo => None,
+            ProviderId::Meshy | ProviderId::OpenCodeGo | ProviderId::Custom(_) => None,
         }
     }
 
     /// The service is read with an API key the user stores in Lastdrop's settings (Credential
-    /// Manager, `Lastdrop:<provider>:<account>:api_key`).
-    pub const fn uses_api_key(self) -> bool {
-        matches!(self, ProviderId::Meshy | ProviderId::OpenCodeGo)
+    /// Manager, `Lastdrop:<provider>:<account>:api_key`): Meshy, OpenCode Go and every described
+    /// service.
+    pub fn uses_api_key(self) -> bool {
+        matches!(
+            self,
+            ProviderId::Meshy | ProviderId::OpenCodeGo | ProviderId::Custom(_)
+        )
     }
 }
 
@@ -632,7 +674,7 @@ const OPENCODE_GO_METERS: [MeterDef; 3] = [
 /// per-model weekly windows come from readings (order 2, 3, … in the service's order). A Codex
 /// plan with other window lengths reports meters outside the catalogue (`codex::meter`). Copilot
 /// has no always-present meter.
-pub const fn catalog(provider: ProviderId) -> &'static [MeterDef] {
+pub fn catalog(provider: ProviderId) -> &'static [MeterDef] {
     match provider {
         ProviderId::Claude => &CLAUDE_METERS,
         ProviderId::Codex => &CODEX_METERS,
@@ -645,6 +687,8 @@ pub const fn catalog(provider: ProviderId) -> &'static [MeterDef] {
         // Which pools a Cursor plan reports, which period Grok's plan counts and which model
         // pools Antigravity has depend on the account: their meters come from readings.
         ProviderId::Cursor | ProviderId::Antigravity | ProviderId::Grok => &[],
+        // Every meter and balance of its file.
+        ProviderId::Custom(c) => crate::custom::get(c).map_or(&[], |r| r.catalog),
     }
 }
 
@@ -796,6 +840,8 @@ pub enum SourceKind {
     /// `GET https://cli-chat-proxy.grok.com/v1/billing?format=credits` with the Grok CLI's
     /// sign-in.
     GrokApi,
+    /// A described service's endpoint (custom-services-spec §5).
+    CustomApi,
 }
 
 /// What the provider says about the reading it returns (ARCHITECTURE "Snapshot"). The

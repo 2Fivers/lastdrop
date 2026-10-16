@@ -1,0 +1,17 @@
+{
+  "format": 1,
+  "id": "deepseek",
+  "name": "DeepSeek",
+  "url": "https://api.deepseek.com/user/balance",
+  "usage_page": "https://platform.deepseek.com/usage",
+  "balances": [
+    {
+      "id": "balance",
+      "label": "Bal",
+      "short_name": "balance",
+      "name": "Balance",
+      "amount": "/balance_infos/0/total_balance",
+      "currency_at": "/balance_infos/0/currency"
+    }
+  ]
+}

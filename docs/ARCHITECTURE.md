@@ -207,6 +207,7 @@ fixed order and returns the freshest success; every attempt is logged (without s
 | Antigravity | `agy -p /usage --output-format json --print-timeout 15s` (the CLI's official print mode, agy ≥ 1.1.11, checked once per executable with `agy --version`), without a window in a kill-on-close job, `ANTIGRAVITY_OAUTH_CREDENTIALS_JSON` removed; agy renews its own sign-in; at most every 10 min |
 | OpenCode Go | `GET https://opencode.ai/zen/go/v1/usage` (OpenCode's own console, undocumented) with the Go API key from Credential Manager, else the one in OpenCode's `auth.json` (read-only); at most every 5 min |
 | Grok | `GET https://cli-chat-proxy.grok.com/v1/billing?format=credits` (the Grok CLI's own `/usage` request, undocumented) with the latest subscription sign-in of the CLI's `auth.json` (read-only, never renewed); at most every 5 min |
+| Described services | `GET` the file's `url` with the key from Credential Manager (`Lastdrop:<id>:<account>:api_key`) in the file's header, numbers taken at the file's JSON pointers ([custom-services-spec](design/custom-services-spec.md)); the bundled files and those in `%APPDATA%\Lastdrop\providers` are read at start-up into `lastdrop_core::custom`'s registry (`ProviderId::Custom`); 401 stops until the key is saved again, 403/429 back off; at most every 5 min |
 
 Where these come from, with the sources checked: [providers-research](design/providers-research.md).
 
@@ -281,7 +282,8 @@ Rules for every provider:
   notices the user going or coming back and replans); poll again shortly after a window's reset
   time; one job per credential source in flight.
 - **Persistence:** settings in `%APPDATA%\Lastdrop\settings.json` (atomic write, no
-  secrets); history in `%LOCALAPPDATA%\Lastdrop\` (thinned to one sample per meter per
+  secrets); the user's described services in `%APPDATA%\Lastdrop\providers\*.json`
+  (only read, by both processes at start-up); history in `%LOCALAPPDATA%\Lastdrop\` (thinned to one sample per meter per
   5 minutes, 90 days); `%LOCALAPPDATA%\Lastdrop\state.json` (what the app remembers that is
   not a setting: the meters a source has reported, so their room in the readout survives a
   restart, what notifications announced, so a restart repeats none, and the hash of who each

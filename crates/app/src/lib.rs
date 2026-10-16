@@ -20,6 +20,7 @@
 //! - [`preview`]: `--preview-flyout`: renders the flyout headless and saves a PNG.
 //! - [`png`]: the minimal PNG writer the preview uses.
 //! - [`dialog`]: the dialog process, the requests between it and the tray process.
+//! - [`custom_services`]: the services described in JSON, read at start-up.
 //! - [`settings_window`]: the settings window's draft and callbacks (dialog process);
 //!   [`settings_accounts`]: its Accounts section (accounts-spec §6–§7).
 //! - [`writer`]: the file writer thread (history appends and compaction, settings and state
@@ -42,6 +43,7 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 pub mod bench;
+pub mod custom_services;
 pub mod demo;
 pub mod dialog;
 pub mod history;

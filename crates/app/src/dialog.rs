@@ -13,7 +13,8 @@
 //!   wants ([`DialogKind::to_wparam`]) to the running dialog process, which opens it or brings
 //!   it to the front, and exits.
 //! - What the dialog changed reaches the tray process as one posted message ([`notify`],
-//!   [`Changes`]): it re-reads `settings.json` and applies it, or lifts Meshy's sign-in stop.
+//!   [`Changes`]): it re-reads `settings.json` and applies it, or lifts the sign-in stop of a
+//!   service whose API key was saved or removed.
 //!
 //! Threading: the main thread runs the Slint event loop and every window; the log has its own
 //! writer thread ([`crate::logger`], file `settings.log`).
@@ -23,9 +24,10 @@ use std::cell::RefCell;
 use std::process::{ExitCode, Stdio};
 use std::time::{Duration, Instant};
 
+use lastdrop_core::custom;
 use lastdrop_core::grammar::strings::text;
 use lastdrop_core::grammar::{Language, Msg, Strings};
-use lastdrop_core::model::ProviderId;
+use lastdrop_core::model::{ProviderId, fnv1a64};
 use lastdrop_win::single_instance::{self, Instance, InstanceGuard};
 use slint::ComponentHandle;
 use slint::winit_030::WinitWindowAccessor;
@@ -107,6 +109,10 @@ pub struct Changes {
     pub meshy_key: bool,
     /// OpenCode Go's API key was saved or removed: the same for OpenCode Go.
     pub opencode_go_key: bool,
+    /// A described service's API key was saved or removed: the same for that service. Sent as a
+    /// hash of its file id, since the two processes may have loaded different files (one added
+    /// since the tray process started); `None` in the tray process when it has no such service.
+    pub custom_key: Option<ProviderId>,
 }
 
 impl Changes {
@@ -116,12 +122,18 @@ impl Changes {
     const MESHY_KEY: usize = 2;
     /// The flag of [`Changes::opencode_go_key`].
     const OPENCODE_GO_KEY: usize = 4;
+    /// The flag of [`Changes::custom_key`]; the service's [`Changes::custom_hash`] is in bits
+    /// 8–31.
+    const CUSTOM_KEY: usize = 8;
+    /// Where the hash of [`Changes::custom_key`] starts.
+    const CUSTOM_SHIFT: u32 = 8;
 
     /// The change of `provider`'s API key; nothing for a service without one.
     pub fn key_of(provider: ProviderId) -> Changes {
         Changes {
             meshy_key: provider == ProviderId::Meshy,
             opencode_go_key: provider == ProviderId::OpenCodeGo,
+            custom_key: matches!(provider, ProviderId::Custom(_)).then_some(provider),
             ..Changes::default()
         }
     }
@@ -134,7 +146,14 @@ impl Changes {
         ]
         .into_iter()
         .filter_map(|(changed, p)| changed.then_some(p))
+        .chain(self.custom_key)
         .collect()
+    }
+
+    /// 24 bits of the FNV-1a hash of a described service's file id. Two services sharing them
+    /// only lift one stop too many.
+    fn custom_hash(id: &str) -> usize {
+        usize::try_from(fnv1a64(&[id]) & 0xFF_FFFF).unwrap_or(0)
     }
 
     /// The flags as a `WPARAM`.
@@ -149,15 +168,30 @@ impl Changes {
         if self.opencode_go_key {
             flags |= Changes::OPENCODE_GO_KEY;
         }
+        if let Some(provider) = self.custom_key {
+            flags |= Changes::CUSTOM_KEY
+                | Changes::custom_hash(provider.as_str()) << Changes::CUSTOM_SHIFT;
+        }
         flags
     }
 
-    /// The flags of a posted `WPARAM`; unknown bits (a newer build's) are ignored.
+    /// The flags of a posted `WPARAM`; unknown bits (a newer build's) are ignored. A described
+    /// service's hash is matched against this process's services.
     pub fn from_wparam(wparam: usize) -> Changes {
+        let hash = (wparam >> Changes::CUSTOM_SHIFT) & 0xFF_FFFF;
+        let custom_key = (wparam & Changes::CUSTOM_KEY != 0)
+            .then(|| {
+                custom::all()
+                    .into_iter()
+                    .map(ProviderId::Custom)
+                    .find(|p| Changes::custom_hash(p.as_str()) == hash)
+            })
+            .flatten();
         Changes {
             settings: wparam & Changes::SETTINGS != 0,
             meshy_key: wparam & Changes::MESHY_KEY != 0,
             opencode_go_key: wparam & Changes::OPENCODE_GO_KEY != 0,
+            custom_key,
         }
     }
 }
@@ -214,6 +248,7 @@ pub fn run(kind: DialogKind) -> ExitCode {
         env!("CARGO_PKG_VERSION"),
         kind.flag()
     );
+    crate::custom_services::load(&paths.providers);
     let code = match run_dialogs(&guard, &paths, kind) {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {
@@ -431,13 +466,14 @@ mod tests {
                     settings,
                     meshy_key,
                     opencode_go_key: !meshy_key,
+                    custom_key: None,
                 };
                 assert_eq!(Changes::from_wparam(changes.to_wparam()), changes);
             }
         }
         assert_eq!(Changes::default().to_wparam(), 0);
         assert_eq!(
-            Changes::from_wparam(1 | 8),
+            Changes::from_wparam(1 | 16),
             Changes {
                 settings: true,
                 ..Changes::default()

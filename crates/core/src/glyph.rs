@@ -180,7 +180,8 @@ pub const fn provider_paths(provider: ProviderId) -> &'static [GlyphPath] {
         ProviderId::Cursor
         | ProviderId::Antigravity
         | ProviderId::OpenCodeGo
-        | ProviderId::Grok => &[],
+        | ProviderId::Grok
+        | ProviderId::Custom(_) => &[],
     }
 }
 

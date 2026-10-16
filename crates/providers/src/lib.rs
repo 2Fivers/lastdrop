@@ -38,6 +38,7 @@ pub mod claude;
 pub mod codex;
 pub mod copilot;
 pub mod cursor;
+pub mod custom;
 pub mod discover;
 pub mod error;
 pub mod fakes;
@@ -155,12 +156,13 @@ impl FetchContext<'_> {
     }
 }
 
-/// The providers configured from settings, in [`ProviderId::ALL`] order. Recreated when the
+/// The providers configured from settings, in [`ProviderId::every`] order (the built-in ones,
+/// then one per described service). Recreated when the
 /// provider options change. `Arc` because the main thread keeps one per source and hands clones
 /// to worker jobs (ARCHITECTURE "Threads").
 pub fn providers(settings: &Settings) -> Vec<Arc<dyn Provider>> {
     let options = &settings.provider_options;
-    vec![
+    let built_in: Vec<Arc<dyn Provider>> = vec![
         Arc::new(claude::ClaudeProvider::new(options.claude.clone())),
         Arc::new(codex::CodexProvider::new(options.codex.clone())),
         Arc::new(copilot::CopilotProvider::new()),
@@ -169,5 +171,13 @@ pub fn providers(settings: &Settings) -> Vec<Arc<dyn Provider>> {
         Arc::new(antigravity::AntigravityProvider::new()),
         Arc::new(opencode_go::OpenCodeGoProvider::new()),
         Arc::new(grok::GrokProvider::new()),
-    ]
+    ];
+    built_in
+        .into_iter()
+        .chain(
+            lastdrop_core::custom::all()
+                .into_iter()
+                .map(|id| Arc::new(custom::CustomProvider::new(id)) as Arc<dyn Provider>),
+        )
+        .collect()
 }
