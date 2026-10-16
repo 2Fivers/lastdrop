@@ -1,7 +1,7 @@
 //! Percent and numbers (R§5.6) and balance durations (R§5.5, F§4.5).
 
 use super::locale::{LocaleFormat, PercentPattern};
-use super::strings::{Msg, Plural, Strings, text};
+use super::strings::{Msg, PluralMsg, Strings, count, text};
 use crate::consts::{
     BAL_DURATION_DAYS_BELOW_DAYS, BAL_DURATION_HOURS_BELOW_DAYS, BAL_DURATION_WEEKS_BELOW_DAYS,
 };
@@ -78,15 +78,6 @@ fn balance_span(days_left: f64) -> BalanceSpan {
     }
 }
 
-/// `n` units with the language's plural.
-fn plural(n: i64, one: Msg, other: Msg, strings: &dyn Strings) -> String {
-    let msg = match strings.plural(n) {
-        Plural::One => one,
-        Plural::Other => other,
-    };
-    text(strings, msg, &[("n", &n.to_string())])
-}
-
 /// The readout's balance duration after `≈` (R§5.5): `days_left < 2` → `Nh` (floor hours, ≥ 1);
 /// `< 14` → `Nd` (floor); `< 63` → `Nw` (floor weeks); `≥ 63` → `9w+`. `None` (shown as `–`) when
 /// there was no burn in 7 days or less than 48 h of history.
@@ -121,14 +112,13 @@ pub fn balance_forecast_long(stats: &BalanceStats, strings: &dyn Strings) -> Str
 pub fn balance_duration_words(stats: &BalanceStats, strings: &dyn Strings) -> Option<String> {
     let days_left = stats.days_left?;
     Some(match balance_span(days_left) {
-        BalanceSpan::Hours(h) => plural(h, Msg::UnitHourOne, Msg::UnitHourOther, strings),
-        BalanceSpan::Days(d) => plural(d, Msg::UnitDayOne, Msg::UnitDayOther, strings),
-        BalanceSpan::Weeks(w) => plural(w, Msg::UnitWeekOne, Msg::UnitWeekOther, strings),
-        BalanceSpan::MoreThanEightWeeks => plural(
-            (days_left / 7.0).floor() as i64,
-            Msg::UnitWeekOne,
-            Msg::UnitWeekOther,
+        BalanceSpan::Hours(h) => count(strings, PluralMsg::UnitHour, h),
+        BalanceSpan::Days(d) => count(strings, PluralMsg::UnitDay, d),
+        BalanceSpan::Weeks(w) => count(strings, PluralMsg::UnitWeek, w),
+        BalanceSpan::MoreThanEightWeeks => count(
             strings,
+            PluralMsg::UnitWeek,
+            (days_left / 7.0).floor() as i64,
         ),
     })
 }

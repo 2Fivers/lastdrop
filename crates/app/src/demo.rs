@@ -385,9 +385,10 @@ impl Demo {
     /// The same world in `language`, with its regional format: sv-SE for Swedish, en-GB
     /// otherwise.
     pub fn in_language(mut self, language: Language) -> Demo {
-        self.locale = match language {
-            Language::Swedish => LocaleFormat::sv_se(zone()),
-            Language::English => LocaleFormat::en_gb(zone()),
+        self.locale = if language == Language::Swedish {
+            LocaleFormat::sv_se(zone())
+        } else {
+            LocaleFormat::en_gb(zone())
         };
         self.language = language;
         self

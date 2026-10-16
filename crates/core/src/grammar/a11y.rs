@@ -3,7 +3,8 @@
 //! Row sentence grammar: `<Service> <meter name>: <verdict>, <facts>.` — verdict first; full
 //! times with AM/PM where the locale uses it ([`super::time::spoken_time`]). `{meter}` here is
 //! the meter's **spoken name**: its `name` with ` · ` read as `, ` and the first letter
-//! lower-cased unless it is a digit — `5-hour session`, `weekly, all models`, `weekly, Fable`
+//! lower-cased unless it is a digit or the language capitalises nouns
+//! ([`Strings::lowercase_names`]) — `5-hour session`, `weekly, all models`, `weekly, Fable`
 //! (R§11's examples; a screen reader would read `·` aloud). Percentages are spoken as
 //! `{n} percent` with a bare integer.
 
@@ -26,12 +27,14 @@ use crate::stats::{
 use crate::util::duration_from_hours;
 
 /// The spoken name of a meter (module docs): `·` read as a comma, the first letter lower-cased
-/// unless it is a digit (`Weekly · all models` → `weekly, all models`).
-pub(crate) fn spoken_name(name: &str) -> String {
+/// unless it is a digit or the language keeps it (`Weekly · all models` → `weekly, all models`).
+pub(crate) fn spoken_name(name: &str, strings: &dyn Strings) -> String {
     let joined = name.replace(" · ", ", ").replace('·', ",");
     let mut chars = joined.chars();
     match chars.next() {
-        Some(first) if !first.is_ascii_digit() => first.to_lowercase().chain(chars).collect(),
+        Some(first) if strings.lowercase_names() && !first.is_ascii_digit() => {
+            first.to_lowercase().chain(chars).collect()
+        }
         _ => joined,
     }
 }
@@ -105,7 +108,7 @@ pub(crate) fn balance_sentence(
 /// used` form (callers describe stale services with [`service_sentence`]).
 fn row_core(a: &Assessment, service: &ServiceEval, cx: &TextContext<'_>) -> String {
     let svc = service.display_name();
-    let meter = spoken_name(&a.names.name);
+    let meter = spoken_name(&a.names.name, cx.strings);
     let n = pct(a).to_string();
     let base = [
         ("service", &*svc),
@@ -237,7 +240,10 @@ pub fn service_sentence(
             text(
                 cx.strings,
                 Msg::A11yStaleRow,
-                &[("meter", &spoken_name(&a.names.name)), ("n", &n)],
+                &[
+                    ("meter", &spoken_name(&a.names.name, cx.strings)),
+                    ("n", &n),
+                ],
             )
         })
         .collect::<Vec<_>>()
@@ -382,11 +388,38 @@ mod tests {
 
     #[test]
     fn spoken_names() {
-        assert_eq!(spoken_name("5-hour session"), "5-hour session");
-        assert_eq!(spoken_name("Weekly · all models"), "weekly, all models");
-        assert_eq!(spoken_name("Weekly · Fable"), "weekly, Fable");
-        assert_eq!(spoken_name("Credits"), "credits");
-        assert_eq!(spoken_name(""), "");
+        use crate::grammar::strings::{English, Plural, PluralMsg};
+
+        let en = &English;
+        assert_eq!(spoken_name("5-hour session", en), "5-hour session");
+        assert_eq!(spoken_name("Weekly · all models", en), "weekly, all models");
+        assert_eq!(spoken_name("Weekly · Fable", en), "weekly, Fable");
+        assert_eq!(spoken_name("Credits", en), "credits");
+        assert_eq!(spoken_name("", en), "");
+
+        // A language that capitalises nouns keeps the capital (German `Woche, alle Modelle`).
+        struct Capitals;
+        impl Strings for Capitals {
+            fn language(&self) -> &str {
+                "de"
+            }
+            fn template(&self, msg: Msg) -> &str {
+                English.template(msg)
+            }
+            fn plural(&self, n: i64) -> Plural {
+                English.plural(n)
+            }
+            fn plural_template(&self, msg: PluralMsg, form: Plural) -> &str {
+                English.plural_template(msg, form)
+            }
+            fn lowercase_names(&self) -> bool {
+                false
+            }
+        }
+        assert_eq!(
+            spoken_name("Woche · alle Modelle", &Capitals),
+            "Woche, alle Modelle"
+        );
     }
 
     #[test]

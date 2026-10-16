@@ -130,7 +130,9 @@ setups.
   ([notifications-spec](design/notifications-spec.md)): built, with used up and low balances.
 - Language: English and Swedish to start: built, following Windows' display language unless
   one is picked in settings. Every window is translated, the settings and about windows too;
-  only Slint's own "Made with Slint" badge in the about window stays English.
+  only Slint's own "Made with Slint" badge in the about window stays English. Another language
+  is one TOML file in `crates/core/locales`, checked and compiled in by the build, with CLDR
+  plural rules for whole numbers ([how](../crates/core/locales/README.md)).
 - Updates: check, download and apply in place (channel to be decided while the app is not
   publicly distributed).
 

@@ -1098,28 +1098,34 @@ mod tests {
 
     #[test]
     fn languages_round_trip_through_the_choices() {
+        // "Same as Windows", then every language by its own name (one per locale file).
         let choices = language_choices(&["sv-SE".to_owned(), "en-US".to_owned()], &English);
-        assert_eq!(choices, ["Same as Windows (Svenska)", "English", "Svenska"]);
+        assert_eq!(choices[..2], ["Same as Windows (Svenska)", "English"]);
+        assert_eq!(choices.len(), Language::ALL.len() + 1);
+        assert!(choices.iter().any(|c| c == "Svenska"));
         assert_eq!(
             language_choices(&[], &English)[0],
             "Same as Windows (English)"
         );
         assert_eq!(
-            language_choices(&["sv-SE".to_owned()], &Swedish),
-            ["Samma som Windows (Svenska)", "English", "Svenska"]
+            language_choices(&["sv-SE".to_owned()], &Swedish)[0],
+            "Samma som Windows (Svenska)"
         );
-        for setting in [None, Some("en"), Some("sv")] {
+        let tags = Language::ALL.map(|l| Some(l.tag()));
+        for setting in [None].into_iter().chain(tags) {
             assert_eq!(
                 language_at(language_index(setting)).as_deref(),
                 setting,
                 "{setting:?}"
             );
         }
-        assert_eq!(language_index(Some("sv-SE")), 2);
-        // A newer build's language shows as "Same as Windows".
-        assert_eq!(language_index(Some("de")), 0);
+        assert_eq!(language_index(Some("sv-SE")), language_index(Some("sv")));
+        // A newer build's language shows as "Same as Windows" (`qaa` is for private use, so no
+        // locale file will ever be named after it).
+        assert_eq!(language_index(Some("qaa")), 0);
         assert_eq!(language_at(-1), None);
-        assert_eq!(language_at(9), None);
+        let past_the_end = i32::try_from(Language::ALL.len() + 1).expect("a few languages");
+        assert_eq!(language_at(past_the_end), None);
     }
 
     #[test]

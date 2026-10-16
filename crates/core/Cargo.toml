@@ -14,5 +14,9 @@ jiff.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 
+# build.rs turns locales/*.toml into the string tables (src/grammar/strings.rs).
+[build-dependencies]
+toml.workspace = true
+
 [lints]
 workspace = true

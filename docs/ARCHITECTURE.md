@@ -24,7 +24,8 @@ Cargo.toml                 workspace: shared dependency versions, lints, release
 crates/
   core/       lastdrop-core        pure: model, pace and forecast, severity, readout and tray
                                    models, notices, text grammar, settings schema, refresh
-                                   policy
+                                   policy; locales/ holds the strings, one TOML file per
+                                   language
   providers/  lastdrop-providers   one module per service; I/O behind small traits so tests
                                    run on fixtures; no UI, no Win32 windows
   win/        lastdrop-win         Win32: drawing (Direct2D + DirectWrite), tray icon image,
@@ -131,9 +132,13 @@ Messages between threads: workers send results to the main thread with
   A pure function of the evaluation and the memory of what was announced, worded into one
   `NotificationModel` per evaluation.
 - **Strings** — every user-visible string is a resource (`grammar::strings`), one table per
-  language: English and Swedish. The language is the user's setting, else the first of Windows'
-  display languages that has a table, else English; numbers, dates and times follow the
-  regional format on their own. Providers name meters in English (that is what readings, the
+  language: English and Swedish. Each table is a TOML file in `crates/core/locales`, with
+  `en.toml` as the source. Core's build script checks every file and compiles them into
+  `&'static str` arrays: each key of `en.toml` is there, with the English placeholders and the
+  plural forms of the language's CLDR rule (`grammar::plural`). So a language is one file and
+  costs nothing at run time ([`crates/core/locales/README.md`](../crates/core/locales/README.md)).
+  The language is the user's setting, else the first of Windows' display languages that has a
+  table, else English; numbers, dates and times follow the regional format on their own. Providers name meters in English (that is what readings, the
   history and the state file keep), and the app renames them in the chosen language on every
   evaluation (`grammar::meters`). The Slint windows have no text of their own: Rust passes
   each one its texts (the flyout's labels, the settings window's `SettingsTexts`, the about
