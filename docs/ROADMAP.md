@@ -24,10 +24,10 @@ _researching_ are being verified against primary sources before anything is buil
 
 | Service | What Lastdrop shows | Where the data comes from | Status |
 |---|---|---|---|
-| **Claude Code / Claude plans** | 5-hour session, weekly, per-model weekly, extra usage; tokens and estimated cost per day/model/project | OAuth usage endpoint with Claude Code's token (read-only) → Claude Desktop's last usage response in its HTTP cache (no token) → Claude Desktop's plan-usage history (no token) → Claude Code's cached usage; local transcripts for statistics | Researched |
-| **Codex** | 5-hour / weekly windows (whichever the plan has), credits; tokens per day/model | `codex app-server` `account/rateLimits/read` (official) → session logs offline | Researched |
+| **Claude Code / Claude plans** | 5-hour session, weekly, per-model weekly, extra usage; tokens and estimated cost per day/model/project | OAuth usage endpoint with Claude Code's token (read-only) → Claude Desktop's last usage response in its HTTP cache (no token) → Claude Desktop's plan-usage history (no token) → Claude Code's cached usage; local transcripts for statistics | 5-hour, weekly and per-model weekly windows built; extra usage and transcript statistics planned |
+| **Codex** | 5-hour / weekly windows (whichever the plan has), credits; tokens per day/model | `codex app-server` `account/rateLimits/read` (official) → session logs offline | Windows built; credits and token statistics planned |
 | **GitHub Copilot** | Monthly quotas used vs allowance, reset date (premium requests on paid plans; chat messages and code completions on Copilot Free); usage per day/model | `copilot_internal/user` with the `gh auth token`; official billing usage API for statistics. If a paid plan's answer stops giving its allowance (AI Credits since 2026-06-01), the user enters it once | Quotas built (Copilot Free verified live); paid plans from fixtures; statistics planned |
-| **Meshy** | Credit balance, burn rate, days left | Official `GET /openapi/v1/balance` with an API key | Researched |
+| **Meshy** | Credit balance, burn rate, days left | Official `GET /openapi/v1/balance` with an API key | Built (balance, burn rate, run-out forecast) |
 | **Cursor** | Included usage (auto / API pools), on-demand spend, billing-cycle reset | Unofficial `cursor.com/api/usage-summary`; session cookie built from the token Cursor stores in `state.vscdb` (read-only, never copied — the file can be 1.6 GB). Teams: official Admin API with an admin key | Researched |
 | **Google Antigravity** | 5-hour and weekly quota per pool ("Gemini models", "Claude and GPT models"), reset times | Official `agy -p /usage --output-format json` (agy ≥ 1.1.11; agy refreshes its own login) → the desktop app's local language server. Not the remote API: other tools scrape Google's OAuth client secret out of the binary to use it | Researched |
 | **OpenCode Go** | 5-hour, weekly and monthly windows | `GET opencode.ai/zen/go/v1/usage` with the Go API key (from the user, or OpenCode's own `auth.json`). Undocumented; percent only | Researched |
@@ -146,26 +146,35 @@ setups.
 
 ## Milestones
 
-| | Milestone | Content |
-|---|---|---|
-| M0 | **Stack spike** | Same flyout in Rust + Slint and Rust + Tauri; measure idle/open memory, flyout latency, size and look; pick one. _In progress._ |
-| M1 | **First useful build** | Core, tray icon, taskbar readout, flyout, settings basics, autostart. Claude Code, Codex and Meshy. |
-| M2 | **More services** | Copilot, Cursor, Antigravity, OpenCode Go, Grok Build; declarative balance providers; multiple accounts for Claude Code and Codex. |
-| M3 | **Statistics** | History store, pace, forecasts, charts, threshold and reset notifications. |
-| M4 | **Make it yours** | Readout on every taskbar, themes and Theme Studio, languages, adaptive refresh. |
-| M5 | **v0.1** | Updates, code signing, installer; decide on distribution and licensing. |
+Status as of 2026-10-16.
+
+| | Milestone | Content | Status |
+|---|---|---|---|
+| M0 | **Stack spike** | Same flyout in Rust + Slint and Rust + Tauri; measure idle/open memory, flyout latency, size and look; pick one. | Done: Rust + Slint with the software renderer ([ADR 0001](adr/0001-rust-and-slint-software-renderer.md)) |
+| M1 | **First useful build** | Core, tray icon, taskbar readout, flyout, settings basics, autostart. Claude Code, Codex and Meshy. | Done, plus hover card, global hotkey, pause, and Settings and About in a dialog process of their own |
+| M2 | **More services** | Copilot, Cursor, Antigravity, OpenCode Go, Grok Build; declarative balance providers; multiple accounts for Claude Code and Codex. | Copilot quotas built; everything else left. The settings schema already has room for accounts (alias, tag, source folder) |
+| M3 | **Statistics** | History store, pace, forecasts, charts, threshold and reset notifications. | History store (90 days, one sample per meter per 5 minutes), pace, forecasts and a 14-day sparkline built; charts and notifications left |
+| M4 | **Make it yours** | Readout on every taskbar, themes and Theme Studio, languages, adaptive refresh. | Adaptive refresh built, and numbers and times follow the Windows regional format; the readout shows on the primary taskbar only, and themes, Theme Studio and the Swedish strings are left |
+| M5 | **v0.1** | Updates, code signing, installer; decide on distribution and licensing. | Not started |
 
 ## Open questions
 
-- Taskbar readout technique. From CodeZeno's source (MIT) and its issue history: a layered
-  window parented into the taskbar shares the taskbar's visibility and z-order, but a
+- Update and distribution channel while the app is proprietary and the repository private.
+- Theme Studio scope: colours and widget layout only, or free-form placement?
+
+## Settled
+
+- **Taskbar readout technique** (M1). From CodeZeno's source (MIT) and its issue history: a
+  layered window parented into the taskbar shares the taskbar's visibility and z-order, but a
   cross-process child attaches input queues (their deadlock #92, stuck input #22) and dies with
   Explorer (their fix relaunches the whole app). Windows 11 offers no way to reserve taskbar
-  space; only Explorer injection does, which we will not ship. Lastdrop's plan:
+  space; only Explorer injection does, which we will not ship. What Lastdrop built instead:
   a separate, never-reparented message window that receives `TaskbarCreated` and rebuilds the
   readout in-process; no locks held across cross-process calls; `GetWindowRect` instead of
   `SHAppBarMessage`; app-button detection through UI Automation on its own thread with timeouts,
   falling back to a floating card instead of covering buttons; the readout is a topmost
-  `WS_POPUP` that is never parented, so it handles `WM_DPICHANGED` (readout-spec §6.1, §6.9). Validate in M1 against the test matrix before it is on by default.
-- Update and distribution channel while the app is proprietary and the repository private.
-- Theme Studio scope: colours and widget layout only, or free-form placement?
+  `WS_POPUP` that is never parented, so it handles `WM_DPICHANGED` (readout-spec §6.1, §6.9).
+  Placement is unit-tested against the recorded layouts in
+  [`crates/win/tests/layouts`](../crates/win/tests/layouts); the manual matrix on real
+  multi-monitor setups and the 24-hour soak are release checks
+  ([ARCHITECTURE "Quality bar"](ARCHITECTURE.md#quality-bar)).

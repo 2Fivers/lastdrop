@@ -2,5 +2,26 @@
   "$schema": "https://docs.renovatebot.com/renovate-schema.json",
   "extends": [
     "local>2Fivers/renovate-config"
+  ],
+  "packageRules": [
+    {
+      "description": "The stack spikes (ADR 0001) are kept for reference only: the workspace excludes them and CI never builds them, so no update to them can be proven, and their dependencies (tauri among them) are not the app's.",
+      "matchFileNames": ["spikes/**"],
+      "enabled": false
+    },
+    {
+      "description": "windows-core and windows-numerics are pinned to the versions `windows` itself depends on (Cargo.toml): Direct2D takes `windows_numerics` types and `#[implement]` expands to `::windows_core` paths, so a newer one on its own gives the build a second copy whose types do not match. They move by hand together with `windows` (next rule).",
+      "matchManagers": ["cargo"],
+      "matchPackageNames": ["windows-core", "windows-numerics"],
+      "enabled": false
+    },
+    {
+      "description": "Reminds whoever takes a `windows` update to move its two pinned companions with it.",
+      "matchManagers": ["cargo"],
+      "matchPackageNames": ["windows"],
+      "prBodyNotes": [
+        "Move `windows-core` and `windows-numerics` in Cargo.toml to the versions this `windows` release depends on (see its entry in Cargo.lock). Renovate does not update them on their own (renovate.json)."
+      ]
+    }
   ]
 }
