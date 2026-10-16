@@ -1,19 +1,29 @@
 // About Lastdrop. Shows Slint's AboutSlint widget: the condition of Slint's Royalty-free License
 // 2.0 for a closed-source desktop app (ADR 0001, ARCHITECTURE "App"). Reachable from the tray
-// menu ("About Lastdrop", R§10).
+// menu ("About Lastdrop", R§10). Every text but AboutSlint's own comes from Rust (`texts`, the
+// `about.*` strings) in the chosen language.
 
 import { AboutSlint, Button, Palette } from "std-widgets.slint";
 
+// The window's texts (`about.*` strings), from Rust.
+export struct AboutTexts {
+    title: string,
+    // `Lastdrop {version}`.
+    heading: string,
+    tagline: string,
+    copyright: string,
+    // Third-party credit line (open-source components and their licences).
+    credits: string,
+    close: string,
+}
+
 export component AboutWindow inherits Window {
-    title: "About Lastdrop";
+    title: root.texts.title;
     // A fixed width: wrapped text needs it to know its height (the window is as tall as its
     // content).
     width: 420px;
 
-    in property <string> version;
-    in property <string> copyright: "© 2026 Adinosaur AB. All rights reserved.";
-    // Third-party credit line (open-source components and their licences).
-    in property <string> credits: "Built with Slint (Royalty-free License 2.0), jiff, serde, ureq and windows-rs (MIT / Apache-2.0). No telemetry: Lastdrop only talks to the services whose usage it reads.";
+    in property <AboutTexts> texts;
     // The content's height (the --preview-about render).
     out property <length> content-height: layout.preferred-height;
     // `close` would shadow Window's builtin close() (Slint 1.18), hence `dismiss`.
@@ -23,23 +33,24 @@ export component AboutWindow inherits Window {
         padding: 24px;
         spacing: 12px;
         Text {
-            text: "Lastdrop " + root.version;
+            text: root.texts.heading;
             font-size: 20px;
             font-weight: 600;
             color: Palette.foreground;
         }
         Text {
-            text: "How much AI is left in the tank, one click away.";
+            text: root.texts.tagline;
             color: Palette.foreground;
             wrap: word-wrap;
         }
         Text {
-            text: root.copyright;
+            text: root.texts.copyright;
             color: Palette.foreground;
+            wrap: word-wrap;
         }
         AboutSlint { }
         Text {
-            text: root.credits;
+            text: root.texts.credits;
             font-size: 12px;
             color: Palette.foreground.with-alpha(0.62);
             wrap: word-wrap;
@@ -47,7 +58,7 @@ export component AboutWindow inherits Window {
         HorizontalLayout {
             alignment: end;
             Button {
-                text: "Close";
+                text: root.texts.close;
                 clicked => {
                     root.dismiss();
                 }

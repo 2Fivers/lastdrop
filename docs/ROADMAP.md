@@ -129,7 +129,8 @@ setups.
 - Notifications at thresholds (for example 80 % and 95 %) and when a window resets
   ([notifications-spec](design/notifications-spec.md)): built, with used up and low balances.
 - Language: English and Swedish to start: built, following Windows' display language unless
-  one is picked in settings. The settings and about windows' own labels are still English.
+  one is picked in settings. Every window is translated, the settings and about windows too;
+  only Slint's own "Made with Slint" badge in the about window stays English.
 - Updates: check, download and apply in place (channel to be decided while the app is not
   publicly distributed).
 
@@ -156,7 +157,7 @@ Status as of 2026-10-16.
 | M1 | **First useful build** | Core, tray icon, taskbar readout, flyout, settings basics, autostart. Claude Code, Codex and Meshy. | Done, plus hover card, global hotkey, pause, and Settings and About in a dialog process of their own |
 | M2 | **More services** | Copilot, Cursor, Antigravity, OpenCode Go, Grok Build; declarative balance providers; multiple accounts for Claude Code and Codex. | Copilot quotas built; everything else left. The settings schema already has room for accounts (alias, tag, source folder) |
 | M3 | **Statistics** | History store, pace, forecasts, charts, threshold and reset notifications. | History store (90 days, one sample per meter per 5 minutes), pace, forecasts, a 14-day sparkline and notifications (levels, used up, resets, low balances) built; charts left |
-| M4 | **Make it yours** | Readout on every taskbar, themes and Theme Studio, languages, adaptive refresh. | Adaptive refresh built; English and Swedish, following Windows' display language or the setting, with numbers and times in the Windows regional format. The readout shows on the primary taskbar only; themes, Theme Studio and translated labels in the settings and about windows are left |
+| M4 | **Make it yours** | Readout on every taskbar, themes and Theme Studio, languages, adaptive refresh. | Adaptive refresh built; English and Swedish, following Windows' display language or the setting, with numbers and times in the Windows regional format. The settings and about windows switch language too. The readout shows on the primary taskbar only; themes and Theme Studio are left |
 | M5 | **v0.1** | Updates, code signing, installer; decide on distribution and licensing. | Not started |
 
 ## Open questions

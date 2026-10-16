@@ -1,6 +1,8 @@
 //! `--preview-flyout <png>` and `--preview-hovercard <png>` (with `--demo`, `--scale <s>`,
 //! `--dark`): render the flyout and the hover card without a window and save them as PNGs, so the
 //! UI can be compared with `docs/design/final/flyout-100.png` and `readout-100.png` §5.
+//! `--preview-settings <png>` and `--preview-about <png>` (with `--demo` only) render the dialog
+//! process's windows the same way.
 //!
 //! The render uses Slint's software renderer through a headless platform
 //! (`MinimalSoftwareWindow`s): no window is created, nothing appears on the desktop and nothing
@@ -21,7 +23,7 @@ use jiff::tz::TimeZone;
 use lastdrop_core::consts::layout::{CARD_W, FLYOUT_MAX_H, FLYOUT_W};
 use lastdrop_core::flyout::{FlyoutModel, build_flyout};
 use lastdrop_core::grammar::{Language, Strings};
-use lastdrop_core::model::MeterKey;
+use lastdrop_core::model::{MeterKey, MeterNames};
 use lastdrop_core::readout::BuildContext;
 use lastdrop_core::readout::hovercard::{HoverAnchor, HoverCardModel, build_hover_card};
 use lastdrop_core::settings::ReadoutContent;
@@ -33,6 +35,7 @@ use slint::platform::{Platform, WindowAdapter, WindowEvent};
 
 use crate::history::HistoryStore;
 use crate::scheduler::{Job, WorkerIo, run_job};
+use crate::settings_window::Wording;
 use crate::state::AppState;
 use crate::wiring::{self, CardMenu};
 use crate::writer::Writer;
@@ -102,7 +105,7 @@ pub fn run(args: &Args) -> Result<(), AppError> {
             render_settings(&world, scale, out)?;
         }
         if let Some(out) = args.preview_about.as_deref() {
-            render_about(scale, out)?;
+            render_about(strings, scale, out)?;
         }
         return Ok(());
     }
@@ -228,10 +231,11 @@ pub fn render_hover_card(
     Ok(())
 }
 
-/// Renders the settings window with the demo's settings.
+/// Renders the settings window with the demo's settings, in the demo's language and regional
+/// format (Windows' display language is the demo's language too).
 fn render_settings(world: &demo::Demo, scale: f64, out: &Path) -> Result<(), AppError> {
     let window = ui::SettingsWindow::new()?;
-    let reported: Vec<(MeterKey, String)> = world
+    let reported: Vec<(MeterKey, MeterNames)> = world
         .services
         .iter()
         .flat_map(|s| {
@@ -242,17 +246,18 @@ fn render_settings(world: &demo::Demo, scale: f64, out: &Path) -> Result<(), App
                         account: s.account.key.clone(),
                         meter: m.id.clone(),
                     },
-                    format!(
-                        "{} {}",
-                        s.snapshot.provider.display_name(),
-                        m.names.short_name
-                    ),
+                    m.names.clone(),
                 )
             })
         })
         .collect();
+    let wording = Wording {
+        language: world.language,
+        ui_languages: vec![world.language.tag().to_owned()],
+        locale: world.locale.clone(),
+    };
     let draft = crate::settings_window::draft_with(world.settings.clone(), &reported);
-    crate::settings_window::fill(&window, &draft, &reported, true, &[]);
+    crate::settings_window::fill(&window, &draft, &reported, true, &wording);
     window.show()?;
     snapshot_to_png(
         window.window(),
@@ -267,10 +272,10 @@ fn render_settings(world: &demo::Demo, scale: f64, out: &Path) -> Result<(), App
     Ok(())
 }
 
-/// Renders the about window.
-fn render_about(scale: f64, out: &Path) -> Result<(), AppError> {
+/// Renders the about window in the language of `strings`.
+fn render_about(strings: &dyn Strings, scale: f64, out: &Path) -> Result<(), AppError> {
     let window = ui::AboutWindow::new()?;
-    window.set_version(env!("CARGO_PKG_VERSION").into());
+    window.set_texts(crate::dialog::about_texts(strings));
     window.show()?;
     let height = window.get_content_height();
     snapshot_to_png(

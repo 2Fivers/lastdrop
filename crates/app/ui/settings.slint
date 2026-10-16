@@ -1,7 +1,8 @@
 // Settings window: M1 "settings basics" (ROADMAP M1). The settings design is out of scope of both
 // specs (F§12); this is a plain Windows 11 (fluent) window following the app theme. The Meshy API
 // key is passed to Rust once and stored in Credential Manager, never kept in a property, never
-// shown again and never written to settings.json.
+// shown again and never written to settings.json. Every text comes from Rust (`texts`, the
+// `settings.*` strings) in the chosen language.
 
 import { Button, CheckBox, LineEdit, ComboBox, ScrollView, Switch, GroupBox, Palette } from "std-widgets.slint";
 
@@ -12,12 +13,60 @@ export struct ProviderRow {
 }
 
 // One meter of an enabled service (settings `hidden_meters`, F§2.2; readout pins, R§4.3).
-// label: `{service} {short_name}`; pinned: one of the 1–2 readout pins (Rust keeps at most two,
-// in the order picked).
+// label: the meter with its service (`settings.meter`: `Claude weekly`, `Veckogränsen för
+// Claude`); pinned: one of the 1–2 readout pins (Rust keeps at most two, in the order picked).
 export struct MeterChoice {
     label: string,
     shown: bool,
     pinned: bool,
+}
+
+// The window's fixed texts (`settings.*` strings), from Rust.
+export struct SettingsTexts {
+    title: string,
+    heading: string,
+    services: string,
+    services-hint: string,
+    key: string,
+    key-paste: string,
+    key-replace: string,
+    key-save: string,
+    key-remove: string,
+    key-hint: string,
+    refresh: string,
+    refresh-check: string,
+    readout: string,
+    readout-show: string,
+    readout-rows: string,
+    readout-auto: string,
+    readout-pinned: string,
+    readout-times: string,
+    readout-clock: string,
+    readout-relative: string,
+    meters-hint: string,
+    meter-show: string,
+    meter-pin: string,
+    notify: string,
+    notify-on: string,
+    notify-levels: string,
+    notify-and: string,
+    notify-used-up: string,
+    notify-resets: string,
+    notify-low: string,
+    notify-hint: string,
+    shortcut: string,
+    shortcut-on: string,
+    shortcut-ctrl: string,
+    shortcut-alt: string,
+    shortcut-shift: string,
+    shortcut-win: string,
+    shortcut-key: string,
+    language: string,
+    language-hint: string,
+    startup: string,
+    startup-on: string,
+    apply: string,
+    close: string,
 }
 
 component SectionTitle inherits Text {
@@ -33,12 +82,13 @@ component Hint inherits Text {
 }
 
 export component SettingsWindow inherits Window {
-    title: "Lastdrop settings";
+    title: root.texts.title;
     preferred-width: 480px;
     preferred-height: 640px;
     min-width: 400px;
     min-height: 360px;
 
+    in property <SettingsTexts> texts;
     in-out property <[ProviderRow]> providers;
     // Refresh interval: index into interval-choices ("Manual", "1 min", …), localized by Rust.
     in property <[string]> interval-choices;
@@ -104,7 +154,7 @@ export component SettingsWindow inherits Window {
                 spacing: 16px;
 
                 Text {
-                    text: "Settings";
+                    text: root.texts.heading;
                     font-size: 20px;
                     font-weight: 600;
                     color: Palette.foreground;
@@ -114,7 +164,7 @@ export component SettingsWindow inherits Window {
                 VerticalLayout {
                     spacing: 8px;
                     SectionTitle {
-                        text: "Services";
+                        text: root.texts.services;
                     }
                     for row[i] in root.providers: CheckBox {
                         text: row.name;
@@ -124,19 +174,19 @@ export component SettingsWindow inherits Window {
                         }
                     }
                     Hint {
-                        text: "Claude and Codex are read from their own files on this PC, Copilot with the GitHub CLI's sign-in (gh auth login). Lastdrop never signs in for you and never changes their sign-in.";
+                        text: root.texts.services-hint;
                     }
                 }
 
                 VerticalLayout {
                     spacing: 8px;
                     SectionTitle {
-                        text: "Meshy API key";
+                        text: root.texts.key;
                     }
                     HorizontalLayout {
                         spacing: 8px;
                         key := LineEdit {
-                            placeholder-text: root.meshy-key-stored ? "A key is stored. Paste a new one to replace it" : "Paste your Meshy API key";
+                            placeholder-text: root.meshy-key-stored ? root.texts.key-replace : root.texts.key-paste;
                             input-type: password;
                             horizontal-stretch: 1;
                             accepted => {
@@ -147,7 +197,7 @@ export component SettingsWindow inherits Window {
                             }
                         }
                         Button {
-                            text: "Save key";
+                            text: root.texts.key-save;
                             enabled: key.text != "";
                             clicked => {
                                 root.set-meshy-key(key.text);
@@ -155,26 +205,26 @@ export component SettingsWindow inherits Window {
                             }
                         }
                         if root.meshy-key-stored: Button {
-                            text: "Remove";
+                            text: root.texts.key-remove;
                             clicked => {
                                 root.clear-meshy-key();
                             }
                         }
                     }
                     Hint {
-                        text: "Stored in Windows Credential Manager, never in a file. Lastdrop only reads your credit balance.";
+                        text: root.texts.key-hint;
                     }
                 }
 
                 VerticalLayout {
                     spacing: 8px;
                     SectionTitle {
-                        text: "Refresh";
+                        text: root.texts.refresh;
                     }
                     HorizontalLayout {
                         spacing: 12px;
                         Text {
-                            text: "Check usage";
+                            text: root.texts.refresh-check;
                             vertical-alignment: center;
                             color: Palette.foreground;
                         }
@@ -191,21 +241,21 @@ export component SettingsWindow inherits Window {
                 readout-section := VerticalLayout {
                     spacing: 8px;
                     SectionTitle {
-                        text: "Taskbar readout";
+                        text: root.texts.readout;
                     }
                     Switch {
-                        text: "Show the readout in the taskbar";
+                        text: root.texts.readout-show;
                         checked <=> root.readout-enabled;
                     }
                     HorizontalLayout {
                         spacing: 12px;
                         Text {
-                            text: "Rows";
+                            text: root.texts.readout-rows;
                             vertical-alignment: center;
                             color: Palette.foreground;
                         }
                         ComboBox {
-                            model: ["The most constrained meters (auto)", "Meters I pin"];
+                            model: [root.texts.readout-auto, root.texts.readout-pinned];
                             current-index <=> root.readout-content-index;
                             enabled: root.readout-enabled;
                         }
@@ -216,12 +266,12 @@ export component SettingsWindow inherits Window {
                     HorizontalLayout {
                         spacing: 12px;
                         Text {
-                            text: "Show times as";
+                            text: root.texts.readout-times;
                             vertical-alignment: center;
                             color: Palette.foreground;
                         }
                         ComboBox {
-                            model: ["Clock times (14:56)", "Time remaining (2h)"];
+                            model: [root.texts.readout-clock, root.texts.readout-relative];
                             current-index <=> root.time-style-index;
                         }
                         Rectangle {
@@ -236,7 +286,7 @@ export component SettingsWindow inherits Window {
                             padding: root.focus-pins ? 8px : 0px;
                             spacing: 4px;
                             Hint {
-                                text: "Meters: show them in the flyout, and pin up to two to the readout.";
+                                text: root.texts.meters-hint;
                             }
                             for meter[i] in root.meters: HorizontalLayout {
                                 spacing: 12px;
@@ -248,14 +298,14 @@ export component SettingsWindow inherits Window {
                                     overflow: elide;
                                 }
                                 CheckBox {
-                                    text: "Show";
+                                    text: root.texts.meter-show;
                                     checked: meter.shown;
                                     toggled => {
                                         root.meter-shown-toggled(i, self.checked);
                                     }
                                 }
                                 CheckBox {
-                                    text: "Pin";
+                                    text: root.texts.meter-pin;
                                     checked: meter.pinned;
                                     enabled: meter.shown && root.readout-content-index == 1;
                                     toggled => {
@@ -270,16 +320,16 @@ export component SettingsWindow inherits Window {
                 VerticalLayout {
                     spacing: 8px;
                     SectionTitle {
-                        text: "Notifications";
+                        text: root.texts.notify;
                     }
                     Switch {
-                        text: "Notify me about my limits";
+                        text: root.texts.notify-on;
                         checked <=> root.notify-enabled;
                     }
                     HorizontalLayout {
                         spacing: 12px;
                         Text {
-                            text: "When a limit reaches";
+                            text: root.texts.notify-levels;
                             vertical-alignment: center;
                             color: Palette.foreground;
                         }
@@ -290,7 +340,7 @@ export component SettingsWindow inherits Window {
                             enabled: root.notify-enabled;
                         }
                         Text {
-                            text: "and";
+                            text: root.texts.notify-and;
                             vertical-alignment: center;
                             color: Palette.foreground;
                         }
@@ -305,59 +355,59 @@ export component SettingsWindow inherits Window {
                         }
                     }
                     CheckBox {
-                        text: "When a limit or a balance is used up";
+                        text: root.texts.notify-used-up;
                         checked <=> root.notify-used-up;
                         enabled: root.notify-enabled;
                     }
                     CheckBox {
-                        text: "When a limit resets after a notification";
+                        text: root.texts.notify-resets;
                         checked <=> root.notify-resets;
                         enabled: root.notify-enabled;
                     }
                     CheckBox {
-                        text: "When a balance runs low";
+                        text: root.texts.notify-low;
                         checked <=> root.notify-low-balance;
                         enabled: root.notify-enabled;
                     }
                     Hint {
-                        text: "Windows notifications, once per level in each window. Do not disturb holds them back.";
+                        text: root.texts.notify-hint;
                     }
                 }
 
                 VerticalLayout {
                     spacing: 8px;
                     SectionTitle {
-                        text: "Shortcut";
+                        text: root.texts.shortcut;
                     }
                     Switch {
-                        text: "Open Lastdrop with a keyboard shortcut";
+                        text: root.texts.shortcut-on;
                         checked <=> root.hotkey-enabled;
                     }
                     HorizontalLayout {
                         spacing: 8px;
                         CheckBox {
-                            text: "Ctrl";
+                            text: root.texts.shortcut-ctrl;
                             checked <=> root.hotkey-ctrl;
                             enabled: root.hotkey-enabled;
                         }
                         CheckBox {
-                            text: "Alt";
+                            text: root.texts.shortcut-alt;
                             checked <=> root.hotkey-alt;
                             enabled: root.hotkey-enabled;
                         }
                         CheckBox {
-                            text: "Shift";
+                            text: root.texts.shortcut-shift;
                             checked <=> root.hotkey-shift;
                             enabled: root.hotkey-enabled;
                         }
                         CheckBox {
-                            text: "Win";
+                            text: root.texts.shortcut-win;
                             checked <=> root.hotkey-win;
                             enabled: root.hotkey-enabled;
                         }
                         LineEdit {
                             width: 72px;
-                            placeholder-text: "Key";
+                            placeholder-text: root.texts.shortcut-key;
                             text <=> root.hotkey-key;
                             enabled: root.hotkey-enabled;
                         }
@@ -374,7 +424,7 @@ export component SettingsWindow inherits Window {
                 VerticalLayout {
                     spacing: 8px;
                     SectionTitle {
-                        text: "Language";
+                        text: root.texts.language;
                     }
                     HorizontalLayout {
                         spacing: 12px;
@@ -387,17 +437,17 @@ export component SettingsWindow inherits Window {
                         }
                     }
                     Hint {
-                        text: "For the readout, the flyout, menus and notifications. Numbers and times follow the regional format in Windows.";
+                        text: root.texts.language-hint;
                     }
                 }
 
                 VerticalLayout {
                     spacing: 8px;
                     SectionTitle {
-                        text: "Start-up";
+                        text: root.texts.startup;
                     }
                     Switch {
-                        text: "Start Lastdrop when I sign in to Windows";
+                        text: root.texts.startup-on;
                         checked <=> root.start-with-windows;
                     }
                 }
@@ -418,14 +468,14 @@ export component SettingsWindow inherits Window {
                 horizontal-stretch: 1;
             }
             Button {
-                text: "Apply";
+                text: root.texts.apply;
                 primary: true;
                 clicked => {
                     root.apply();
                 }
             }
             Button {
-                text: "Close";
+                text: root.texts.close;
                 clicked => {
                     root.dismiss();
                 }

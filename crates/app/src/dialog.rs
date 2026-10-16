@@ -23,6 +23,8 @@ use std::cell::RefCell;
 use std::process::{ExitCode, Stdio};
 use std::time::{Duration, Instant};
 
+use lastdrop_core::grammar::strings::text;
+use lastdrop_core::grammar::{Language, Msg, Strings};
 use lastdrop_win::single_instance::{self, Instance, InstanceGuard};
 use slint::ComponentHandle;
 use slint::winit_030::WinitWindowAccessor;
@@ -246,7 +248,7 @@ fn open(paths: &Paths, kind: DialogKind) -> Result<(), AppError> {
     match kind {
         DialogKind::Settings => settings_window::open(paths, false),
         DialogKind::SettingsPins => settings_window::open(paths, true),
-        DialogKind::About => open_about(),
+        DialogKind::About => open_about(paths),
     }
 }
 
@@ -301,14 +303,38 @@ fn drop_closed() {
     drop(closed);
 }
 
-/// Opens the about window (R§10 "About Lastdrop", Slint licence), or brings it to the front.
-fn open_about() -> Result<(), AppError> {
+/// The about window's texts in the language of `strings`, with this build's version.
+pub(crate) fn about_texts(strings: &dyn Strings) -> ui::AboutTexts {
+    let t = |msg: Msg| slint::SharedString::from(strings.template(msg));
+    ui::AboutTexts {
+        title: t(Msg::AboutTitle),
+        heading: text(
+            strings,
+            Msg::AboutHeading,
+            &[("version", env!("CARGO_PKG_VERSION"))],
+        )
+        .into(),
+        tagline: t(Msg::AboutTagline),
+        copyright: t(Msg::AboutCopyright),
+        credits: t(Msg::AboutCredits),
+        close: t(Msg::AboutClose),
+    }
+}
+
+/// Opens the about window (R§10 "About Lastdrop", Slint licence) in the language of the
+/// settings (else Windows' display language), or brings it to the front.
+fn open_about(paths: &Paths) -> Result<(), AppError> {
     let existing = ABOUT.with(|a| a.borrow().as_ref().map(ComponentHandle::clone_strong));
     let window = match existing {
         Some(window) => window,
         None => {
+            let (settings, _) = crate::persist::load_settings(&paths.settings);
+            let language = Language::resolve(
+                settings.language.as_deref(),
+                &lastdrop_win::locale::ui_languages(),
+            );
             let window = wiring::create_window(false, ui::AboutWindow::new)?;
-            window.set_version(env!("CARGO_PKG_VERSION").into());
+            window.set_texts(about_texts(language.strings()));
             window.on_dismiss(close_about);
             window.window().on_close_requested(|| {
                 close_about();
