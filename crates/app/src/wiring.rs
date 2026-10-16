@@ -339,6 +339,8 @@ pub fn run(startup: Startup) -> Result<(), AppError> {
     // The first run found more Claude Code or Codex folders than the default ones: the accounts
     // section lists them, and none is read before the user adds it (accounts-spec §6).
     if first_run && open_on_start && extra_folders_found() {
+        // Written once, so the next start is not a first run and the window does not come back.
+        save_settings(&app);
         open_dialog(&app, DialogKind::SettingsAccounts);
     }
     if let Some(after) = args.smoke {

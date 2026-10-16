@@ -412,6 +412,7 @@ lowercase_names = true
 "settings.accounts.already" = "That folder is already one of the accounts."
 "settings.accounts.created" = "Sign in with {client} in the terminal that opened, then Apply."
 "settings.accounts.notcreated" = "Couldn't create the folder: {detail}"
+"settings.accounts.nosignin" = "Added, but the terminal for {client}'s sign-in didn't open: {detail}"
 "settings.privacy.hide" = "Hide personal info: show Account 1, Account 2 instead of e-mail addresses"
 
 # ---- About window (R§10 "About Lastdrop")

@@ -170,10 +170,11 @@ pub fn mark_duplicates(
                 continue;
             };
             let signed_in = signed_in(source);
+            // An entry listed twice (a hand-edited file) is never a duplicate of itself.
             let duplicate = signed_in.and_then(|id| {
                 first
                     .iter()
-                    .find(|(seen, _)| seen == id)
+                    .find(|(seen, k)| seen == id && *k != key)
                     .map(|(_, k)| k.clone())
             });
             if duplicate.is_none()
@@ -321,6 +322,9 @@ pub struct AppState {
     pub notified: NotifyMemory,
     /// `notified` as the state file has it ([`AppState::state_to_save`]).
     pub saved_notified: NotifyMemory,
+    /// Every identity known (accounts-spec §5): the state file's, then what this run learned,
+    /// kept for sources that are not enabled now too.
+    pub identities: IdentityMap,
     /// The known identities as the state file has them ([`AppState::state_to_save`]).
     pub saved_identities: IdentityMap,
 }
@@ -601,6 +605,7 @@ impl AppState {
             saved_seen: SeenMap::new(),
             notified: NotifyMemory::new(),
             saved_notified: NotifyMemory::new(),
+            identities: IdentityMap::new(),
             saved_identities: IdentityMap::new(),
         }
     }
@@ -614,11 +619,29 @@ impl AppState {
             &self.settings,
             &settings,
         );
+        // What the sources learned stays known when a source is dropped (a service turned off).
+        self.identities = self.known_identities();
         let existing = std::mem::take(&mut self.sources);
         self.sources = build_sources(&settings, &providers, &resolve_real, existing);
         self.strings = language_of(&settings, &self.ui_languages).strings();
         self.settings = settings;
         self.providers = providers;
+        // A source added since start-up (a service turned on again, a folder added back) knows
+        // who its folder was last signed in to, so a change since is still a switch (§5) and its
+        // duplicates are known before the first job (§3).
+        self.restore_identities();
+    }
+
+    /// Gives every source that has read nothing in this run the identity the state file (or this
+    /// run, before the source was rebuilt) last knew for it, and marks the duplicates again.
+    fn restore_identities(&mut self) {
+        let known = self.known_identities();
+        for (key, source) in &mut self.sources {
+            if source.identity_checked.is_none() && source.known_identity.is_none() {
+                source.known_identity = known.get(key).cloned();
+            }
+        }
+        mark_duplicates(&self.settings, &mut self.sources);
     }
 
     /// Takes Windows' display languages anew (after a regional settings change) and the
@@ -696,27 +719,20 @@ impl AppState {
         self.saved_seen = all;
         self.notified = saved.notified_map();
         self.saved_notified = self.notified.clone();
-        let identities = saved.identity_map();
-        for (key, source) in &mut self.sources {
-            source.known_identity = identities.get(key).cloned();
-        }
-        self.saved_identities = identities;
-        mark_duplicates(&self.settings, &mut self.sources);
+        self.identities = saved.identity_map();
+        self.saved_identities = self.identities.clone();
+        self.restore_identities();
     }
 
     /// The identity each source is last known to be signed in to (the state file's
-    /// `identities`): this run's sources, plus what the file had for sources that are not
-    /// enabled now (a service turned off keeps its folders' identities).
+    /// `identities`): what the file had and what this run learned (a service turned off keeps
+    /// its folders' identities), with the sources' current knowledge on top. An entry is never
+    /// dropped: a sign-out keeps the last known account (§5).
     fn known_identities(&self) -> IdentityMap {
-        let mut out = self.saved_identities.clone();
+        let mut out = self.identities.clone();
         for (key, source) in &self.sources {
-            match &source.known_identity {
-                Some(id) => {
-                    out.insert(key.clone(), id.clone());
-                }
-                None => {
-                    out.remove(key);
-                }
+            if let Some(id) = &source.known_identity {
+                out.insert(key.clone(), id.clone());
             }
         }
         out
@@ -1048,6 +1064,7 @@ pub(crate) mod tests {
             saved_seen: SeenMap::new(),
             notified: NotifyMemory::new(),
             saved_notified: NotifyMemory::new(),
+            identities: IdentityMap::new(),
             saved_identities: IdentityMap::new(),
         }
     }
@@ -1599,6 +1616,72 @@ pub(crate) mod tests {
         set_identity(&mut sources, &work(), signed_in_as("one", None));
         mark_duplicates(&settings, &mut sources);
         assert_eq!(names(&settings, &mut sources, english), ["Codex"]);
+    }
+
+    #[test]
+    fn a_service_turned_off_and_on_again_remembers_who_was_signed_in() {
+        let dir = std::env::temp_dir().join(format!(
+            "lastdrop-offon-test-{}-{}",
+            std::process::id(),
+            Timestamp::now().as_nanosecond()
+        ));
+        let writer = crate::writer::Writer::start().expect("writer");
+        let now = ts("2026-10-10T10:42:00Z");
+        let history = HistoryStore::open(&dir.join("history"), now, writer.handle()).expect("open");
+        let mut state = app_state(&[ProviderId::Codex], history);
+        let mut job = result(&codex(), None);
+        job.identity = Some(signed_in_as("one", None));
+        state.apply_result(job);
+
+        // Off before anything was saved, then on again: the rebuilt source still knows "one".
+        let mut off = state.settings.clone();
+        if let Some(p) = off.provider_mut(ProviderId::Codex) {
+            p.enabled = false;
+        }
+        state.apply_settings(off);
+        assert!(state.sources.is_empty());
+        let mut on = state.settings.clone();
+        if let Some(p) = on.provider_mut(ProviderId::Codex) {
+            p.enabled = true;
+        }
+        state.apply_settings(on);
+        assert_eq!(
+            state.sources[&codex()].known_identity.as_ref(),
+            signed_in_as("one", None).id()
+        );
+
+        // Signed in to someone else meanwhile: a switch, so the old reading goes.
+        state.sources.get_mut(&codex()).expect("source").latest =
+            Some(snapshot(ProviderId::Codex, now, 0.5));
+        let mut job = result(&codex(), None);
+        job.identity = Some(signed_in_as("two", None));
+        state.apply_result(job);
+        assert!(state.sources[&codex()].latest.is_none(), "started over");
+
+        // A sign-out keeps the last known account in the state file.
+        let mut job = result(&codex(), None);
+        job.identity = Some(Identity::SignedOut);
+        state.apply_result(job);
+        let saved = state.state_to_save().expect("identities changed");
+        let saved: SavedState = serde_json::from_slice(&saved).expect("state json");
+        assert_eq!(
+            saved.identity_map().get(&codex()),
+            signed_in_as("two", None).id()
+        );
+        writer.shutdown();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn an_account_listed_twice_is_not_its_own_duplicate() {
+        let mut settings = settings_of(&[ProviderId::Codex]);
+        if let Some(p) = settings.provider_mut(ProviderId::Codex) {
+            p.accounts.push(AccountSettings::primary());
+        }
+        let mut sources = sources_of(&settings, &[ProviderId::Codex]);
+        set_identity(&mut sources, &codex(), signed_in_as("one", None));
+        mark_duplicates(&settings, &mut sources);
+        assert_eq!(sources[&codex()].duplicate_of, None);
     }
 
     #[test]

@@ -6,7 +6,7 @@
 //! E-mail addresses are read into [`Identity`] values (secrets) and shown only as accounts-spec
 //! §4 says; nothing here logs or writes them.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
 use lastdrop_core::grammar::strings::text;
@@ -129,9 +129,33 @@ fn accounts_of(settings: &Settings, provider: ProviderId) -> &[AccountSettings] 
     settings.provider(provider).map_or(&[][..], |p| &p.accounts)
 }
 
+/// The earlier account of the service that `index` is signed in to as well (accounts-spec §3):
+/// the first one with the same known identity. `None` when it is the first, or nobody is known
+/// to be signed in.
+pub fn duplicate_of(
+    settings: &Settings,
+    info: &AccountsInfo,
+    provider: ProviderId,
+    index: usize,
+) -> Option<usize> {
+    let accounts = accounts_of(settings, provider);
+    let id = info.identity_of(provider, accounts.get(index)?).id()?;
+    accounts[..index]
+        .iter()
+        .position(|a| info.identity_of(provider, a).id() == Some(id))
+}
+
+/// The accounts the tray shows, in settings order: every one that is not a duplicate.
+fn shown(settings: &Settings, info: &AccountsInfo, provider: ProviderId) -> Vec<usize> {
+    (0..accounts_of(settings, provider).len())
+        .filter(|i| duplicate_of(settings, info, provider, *i).is_none())
+        .collect()
+}
+
 /// An account's name in the section and in the meter list (accounts-spec §4, §7): its alias,
-/// else its e-mail address (unless personal info is hidden), else `Account {n}` (`n` = its place
-/// in the service's list, from 1).
+/// else its e-mail address (unless personal info is hidden), else `Account {n}`, `n` its place
+/// among the accounts the tray shows (duplicates are numbered as the account they duplicate), as
+/// the tray numbers them.
 pub fn name_of(
     settings: &Settings,
     info: &AccountsInfo,
@@ -150,7 +174,12 @@ pub fn name_of(
     {
         return email.expose().to_owned();
     }
-    text(strings, Msg::AccountN, &[("n", &(index + 1).to_string())])
+    let first = duplicate_of(settings, info, provider, index).unwrap_or(index);
+    let n = shown(settings, info, provider)
+        .iter()
+        .position(|i| *i == first)
+        .map_or(index + 1, |p| p + 1);
+    text(strings, Msg::AccountN, &[("n", &n.to_string())])
 }
 
 /// The line under an account (accounts-spec §7): `Same account as {name}` when an earlier account
@@ -167,11 +196,7 @@ pub fn status_of(
         return String::new();
     };
     let identity = info.identity_of(provider, account);
-    if let Some(id) = identity.id()
-        && let Some(first) = accounts[..index]
-            .iter()
-            .position(|a| info.identity_of(provider, a).id() == Some(id))
-    {
+    if let Some(first) = duplicate_of(settings, info, provider, index) {
         let name = name_of(settings, info, provider, first, strings);
         return text(strings, Msg::SettingsAccountsSame, &[("name", &name)]);
     }
@@ -202,27 +227,37 @@ fn identity_line(identity: &Identity, hide: bool, strings: &dyn Strings) -> Stri
     }
 }
 
-/// The account names the meter list shows (`Claude · Work weekly`): for each service with two or
-/// more accounts, every account's [`name_of`].
-pub fn labels(
+/// How the meter list names and leaves out accounts (accounts-spec §7), as the tray does.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct MeterAccounts {
+    /// For each service the tray shows two or more accounts of, every shown account's
+    /// [`name_of`] (`Claude · Work weekly`).
+    pub names: BTreeMap<SourceKey, String>,
+    /// The duplicates: never evaluated, so their meters are not listed.
+    pub duplicates: BTreeSet<SourceKey>,
+}
+
+/// [`MeterAccounts`] of the draft.
+pub fn meter_accounts(
     settings: &Settings,
     info: &AccountsInfo,
     strings: &dyn Strings,
-) -> BTreeMap<SourceKey, String> {
-    let mut out = BTreeMap::new();
+) -> MeterAccounts {
+    let mut out = MeterAccounts::default();
     for provider in SERVICES {
         let accounts = accounts_of(settings, provider);
-        if accounts.len() < 2 {
-            continue;
-        }
+        let shown = shown(settings, info, provider);
         for (i, account) in accounts.iter().enumerate() {
-            out.insert(
-                SourceKey {
-                    provider,
-                    account: account.key.clone(),
-                },
-                name_of(settings, info, provider, i, strings),
-            );
+            let key = SourceKey {
+                provider,
+                account: account.key.clone(),
+            };
+            if !shown.contains(&i) {
+                out.duplicates.insert(key);
+            } else if shown.len() >= 2 {
+                out.names
+                    .insert(key, name_of(settings, info, provider, i, strings));
+            }
         }
     }
     out
@@ -520,9 +555,56 @@ mod tests {
             "Inloggad"
         );
 
-        let labels = labels(&settings, &info, &English);
-        assert_eq!(labels.len(), 2);
-        assert!(labels.values().any(|l| l == "Work"));
+        let accounts = meter_accounts(&settings, &info, &English);
+        assert_eq!(accounts.names.len(), 2);
+        assert!(accounts.names.values().any(|l| l == "Work"));
+        assert!(accounts.duplicates.is_empty());
+    }
+
+    #[test]
+    fn duplicates_are_numbered_and_left_out_as_the_tray_does() {
+        // Default and `.claude-work` on the same account, a third folder on another one.
+        let same = signed_in("one", None);
+        let (mut settings, mut info) = two_claude(same.clone(), same);
+        settings.hide_personal_info = true;
+        let third = home().join(".claude-third");
+        info.identities
+            .insert(folder_id(&third), signed_in("two", None));
+        let third_key = add(&mut settings, &info, ProviderId::Claude, &third, None).expect("added");
+        let name = |i| name_of(&settings, &info, ProviderId::Claude, i, &English);
+        assert_eq!(name(0), "Account 1");
+        assert_eq!(name(1), "Account 1", "the same account, the same number");
+        assert_eq!(
+            name(2),
+            "Account 2",
+            "as the tray and the readout tag number it"
+        );
+        assert_eq!(
+            duplicate_of(&settings, &info, ProviderId::Claude, 1),
+            Some(0)
+        );
+        assert_eq!(duplicate_of(&settings, &info, ProviderId::Claude, 2), None);
+
+        let accounts = meter_accounts(&settings, &info, &English);
+        let work = accounts_of(&settings, ProviderId::Claude)[1].key.clone();
+        assert!(accounts.duplicates.contains(&SourceKey {
+            provider: ProviderId::Claude,
+            account: work,
+        }));
+        assert_eq!(
+            accounts.names.get(&SourceKey {
+                provider: ProviderId::Claude,
+                account: third_key,
+            }),
+            Some(&"Account 2".to_owned())
+        );
+
+        // Two folders on one account: the tray shows one, so the meter list names none.
+        let same = signed_in("one", None);
+        let (settings, info) = two_claude(same.clone(), same);
+        let accounts = meter_accounts(&settings, &info, &English);
+        assert!(accounts.names.is_empty());
+        assert_eq!(accounts.duplicates.len(), 1);
     }
 
     #[test]

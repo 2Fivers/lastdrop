@@ -258,7 +258,10 @@ fn render_settings(world: &demo::Demo, scale: f64, out: &Path) -> Result<(), App
         locale: world.locale.clone(),
     };
     let (settings, accounts) = world.accounts();
-    let draft = crate::settings_window::draft_with(settings, &reported);
+    let duplicates =
+        crate::settings_accounts::meter_accounts(&settings, &accounts, wording.strings())
+            .duplicates;
+    let draft = crate::settings_window::draft_with(settings, &reported, &duplicates);
     crate::settings_window::fill(&window, &draft, &reported, true, &wording, &accounts);
     window.show()?;
     snapshot_to_png(

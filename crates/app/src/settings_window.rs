@@ -19,7 +19,7 @@
 //! Threading: the dialog process's main thread.
 
 use std::cell::RefCell;
-use std::collections::BTreeMap;
+use std::collections::BTreeSet;
 use std::path::PathBuf;
 use std::rc::Rc;
 
@@ -40,7 +40,7 @@ use slint::{ComponentHandle, ModelRc, SharedString, VecModel};
 
 use crate::dialog::{self, Changes};
 use crate::persist::{self, LoadOutcome, Paths, SavedState};
-use crate::settings_accounts::{self, AccountsInfo, NotAdded, SERVICES};
+use crate::settings_accounts::{self, AccountsInfo, MeterAccounts, NotAdded, SERVICES};
 use crate::wiring::{self, toggle_in};
 use crate::{AppError, ui};
 
@@ -242,14 +242,22 @@ fn pins(settings: &Settings) -> Vec<MeterKey> {
 
 /// The meters to list for `settings`: every enabled service's catalogue meters plus the meters
 /// its readings reported (Claude's per-model weekly windows), with the names their provider
-/// gives them.
+/// gives them; none of the `duplicates` (accounts-spec §3: never evaluated, so never shown).
 pub fn listed_meters(
     settings: &Settings,
     reported: &[(MeterKey, MeterNames)],
+    duplicates: &BTreeSet<SourceKey>,
 ) -> Vec<(MeterKey, MeterNames)> {
     let mut out: Vec<(MeterKey, MeterNames)> = Vec::new();
     for (_, p) in settings.enabled_providers() {
         for account in &p.accounts {
+            let source = SourceKey {
+                provider: p.id,
+                account: account.key.clone(),
+            };
+            if duplicates.contains(&source) {
+                continue;
+            }
             for def in catalog(p.id) {
                 out.push((
                     MeterKey {
@@ -274,26 +282,30 @@ pub fn listed_meters(
 }
 
 /// The keys of [`listed_meters`] (row index → meter).
-fn listed_keys(settings: &Settings, reported: &[(MeterKey, MeterNames)]) -> Vec<MeterKey> {
-    listed_meters(settings, reported)
+fn listed_keys(
+    settings: &Settings,
+    reported: &[(MeterKey, MeterNames)],
+    duplicates: &BTreeSet<SourceKey>,
+) -> Vec<MeterKey> {
+    listed_meters(settings, reported, duplicates)
         .into_iter()
         .map(|(k, _)| k)
         .collect()
 }
 
 /// The [`listed_meters`] with their labels in the language of `strings` ([`meter_label`]);
-/// `accounts` names the accounts of services with two or more
-/// ([`settings_accounts::labels`]).
+/// `accounts` names the accounts of services with two or more shown and leaves out the
+/// duplicates ([`settings_accounts::meter_accounts`]).
 pub fn meter_choices(
     settings: &Settings,
     reported: &[(MeterKey, MeterNames)],
     strings: &dyn Strings,
-    accounts: &BTreeMap<SourceKey, String>,
+    accounts: &MeterAccounts,
 ) -> Vec<(MeterKey, String)> {
-    listed_meters(settings, reported)
+    listed_meters(settings, reported, &accounts.duplicates)
         .into_iter()
         .map(|(key, names)| {
-            let account = accounts.get(&key.source()).map(String::as_str);
+            let account = accounts.names.get(&key.source()).map(String::as_str);
             let label = meter_label(&key, &names, strings, account);
             (key, label)
         })
@@ -443,7 +455,9 @@ pub fn open(paths: &Paths, focus: Focus) -> Result<(), AppError> {
     }
     let wording = Wording::read(&base);
     let accounts = AccountsInfo::read(&settings);
-    let draft = draft_with(settings, &reported);
+    let duplicates =
+        settings_accounts::meter_accounts(&settings, &accounts, wording.strings()).duplicates;
+    let draft = draft_with(settings, &reported, &duplicates);
     let window = wiring::create_window(false, ui::SettingsWindow::new)?;
     connect(&window);
     let stored = meshy_key_stored(&draft.settings);
@@ -490,15 +504,19 @@ fn show_pins(window: &ui::SettingsWindow) {
     window.set_readout_content_index(1);
 }
 
-/// A draft of `settings` with the meters the readings reported.
-pub fn draft_with(settings: Settings, reported: &[(MeterKey, MeterNames)]) -> Draft {
+/// A draft of `settings` with the meters the readings reported, but not the `duplicates`'.
+pub fn draft_with(
+    settings: Settings,
+    reported: &[(MeterKey, MeterNames)],
+    duplicates: &BTreeSet<SourceKey>,
+) -> Draft {
     let providers = settings
         .providers
         .iter()
         .filter_map(ProviderEntry::known)
         .map(|p| p.id)
         .collect();
-    let meters = listed_keys(&settings, reported);
+    let meters = listed_keys(&settings, reported, duplicates);
     Draft {
         settings,
         providers,
@@ -607,7 +625,7 @@ fn fill_accounts(
     let blocks = settings_accounts::blocks(&draft.settings, accounts, strings);
     window.set_account_blocks(ModelRc::new(VecModel::from(blocks)));
     window.set_hide_personal_info(draft.settings.hide_personal_info);
-    let names = settings_accounts::labels(&draft.settings, accounts, strings);
+    let names = settings_accounts::meter_accounts(&draft.settings, accounts, strings);
     fill_meters(window, draft, reported, strings, &names);
 }
 
@@ -687,7 +705,7 @@ fn fill_meters(
     draft: &Draft,
     reported: &[(MeterKey, MeterNames)],
     strings: &dyn Strings,
-    accounts: &BTreeMap<SourceKey, String>,
+    accounts: &MeterAccounts,
 ) {
     let pinned = pins(&draft.settings);
     let choices = meter_choices(&draft.settings, reported, strings, accounts);
@@ -711,14 +729,16 @@ fn fill_meters(
 /// Runs `f` on the draft, then refreshes the accounts section and the meter rows.
 fn edit(f: impl FnOnce(&mut Draft)) {
     with_session(|session| {
+        let strings = session.wording.borrow().strings();
+        let accounts = session.accounts.borrow();
         let draft = {
             let mut draft = session.draft.borrow_mut();
             f(&mut draft);
-            draft.meters = listed_keys(&draft.settings, &session.reported);
+            let duplicates =
+                settings_accounts::meter_accounts(&draft.settings, &accounts, strings).duplicates;
+            draft.meters = listed_keys(&draft.settings, &session.reported, &duplicates);
             draft.clone()
         };
-        let strings = session.wording.borrow().strings();
-        let accounts = session.accounts.borrow();
         fill_accounts(
             &session.window,
             &draft,
@@ -944,6 +964,8 @@ fn new_account(session: &Session, block: i32, name: &str) {
         return;
     }
     if !add_account(session, provider, &folder, Some(&alias)) {
+        // Created just now and still empty: not left behind.
+        let _ = std::fs::remove_dir(&folder);
         return;
     }
     let command = {
@@ -982,7 +1004,7 @@ fn new_account(session: &Session, block: i32, name: &str) {
             log::warn!("settings window: cannot open the sign-in console: {e}");
             account_status(
                 session,
-                Msg::SettingsAccountsNotCreated,
+                Msg::SettingsAccountsNoSignIn,
                 provider,
                 Some(&e.to_string()),
             );
@@ -1441,7 +1463,7 @@ mod tests {
             meter: MeterId::weekly_model("fable"),
         };
         let reported = [(fable.clone(), MeterNames::weekly_model("Fable"))];
-        let choices = meter_choices(&settings, &reported, &English, &BTreeMap::new());
+        let choices = meter_choices(&settings, &reported, &English, &MeterAccounts::default());
         let labels: Vec<&str> = choices.iter().map(|(_, l)| l.as_str()).collect();
         assert_eq!(
             labels,
@@ -1449,12 +1471,12 @@ mod tests {
         );
         assert_eq!(choices[2].0, fable);
         assert_eq!(
-            listed_keys(&settings, &reported),
+            listed_keys(&settings, &reported, &BTreeSet::new()),
             choices.iter().map(|(k, _)| k.clone()).collect::<Vec<_>>()
         );
 
         // In Swedish the meter comes first, with "limit" in it, and is capitalised.
-        let choices = meter_choices(&settings, &reported, &Swedish, &BTreeMap::new());
+        let choices = meter_choices(&settings, &reported, &Swedish, &MeterAccounts::default());
         let labels: Vec<&str> = choices.iter().map(|(_, l)| l.as_str()).collect();
         assert_eq!(
             labels,

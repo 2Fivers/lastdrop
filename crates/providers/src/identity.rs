@@ -1,7 +1,8 @@
 //! Who is signed in to a source (accounts-spec §2), read from the source's own files, read-only,
 //! with the same rules as a fetch (ARCHITECTURE "Rules for every provider"): nothing is written,
-//! refreshed or copied; the address and the ids are held only as long as it takes to hash them,
-//! the address as a [`SecretString`]; nothing here is logged.
+//! refreshed or copied; the ids are held only as long as it takes to hash them and the address
+//! as a [`SecretString`], and every buffer that held them is overwritten when it is dropped (best
+//! effort, as `SecretString` does); nothing here is logged.
 //!
 //! - **Claude**: `.claude.json`'s `oauthAccount` (streamed, everything else skipped), and whether
 //!   `.credentials.json` holds a `claudeAiOauth` sign-in.
@@ -195,14 +196,14 @@ pub fn codex(fs: &dyn Fs, codex_home: &Path) -> Identity {
     let Ok(auth) = parsed else {
         return Identity::Unknown;
     };
-    let Some(tokens) = auth.tokens else {
+    let Some(mut tokens) = auth.tokens else {
         return if auth.api_key.is_some() {
             Identity::Unknown
         } else {
             Identity::SignedOut
         };
     };
-    let token = tokens.id_token.0.map(SecretString::new);
+    let token = tokens.id_token.0.take().map(SecretString::new);
     let claims = token.as_ref().and_then(|t| jwt_claims(t.expose()));
     let Some(claims) = claims else {
         return Identity::Unknown;
@@ -258,7 +259,10 @@ fn base64url_decode(text: &str) -> Option<Vec<u8>> {
             b'0'..=b'9' => byte - b'0' + 52,
             b'-' => 62,
             b'_' => 63,
-            _ => return None,
+            _ => {
+                wipe(&mut out);
+                return None;
+            }
         };
         buffer = (buffer << 6) | u32::from(value);
         bits += 6;
@@ -274,9 +278,21 @@ fn base64url_decode(text: &str) -> Option<Vec<u8>> {
 
 /// A string field that may be missing, `null` or of another type (then `None`), read without
 /// buffering the value (unlike `claude::json::Lenient`), so nothing of it lingers on the heap but
-/// the string itself.
+/// the string itself, which is overwritten when it drops (like `SecretString`: the fields hold
+/// ids and addresses).
 #[derive(Default)]
 struct Text(Option<String>);
+
+impl Drop for Text {
+    fn drop(&mut self) {
+        if let Some(text) = &mut self.0 {
+            let len = text.len();
+            text.clear();
+            text.extend(std::iter::repeat_n('\0', len));
+            std::hint::black_box(text.as_bytes());
+        }
+    }
+}
 
 impl<'de> Deserialize<'de> for Text {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Text, D::Error> {

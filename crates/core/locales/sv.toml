@@ -390,6 +390,7 @@ lowercase_names = true
 "settings.accounts.already" = "Den mappen är redan ett av kontona."
 "settings.accounts.created" = "Logga in med {client} i terminalen som öppnades och verkställ sedan."
 "settings.accounts.notcreated" = "Kunde inte skapa mappen: {detail}"
+"settings.accounts.nosignin" = "Tillagd, men terminalen för inloggning i {client} öppnades inte: {detail}"
 "settings.privacy.hide" = "Dölj personlig info: visa Konto 1, Konto 2 i stället för e-postadresser"
 
 # ---- About window

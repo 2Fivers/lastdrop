@@ -499,6 +499,7 @@ catalogue! {
         SettingsAccountsAlready = "settings.accounts.already",
         SettingsAccountsCreated = "settings.accounts.created",
         SettingsAccountsNotCreated = "settings.accounts.notcreated",
+        SettingsAccountsNoSignIn = "settings.accounts.nosignin",
         SettingsPrivacyHide = "settings.privacy.hide",
 
         // ---- About window (R§10 "About Lastdrop")
