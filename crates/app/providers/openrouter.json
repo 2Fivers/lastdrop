@@ -1,0 +1,19 @@
+{
+  "format": 1,
+  "id": "openrouter",
+  "name": "OpenRouter",
+  "monogram": "OR",
+  "url": "https://openrouter.ai/api/v1/credits",
+  "usage_page": "https://openrouter.ai/settings/credits",
+  "balances": [
+    {
+      "id": "credits",
+      "label": "Cr",
+      "short_name": "credits",
+      "name": "Credits",
+      "amount": "/data/total_credits",
+      "minus": "/data/total_usage",
+      "currency": "USD"
+    }
+  ]
+}

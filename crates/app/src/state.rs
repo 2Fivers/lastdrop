@@ -947,6 +947,15 @@ pub(crate) mod tests {
                 account: AccountKey::primary(),
                 auth_file: home.join(r".grok\auth.json"),
             },
+            ProviderId::Custom(_) => AccountSource::Custom {
+                account: AccountKey::primary(),
+                provider,
+                credential: CredentialName {
+                    provider,
+                    account: AccountKey::primary(),
+                    name: "api_key".to_owned(),
+                },
+            },
         }
     }
 

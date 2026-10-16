@@ -329,7 +329,7 @@ lowercase_names = true
 "settings.title" = "Inställningar för Lastdrop"
 "settings.heading" = "Inställningar"
 "settings.services" = "Tjänster"
-"settings.services.hint" = "Claude och Codex läses från sina egna filer på den här datorn, Copilot med GitHub CLI:s inloggning (gh auth login), Cursor med Cursor-appens, Grok med Grok CLI:s (grok login) och Antigravity via sin CLI (agy). Lastdrop loggar aldrig in åt dig och ändrar aldrig deras inloggning."
+"settings.services.hint" = "Claude och Codex läses från sina egna filer på den här datorn, Copilot med GitHub CLI:s inloggning (gh auth login), Cursor med Cursor-appens, Grok med Grok CLI:s (grok login) och Antigravity via sin CLI (agy). Lastdrop loggar aldrig in åt dig och ändrar aldrig deras inloggning. Fler tjänster som visar saldo eller användning via ett enkelt API kan beskrivas i en JSON-fil i %APPDATA%\\Lastdrop\\providers, som läses när Lastdrop startar."
 "settings.key" = "API-nycklar"
 "settings.key.paste" = "Klistra in din API-nyckel för {service}"
 # Shares its row with two buttons: short.

@@ -15,7 +15,7 @@
 
 use std::process::ExitCode;
 
-use lastdrop_app::{Args, dialog, logger, persist, preview, wiring};
+use lastdrop_app::{Args, custom_services, dialog, logger, persist, preview, wiring};
 use lastdrop_win::single_instance::{self, Instance};
 
 fn main() -> ExitCode {
@@ -63,11 +63,14 @@ fn main() -> ExitCode {
     let _ = logger::init(&paths.logs, log::LevelFilter::Info);
     log::info!("Lastdrop {} starting", env!("CARGO_PKG_VERSION"));
 
-    // 3. Settings: defaults on first run; a corrupt file is kept aside, never overwritten.
+    // 3. The services described in JSON, before the settings name them (custom-services-spec §3).
+    custom_services::load(&paths.providers);
+
+    // 4. Settings: defaults on first run; a corrupt file is kept aside, never overwritten.
     let (settings, outcome) = persist::load_settings(&paths.settings);
     log::info!("settings: {outcome:?}");
 
-    // 4. Everything else runs on the main thread's event loop.
+    // 5. Everything else runs on the main thread's event loop.
     let first_run = matches!(outcome, persist::LoadOutcome::Missing);
     let code = match wiring::run(wiring::Startup {
         args,

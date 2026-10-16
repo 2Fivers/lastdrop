@@ -350,7 +350,7 @@ lowercase_names = true
 "settings.title" = "Lastdrop settings"
 "settings.heading" = "Settings"
 "settings.services" = "Services"
-"settings.services.hint" = "Claude and Codex are read from their own files on this PC, Copilot with the GitHub CLI's sign-in (gh auth login), Cursor with the Cursor app's, Grok with the Grok CLI's (grok login) and Antigravity through its CLI (agy). Lastdrop never signs in for you and never changes their sign-in."
+"settings.services.hint" = "Claude and Codex are read from their own files on this PC, Copilot with the GitHub CLI's sign-in (gh auth login), Cursor with the Cursor app's, Grok with the Grok CLI's (grok login) and Antigravity through its CLI (agy). Lastdrop never signs in for you and never changes their sign-in. More services that report a balance or usage over a simple API can be described in a JSON file in %APPDATA%\\Lastdrop\\providers, read when Lastdrop starts."
 "settings.key" = "API keys"
 # `{service}`: Meshy or OpenCode Go.
 "settings.key.paste" = "Paste your {service} API key"

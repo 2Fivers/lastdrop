@@ -1,0 +1,20 @@
+{
+  "format": 1,
+  "id": "elevenlabs",
+  "name": "ElevenLabs",
+  "url": "https://api.elevenlabs.io/v1/user/subscription",
+  "key_header": "xi-api-key",
+  "usage_page": "https://elevenlabs.io/app/subscription",
+  "meters": [
+    {
+      "id": "characters",
+      "label": "Chars",
+      "short_name": "characters",
+      "name": "Characters",
+      "used": "/character_count",
+      "limit": "/character_limit",
+      "resets_at": "/next_character_count_reset_unix",
+      "window": "month"
+    }
+  ]
+}

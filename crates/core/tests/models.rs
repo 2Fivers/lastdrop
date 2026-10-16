@@ -151,6 +151,7 @@ fn snapshot(provider: ProviderId, meters: Vec<Meter>, t: Timestamp) -> Snapshot 
             ProviderId::Antigravity => SourceKind::AntigravityCli,
             ProviderId::OpenCodeGo => SourceKind::OpenCodeGoApi,
             ProviderId::Grok => SourceKind::GrokApi,
+            ProviderId::Custom(_) => SourceKind::CustomApi,
         },
         measured_at: t,
         fetched_at: t,

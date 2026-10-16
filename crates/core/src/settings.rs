@@ -146,7 +146,7 @@ impl Default for Settings {
     fn default() -> Settings {
         Settings {
             version: SETTINGS_VERSION,
-            providers: ProviderId::ALL
+            providers: ProviderId::every()
                 .into_iter()
                 .map(|id| {
                     let on = matches!(id, ProviderId::Claude | ProviderId::Codex);
@@ -192,7 +192,7 @@ impl Settings {
     /// build's option, a malformed field) counts as present: a second entry for the same service
     /// would be turned off, and a newer build reading the file back would find two.
     pub fn add_new_providers(&mut self) -> bool {
-        let missing: Vec<ProviderId> = ProviderId::ALL
+        let missing: Vec<ProviderId> = ProviderId::every()
             .into_iter()
             .filter(|id| !self.providers.iter().any(|e| e.id() == Some(*id)))
             .collect();
