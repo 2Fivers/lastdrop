@@ -57,6 +57,8 @@ pub mod secondary;
 pub mod settings_accounts;
 pub mod settings_window;
 pub mod state;
+pub mod theme_studio;
+pub mod themes;
 pub mod ui;
 pub mod wiring;
 pub mod writer;
@@ -98,8 +100,14 @@ pub struct Args {
     /// `--dark`: the preview in the dark Windows mode.
     pub dark: bool,
     /// `--language <tag>`: the preview's language (`en`, `sv`); default: the settings' and
+    /// `--preview-theme-studio <png>`: render Theme Studio (themes-spec §4), starting from
+    /// `--theme` (else the settings' theme), and exit.
+    pub preview_theme_studio: Option<PathBuf>,
     /// Windows' (English with `--demo`).
     pub language: Option<String>,
+    /// `--theme <id>`: the preview's theme (a built-in id or a user theme's); default: the
+    /// settings' (the Windows theme with `--demo`).
+    pub theme: Option<String>,
     /// `--settings`, `--settings-pins`, `--settings-accounts`, `--history[=<tag>]` or `--about`:
     /// run as the dialog process with that dialog ([`dialog`]) instead of the app. The last one
     /// given counts.
@@ -134,6 +142,9 @@ impl Args {
                 Some("--preview-settings") => out.preview_settings = iter.next().map(PathBuf::from),
                 Some("--preview-about") => out.preview_about = iter.next().map(PathBuf::from),
                 Some("--preview-history") => out.preview_history = iter.next().map(PathBuf::from),
+                Some("--preview-theme-studio") => {
+                    out.preview_theme_studio = iter.next().map(PathBuf::from);
+                }
                 Some("--demo") => out.demo = true,
                 Some("--demo-scenario") => {
                     out.demo_scenario = iter.next().and_then(|v| v.to_str().map(str::to_owned));
@@ -141,6 +152,9 @@ impl Args {
                 Some("--dark") => out.dark = true,
                 Some("--language") => {
                     out.language = iter.next().and_then(|v| v.to_str().map(str::to_owned));
+                }
+                Some("--theme") => {
+                    out.theme = iter.next().and_then(|v| v.to_str().map(str::to_owned));
                 }
                 Some(
                     flag @ ("--settings"

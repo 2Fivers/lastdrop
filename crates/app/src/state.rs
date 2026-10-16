@@ -1105,6 +1105,7 @@ pub(crate) mod tests {
                 },
                 transparency: false,
                 high_contrast: None,
+                custom: Default::default(),
             },
             locale: LocaleFormat::en_gb(jiff::tz::TimeZone::UTC),
             ui_languages: Vec::new(),

@@ -64,7 +64,37 @@ export struct CardData {
     pins: [PinData],
 }
 
+// The plan badge of a card header (F§4.2): 18 high, radius 4, 8 from what is before it.
+component PlanBadge inherits HorizontalLayout {
+    in property <string> text;
+    padding-left: 8px;
+    VerticalLayout {
+        alignment: center;
+        Rectangle {
+            height: 18px;
+            border-radius: 4px;
+            background: Theme.badge-fill;
+            border-width: Theme.high-contrast ? 1px : 0px;
+            border-color: Theme.text-secondary;
+            HorizontalLayout {
+                padding-left: 6px;
+                padding-right: 6px;
+                Text {
+                    text: root.text;
+                    font-family: Theme.font-small;
+                    letter-spacing: Theme.small-tracking;
+                    font-size: 12px;
+                    color: Theme.text-secondary;
+                    vertical-alignment: center;
+                    accessible-role: none;
+                }
+            }
+        }
+    }
+}
+
 // F§4.4: name row 20 (name, right cluster, 12, value min 36), 4, bar 310 × 9, trouble line 4 + 16.
+// A theme can hide the right cluster, the bar and the trouble line (themes-spec §2).
 component MeterRow inherits VerticalLayout {
     in property <MeterData> data;
     spacing: 4px;
@@ -86,7 +116,7 @@ component MeterRow inherits VerticalLayout {
             vertical-alignment: center;
             accessible-role: none;
         }
-        HorizontalLayout {
+        if Theme.show-resets: HorizontalLayout {
             spacing: 4px;
             horizontal-stretch: 0;
             if root.data.right-kind == 0: VerticalLayout {
@@ -129,11 +159,11 @@ component MeterRow inherits VerticalLayout {
             accessible-role: none;
         }
     }
-    PaceBar {
+    if Theme.show-bars: PaceBar {
         geom: root.data.bar;
         tone: root.data.tone;
     }
-    if root.data.line != "": Text {
+    if Theme.show-trouble && root.data.line != "": Text {
         height: 16px;
         text: root.data.line;
         font-family: Theme.font-small;
@@ -321,7 +351,7 @@ component MessageLine inherits HorizontalLayout {
     }
 }
 
-component ServiceCard inherits Rectangle {
+export component ServiceCard inherits Rectangle {
     in property <CardData> data;
     in property <int> index;
     in property <string> menu-usage-label;
@@ -338,6 +368,11 @@ component ServiceCard inherits Rectangle {
     callback toggle-pin(int, int);
     callback move-focus(int);
     callback focused(length, length);
+    // The gap before the header widget at place `i` right of the name's gap: 8 px, none for the
+    // first one there.
+    pure function right-gap(i: int) -> length {
+        (i == 0 || (i == 1 && Theme.header-order[0] == 0)) ? 0px : 8px
+    }
     background: Theme.card-fill;
     border-width: 1px;
     border-color: Theme.card-stroke;
@@ -414,8 +449,9 @@ component ServiceCard inherits Rectangle {
             }
 
             content := VerticalLayout {
-                // 1 px border + 12 px padding (F§4.1): inner width 310 in a 336 px card.
-                padding: 13px;
+                // 1 px border + 12 px padding (F§4.1): inner width 310 in a 336 px card; a compact
+                // theme pads 8 (themes-spec §2).
+                padding: Theme.compact ? 9px : 13px;
                 // Card header (F§4.2): [glyph 16] 8 [name] 8 [plan badge] [flex] [age] 8 [spark 55 × 16].
                 HorizontalLayout {
                     height: 20px;
@@ -439,51 +475,36 @@ component ServiceCard inherits Rectangle {
                         overflow: elide;
                         accessible-role: none;
                     }
-                    if root.data.plan != "": HorizontalLayout {
-                        padding-left: 8px;
-                        VerticalLayout {
-                            alignment: center;
-                            Rectangle {
-                                height: 18px;
-                                border-radius: 4px;
-                                background: Theme.badge-fill;
-                                border-width: Theme.high-contrast ? 1px : 0px;
-                                border-color: Theme.text-secondary;
-                                HorizontalLayout {
-                                    padding-left: 6px;
-                                    padding-right: 6px;
-                                    Text {
-                                        text: root.data.plan;
-                                        font-family: Theme.font-small;
-                                        letter-spacing: Theme.small-tracking;
-                                        font-size: 12px;
-                                        color: Theme.text-secondary;
-                                        vertical-alignment: center;
-                                        accessible-role: none;
-                                    }
-                                }
-                            }
-                        }
+                    // A theme orders the plan badge, the age and the sparkline (themes-spec §2): a
+                    // plan badge first stays next to the name, the rest go right of the gap, 8 apart.
+                    if Theme.header-order[0] == 0 && Theme.show-plan && root.data.plan != "": PlanBadge {
+                        text: root.data.plan;
                     }
                     Rectangle {
                         horizontal-stretch: 1;
                     }
-                    Text {
-                        text: root.data.age;
-                        font-family: Theme.font-small;
-                        letter-spacing: Theme.small-tracking;
-                        font-size: 12px;
-                        color: Theme.text-secondary;
-                        vertical-alignment: center;
-                        accessible-role: none;
-                    }
-                    Rectangle {
-                        width: 8px;
-                    }
-                    VerticalLayout {
-                        alignment: center;
-                        Sparkline {
-                            data: root.data.spark;
+                    for widget[i] in Theme.header-order: HorizontalLayout {
+                        if widget == 0 && i > 0 && Theme.show-plan && root.data.plan != "": PlanBadge {
+                            text: root.data.plan;
+                        }
+                        if widget == 1 && Theme.show-age: HorizontalLayout {
+                            padding-left: root.right-gap(i);
+                            Text {
+                                text: root.data.age;
+                                font-family: Theme.font-small;
+                                letter-spacing: Theme.small-tracking;
+                                font-size: 12px;
+                                color: Theme.text-secondary;
+                                vertical-alignment: center;
+                                accessible-role: none;
+                            }
+                        }
+                        if widget == 2 && Theme.show-spark: VerticalLayout {
+                            alignment: center;
+                            padding-left: root.right-gap(i);
+                            Sparkline {
+                                data: root.data.spark;
+                            }
                         }
                     }
                 }
@@ -501,10 +522,10 @@ component ServiceCard inherits Rectangle {
                 }
                 // Body (F§2): margin-top 10, meters 8 apart.
                 VerticalLayout {
-                    padding-top: 10px;
-                    spacing: 8px;
+                    padding-top: Theme.compact ? 6px : 10px;
+                    spacing: Theme.compact ? 4px : 8px;
                     if !root.data.is-balance: VerticalLayout {
-                        spacing: 8px;
+                        spacing: Theme.compact ? 4px : 8px;
                         for meter in root.data.meters: MeterRow {
                             data: meter;
                         }

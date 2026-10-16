@@ -52,6 +52,10 @@ const SETTINGS_PREVIEW_H: f32 = 1500.0;
 const ABOUT_PREVIEW_W: f32 = 420.0;
 /// The usage history window's preview size: its preferred width, tall enough for the page.
 const HISTORY_PREVIEW_W: f32 = 640.0;
+/// Theme Studio's preview size, logical px.
+const STUDIO_PREVIEW_W: f32 = 880.0;
+/// See [`STUDIO_PREVIEW_W`].
+const STUDIO_PREVIEW_H: f32 = 1100.0;
 /// See [`HISTORY_PREVIEW_W`].
 const HISTORY_PREVIEW_H: f32 = 1500.0;
 
@@ -65,7 +69,7 @@ impl Platform for Headless {
 }
 
 /// The DWM solid fallback behind the popups with transparency off (F§7, R§7).
-fn solid_backdrop(dark: bool) -> slint::Color {
+pub(crate) fn solid_backdrop(dark: bool) -> slint::Color {
     if dark {
         slint::Color::from_rgb_u8(0x2C, 0x2C, 0x2C)
     } else {
@@ -81,11 +85,15 @@ pub fn run(args: &Args) -> Result<(), AppError> {
         && args.preview_settings.is_none()
         && args.preview_about.is_none()
         && args.preview_history.is_none()
+        && args.preview_theme_studio.is_none()
     {
         return Ok(());
     }
     let scale = args.scale.unwrap_or(1.0);
     slint::platform::set_platform(Box::new(Headless)).map_err(|e| AppError::Ui(e.to_string()))?;
+    if let Some(out) = args.preview_theme_studio.as_deref() {
+        render_theme_studio(args, scale, out)?;
+    }
     if args.demo {
         let scenario = args
             .demo_scenario
@@ -97,7 +105,12 @@ pub fn run(args: &Args) -> Result<(), AppError> {
             .as_deref()
             .and_then(Language::from_tag)
             .unwrap_or_default();
-        let world = demo::Demo::scenario(args.dark, scenario).in_language(language);
+        let mut world = demo::Demo::scenario(args.dark, scenario).in_language(language);
+        if let Some(id) = args.theme.as_deref() {
+            let paths = persist::Paths::from_env()?;
+            let theme = crate::themes::load(&paths.themes, Some(id));
+            world.theme = lastdrop_win::theme::apply(world.theme, &theme);
+        }
         let strings = language.strings();
         if let Some(out) = args.preview_flyout.as_deref() {
             let model = world.flyout();
@@ -118,7 +131,10 @@ pub fn run(args: &Args) -> Result<(), AppError> {
         }
         return Ok(());
     }
-    let live = live_models(args.language.as_deref().and_then(Language::from_tag))?;
+    let live = live_models(
+        args.language.as_deref().and_then(Language::from_tag),
+        args.theme.as_deref(),
+    )?;
     if let Some(out) = args.preview_flyout.as_deref() {
         render_flyout(
             &live.flyout,
@@ -472,6 +488,37 @@ fn render_history(world: &demo::Demo, scale: f64, out: &Path) -> Result<(), AppE
     Ok(())
 }
 
+/// Renders Theme Studio starting from `--theme` (else the settings' theme), in `--language`
+/// (else the settings' and Windows').
+fn render_theme_studio(args: &Args, scale: f64, out: &Path) -> Result<(), AppError> {
+    let paths = persist::Paths::from_env()?;
+    let (settings, _) = persist::load_settings(&paths.settings);
+    let mut wording = Wording::read(&settings);
+    if let Some(language) = args.language.as_deref().and_then(Language::from_tag) {
+        wording.language = language;
+    }
+    let id = args
+        .theme
+        .clone()
+        .or(settings.theme)
+        .unwrap_or_else(|| lastdrop_core::theme::DEFAULT_ID.to_owned());
+    let window = ui::ThemeStudioWindow::new()?;
+    crate::theme_studio::build(&window, &paths, wording, &id);
+    window.show()?;
+    let result = snapshot_to_png(
+        window.window(),
+        scale,
+        STUDIO_PREVIEW_W,
+        STUDIO_PREVIEW_H,
+        &|| STUDIO_PREVIEW_H,
+        &|_| {},
+        out,
+    );
+    window.hide()?;
+    crate::theme_studio::release();
+    result
+}
+
 /// Renders the about window in the language of `strings`.
 fn render_about(strings: &dyn Strings, scale: f64, out: &Path) -> Result<(), AppError> {
     let window = ui::AboutWindow::new()?;
@@ -503,7 +550,7 @@ struct LiveModels {
 /// The flyout and the hover card from one synchronous read of every enabled service with the
 /// real providers, the user's theme, regional format and history, in `language` (else the
 /// language of the settings and Windows).
-fn live_models(language: Option<Language>) -> Result<LiveModels, AppError> {
+fn live_models(language: Option<Language>, theme: Option<&str>) -> Result<LiveModels, AppError> {
     // COM for UISettings (theme) and Network List Manager (after a failed read).
     // SAFETY: called once on this thread before any COM object is created on it.
     let _ = unsafe {
@@ -514,7 +561,8 @@ fn live_models(language: Option<Language>) -> Result<LiveModels, AppError> {
     };
     let paths = persist::Paths::from_env()?;
     let (settings, _) = persist::load_settings(&paths.settings);
-    let theme = lastdrop_win::theme::read();
+    let theme_data = crate::themes::load(&paths.themes, theme.or(settings.theme.as_deref()));
+    let theme = lastdrop_win::theme::apply(lastdrop_win::theme::read(), &theme_data);
     let locale = lastdrop_win::locale::read(TimeZone::system());
     let now = Timestamp::now();
     // History writes of this read go through a writer of its own, drained when it drops at the

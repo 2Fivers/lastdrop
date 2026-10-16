@@ -420,6 +420,10 @@ struct Session {
     keys: RefCell<Vec<(ProviderId, bool)>>,
     /// `settings.json`.
     settings_path: PathBuf,
+    /// Lastdrop's folders (the themes folder, Theme Studio).
+    paths: Paths,
+    /// The ids of the themes the theme list shows, in its order.
+    theme_ids: RefCell<Vec<String>>,
 }
 
 thread_local! {
@@ -489,8 +493,11 @@ pub fn open(paths: &Paths, focus: Focus) -> Result<(), AppError> {
             accounts: RefCell::new(accounts),
             keys: RefCell::new(keys),
             settings_path: paths.settings.clone(),
+            paths: paths.clone(),
+            theme_ids: RefCell::new(Vec::new()),
         }));
     });
+    with_session(|session| fill_themes(session, None));
     if let Err(e) = window.show() {
         release();
         return Err(e.into());
@@ -498,6 +505,44 @@ pub fn open(paths: &Paths, focus: Focus) -> Result<(), AppError> {
     scroll_to(&window, focus);
     dialog::bring_to_front(window.as_weak());
     Ok(())
+}
+
+/// Fills the theme list from the themes folder and selects `select`, else the draft's theme.
+fn fill_themes(session: &Session, select: Option<&str>) {
+    let strings = session.wording.borrow().strings();
+    let entries = crate::themes::list(&session.paths.themes, strings);
+    let current = select
+        .map(str::to_owned)
+        .or_else(|| session.draft.borrow().settings.theme.clone());
+    let current = current.unwrap_or_else(|| lastdrop_core::theme::DEFAULT_ID.to_owned());
+    let index = entries.iter().position(|e| e.id == current).unwrap_or(0);
+    session.window.set_themes(ModelRc::new(VecModel::from(
+        entries
+            .iter()
+            .map(|e| SharedString::from(e.name.as_str()))
+            .collect::<Vec<_>>(),
+    )));
+    session
+        .window
+        .set_theme_index(i32::try_from(index).unwrap_or(0));
+    *session.theme_ids.borrow_mut() = entries.into_iter().map(|e| e.id).collect();
+}
+
+/// Theme Studio saved a theme: the list is read again. With `used`, Studio made it the theme of
+/// `settings.json` itself: the window shows it and treats it as already applied, so a later
+/// Apply does not change it back.
+pub fn themes_changed(used: Option<&str>) {
+    with_session(|session| {
+        if let Some(id) = used {
+            let theme = (id != lastdrop_core::theme::DEFAULT_ID).then(|| id.to_owned());
+            session.base.borrow_mut().theme.clone_from(&theme);
+            session.draft.borrow_mut().settings.theme = theme;
+        }
+        let keep = usize::try_from(session.window.get_theme_index())
+            .ok()
+            .and_then(|i| session.theme_ids.borrow().get(i).cloned());
+        fill_themes(session, used.or(keep.as_deref()));
+    });
 }
 
 /// Scrolls the shown window to `focus`.
@@ -708,6 +753,9 @@ pub fn texts(strings: &dyn Strings) -> ui::SettingsTexts {
         key_hint: t(Msg::SettingsKeyHint),
         refresh: t(Msg::SettingsRefresh),
         refresh_check: t(Msg::SettingsRefreshCheck),
+        theme: t(Msg::SettingsTheme),
+        theme_studio: t(Msg::SettingsThemeStudio),
+        theme_hint: t(Msg::SettingsThemeHint),
         readout: t(Msg::SettingsReadout),
         readout_show: t(Msg::SettingsReadoutShow),
         readout_every: t(Msg::SettingsReadoutEvery),
@@ -876,6 +924,16 @@ fn connect(window: &ui::SettingsWindow) {
     window.on_set_api_key(|row, key| with_session(|session| store_key(session, row, &key)));
     window.on_clear_api_key(|row| with_session(|session| clear_key(session, row)));
     window.on_apply(|| with_session(apply));
+    window.on_open_studio(|index| {
+        with_session(|session| {
+            let id = usize::try_from(index)
+                .ok()
+                .and_then(|i| session.theme_ids.borrow().get(i).cloned());
+            if let Err(e) = crate::theme_studio::open(&session.paths, id.as_deref()) {
+                log::error!("theme studio: {e}");
+            }
+        });
+    });
     window.on_dismiss(close);
     window.window().on_close_requested(|| {
         close();
@@ -1313,6 +1371,12 @@ fn apply(session: &Session) {
     let mut draft = session.draft.borrow().settings.clone();
     draft.refresh.interval = interval_at(window.get_interval_index());
     draft.readout.enabled = window.get_readout_enabled();
+    if let Some(id) = usize::try_from(window.get_theme_index())
+        .ok()
+        .and_then(|i| session.theme_ids.borrow().get(i).cloned())
+    {
+        draft.theme = (id != lastdrop_core::theme::DEFAULT_ID).then_some(id);
+    }
     draft.readout.every_taskbar = window.get_readout_every();
     if window.get_readout_content_index() == 0 {
         draft.readout.content = ReadoutContent::Auto;

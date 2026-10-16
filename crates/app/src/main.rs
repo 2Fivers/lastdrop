@@ -28,6 +28,7 @@ fn main() -> ExitCode {
         .or_else(|| args.preview_settings.clone())
         .or_else(|| args.preview_about.clone())
         .or_else(|| args.preview_history.clone())
+        .or_else(|| args.preview_theme_studio.clone())
     {
         return match preview::run(&args) {
             Ok(()) => ExitCode::SUCCESS,

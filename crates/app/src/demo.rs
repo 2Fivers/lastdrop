@@ -387,6 +387,7 @@ impl Demo {
                 },
                 transparency: false,
                 high_contrast: None,
+                custom: Default::default(),
             },
             services,
             history,

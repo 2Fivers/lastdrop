@@ -44,6 +44,7 @@ pub mod refresh;
 pub mod secret;
 pub mod settings;
 pub mod stats;
+pub mod theme;
 pub mod tokens;
 mod util;
 

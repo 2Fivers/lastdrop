@@ -77,6 +77,9 @@ export struct SettingsTexts {
     key-hint: string,
     refresh: string,
     refresh-check: string,
+    theme: string,
+    theme-studio: string,
+    theme-hint: string,
     readout: string,
     readout-show: string,
     readout-every: string,
@@ -192,6 +195,11 @@ export component SettingsWindow inherits Window {
     // Store (row, key) and remove (row) an API key.
     callback set-api-key(int, string);
     callback clear-api-key(int);
+    // The themes (themes-spec §3): built-in ones first, then the user's, and the one in use.
+    in property <[string]> themes;
+    in-out property <int> theme-index;
+    // Theme Studio, starting from the theme at that index.
+    callback open-studio(int);
     callback apply();
     // `close` would shadow Window's builtin close() (Slint 1.18), hence `dismiss`.
     callback dismiss();
@@ -441,6 +449,30 @@ export component SettingsWindow inherits Window {
                         Rectangle {
                             horizontal-stretch: 1;
                         }
+                    }
+                }
+
+                VerticalLayout {
+                    spacing: 8px;
+                    SectionTitle {
+                        text: root.texts.theme;
+                    }
+                    HorizontalLayout {
+                        spacing: 12px;
+                        ComboBox {
+                            horizontal-stretch: 1;
+                            model: root.themes;
+                            current-index <=> root.theme-index;
+                        }
+                        Button {
+                            text: root.texts.theme-studio;
+                            clicked => {
+                                root.open-studio(root.theme-index);
+                            }
+                        }
+                    }
+                    Hint {
+                        text: root.texts.theme-hint;
                     }
                 }
 

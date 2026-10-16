@@ -5,7 +5,7 @@
 use serde::{Deserialize, Serialize};
 
 /// A colour role. Names follow the WinUI 3 theme resource they map to (R§7 table).
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ColorRole {
     /// TextFillColorPrimary: text, values, calm fill on the taskbar and in the hover card, tick.

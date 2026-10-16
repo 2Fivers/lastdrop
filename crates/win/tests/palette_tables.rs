@@ -35,6 +35,7 @@ fn theme(taskbar_dark: bool, high_contrast: Option<HighContrastColors>) -> Theme
         accent: ACCENT,
         transparency: true,
         high_contrast,
+        custom: Default::default(),
     }
 }
 
@@ -107,4 +108,44 @@ fn warning_and_critical_share_one_colour_in_contrast_themes() {
     // R§7: "In contrast themes warning and critical share one colour".
     let t = theme(true, Some(AQUATIC));
     assert_eq!(resolve(R::Caution, &t), resolve(R::Critical, &t));
+}
+
+#[test]
+fn a_lastdrop_theme_changes_mode_accent_and_its_roles_but_never_high_contrast() {
+    use lastdrop_core::theme::{BarStyle, Theme, ThemeColor, ThemeMode};
+    use lastdrop_win::theme::apply;
+
+    let mut ember = Theme::built_in("ember").expect("built in");
+    ember.mode = ThemeMode::Dark;
+    ember.layout.readout_bar = BarStyle::Segmented;
+    ember.dark.insert(R::Track, ThemeColor(0x8012_3456));
+
+    // A light taskbar, made dark by the theme: its dark colours, its accent's light shades.
+    let themed = apply(theme(false, None), &ember);
+    assert!(themed.taskbar_dark);
+    assert!(themed.custom.segmented);
+    assert_eq!(resolve(R::Caution, &themed), Argb(0xFFFF_C24D));
+    assert_eq!(resolve(R::Track, &themed), Argb(0x8012_3456));
+    assert_eq!(
+        resolve(R::Stale, &themed),
+        resolve(R::TextSecondary, &themed)
+    );
+    assert_eq!(themed.accent.accent, Argb(0xFFD9_5A1E));
+    assert_eq!(resolve(R::AccentFill, &themed), themed.accent.light2);
+    // Roles the theme leaves alone keep Windows' colours, and the app windows keep their mode.
+    assert_eq!(resolve(R::Critical, &themed), Argb(0xFFFF_99A4));
+    assert_eq!(themed.apps_dark, theme(false, None).apps_dark);
+
+    // A contrast theme keeps every system colour and the taskbar's mode.
+    let hc = apply(theme(false, Some(AQUATIC)), &ember);
+    assert!(!hc.taskbar_dark);
+    assert_eq!(resolve(R::Caution, &hc), AQUATIC.highlight);
+    assert_eq!(resolve(R::Track, &hc), AQUATIC.window_text);
+    assert!(hc.custom.segmented, "the bar style is layout, not colour");
+
+    // The Windows theme changes nothing.
+    assert_eq!(
+        apply(theme(true, None), &Theme::default()),
+        theme(true, None)
+    );
 }

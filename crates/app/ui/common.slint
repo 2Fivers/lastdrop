@@ -42,25 +42,58 @@ export global Theme {
     // brings 12/16 text to the Small instance's widths (F§8). Applied to every 12 px text.
     in property <length> small-tracking: 0.18px;
 
-    out property <color> text-primary: high-contrast ? hc-window-text : dark ? #ffffff : #000000e4;
-    out property <color> text-secondary: high-contrast ? hc-window-text : dark ? #ffffffc5 : #0000009e;
+    // A Lastdrop theme (themes-spec): its colours for the current mode, set from Rust; never in
+    // high contrast. `has-*` says the theme sets that role.
+    in property <bool> has-text-primary: false;
+    in property <color> custom-text-primary: transparent;
+    in property <bool> has-text-secondary: false;
+    in property <color> custom-text-secondary: transparent;
+    in property <bool> has-track: false;
+    in property <color> custom-track: transparent;
+    in property <bool> has-caution: false;
+    in property <color> custom-caution: transparent;
+    in property <bool> has-critical: false;
+    in property <color> custom-critical: transparent;
+    in property <bool> has-success: false;
+    in property <color> custom-success: transparent;
+    in property <bool> has-card-fill: false;
+    in property <color> custom-card-fill: transparent;
+    in property <bool> has-card-stroke: false;
+    in property <color> custom-card-stroke: transparent;
+    in property <bool> has-divider: false;
+    in property <color> custom-divider: transparent;
+    in property <bool> has-badge-fill: false;
+    in property <color> custom-badge-fill: transparent;
+    // Its layout (themes-spec §2): which card widgets show, the header's order (0 plan, 1 age,
+    // 2 sparkline) and the density.
+    in property <bool> show-plan: true;
+    in property <bool> show-age: true;
+    in property <bool> show-spark: true;
+    in property <bool> show-resets: true;
+    in property <bool> show-bars: true;
+    in property <bool> show-trouble: true;
+    in property <[int]> header-order: [0, 1, 2];
+    in property <bool> compact: false;
+
+    out property <color> text-primary: high-contrast ? hc-window-text : has-text-primary ? custom-text-primary : dark ? #ffffff : #000000e4;
+    out property <color> text-secondary: high-contrast ? hc-window-text : has-text-secondary ? custom-text-secondary : dark ? #ffffffc5 : #0000009e;
     out property <color> text-tertiary: high-contrast ? hc-window-text : dark ? #ffffff87 : #00000072;
     out property <color> text-disabled: high-contrast ? hc-gray-text : dark ? #ffffff5d : #0000005c;
     out property <color> stale: high-contrast ? hc-gray-text : text-secondary;
-    out property <color> track: high-contrast ? hc-window-text : dark ? #ffffff8b : #00000072;
-    out property <color> caution: high-contrast ? hc-highlight : dark ? #fce100 : #9d5d00;
-    out property <color> critical: high-contrast ? hc-highlight : dark ? #ff99a4 : #c42b1c;
-    out property <color> success: high-contrast ? hc-highlight : dark ? #6ccb5f : #0f7b0f;
+    out property <color> track: high-contrast ? hc-window-text : has-track ? custom-track : dark ? #ffffff8b : #00000072;
+    out property <color> caution: high-contrast ? hc-highlight : has-caution ? custom-caution : dark ? #fce100 : #9d5d00;
+    out property <color> critical: high-contrast ? hc-highlight : has-critical ? custom-critical : dark ? #ff99a4 : #c42b1c;
+    out property <color> success: high-contrast ? hc-highlight : has-success ? custom-success : dark ? #6ccb5f : #0f7b0f;
     out property <color> on-accent: high-contrast ? hc-highlight-text : dark ? #000000 : #ffffff;
     // F§7 high contrast: the flyout's meter fill is COLOR_HIGHLIGHT at every severity.
     out property <color> accent: high-contrast ? hc-highlight : accent-fill;
     out property <color> link: high-contrast ? hc-hotlight : accent-text;
-    out property <color> card-fill: high-contrast ? transparent : dark ? #ffffff0d : #ffffffb3;
-    out property <color> card-stroke: high-contrast ? hc-window-text : dark ? #00000019 : #0000000f;
+    out property <color> card-fill: high-contrast ? transparent : has-card-fill ? custom-card-fill : dark ? #ffffff0d : #ffffffb3;
+    out property <color> card-stroke: high-contrast ? hc-window-text : has-card-stroke ? custom-card-stroke : dark ? #00000019 : #0000000f;
     out property <color> subtle-hover: dark ? #ffffff0f : #00000009;
     out property <color> subtle-pressed: dark ? #ffffff0a : #00000006;
-    out property <color> divider: high-contrast ? hc-window-text : dark ? #ffffff15 : #0000000f;
-    out property <color> badge-fill: high-contrast ? transparent : dark ? #ffffff0f : #0000000f;
+    out property <color> divider: high-contrast ? hc-window-text : has-divider ? custom-divider : dark ? #ffffff15 : #0000000f;
+    out property <color> badge-fill: high-contrast ? transparent : has-badge-fill ? custom-badge-fill : dark ? #ffffff0f : #0000000f;
     out property <color> footer-fill: high-contrast ? transparent : dark ? #00000030 : #0000000a;
     out property <color> focus-outer: high-contrast ? hc-highlight : dark ? #ffffff : #000000e4;
     out property <color> focus-inner: high-contrast ? hc-window : dark ? #000000b3 : #ffffffb3;

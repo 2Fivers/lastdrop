@@ -85,7 +85,8 @@ pub fn mode(theme: &ThemeInfo) -> Mode {
     }
 }
 
-/// The colour of `role` in `theme` (R§7, F§7 tables).
+/// The colour of `role` in `theme` (R§7, F§7 tables), or the Lastdrop theme's colour for it
+/// (themes-spec §1; never in high contrast).
 ///
 /// High contrast (R§7, F§7): all text, calm fill, track and tick are COLOR_WINDOWTEXT; warning,
 /// critical, success and accent fills COLOR_HIGHLIGHT; marks on them COLOR_HIGHLIGHTTEXT; the
@@ -108,6 +109,15 @@ pub fn resolve(role: ColorRole, theme: &ThemeInfo) -> Argb {
             R::FlyoutCardBackground | R::BadgeFill | R::FooterFill => Argb::TRANSPARENT,
             R::HitTest => Argb(0x0100_0000),
         };
+    }
+    // The stale colour is the theme's secondary text colour, as it is Windows' (R§7).
+    let themed = if role == R::Stale {
+        R::TextSecondary
+    } else {
+        role
+    };
+    if let Some(custom) = theme.custom.color(themed) {
+        return custom;
     }
     let dark = theme.taskbar_dark;
     let pick = |light: u32, dark_value: u32| Argb(if dark { dark_value } else { light });

@@ -63,7 +63,8 @@ Why: while Settings ran in the tray process, it measured 10.1–10.3 MB fresh an
 once Settings had been opened. Slint's own caches kept only about 0.2 MB of that. The rest, about
 1.4 MB, is what Windows sets up once per thread for a real decorated window with text fields
 (text services and IME, DWM, theme, UI Automation), and it stays as long as the process lives. In
-the dialog process it goes away with the dialog. Theme Studio (M4) will run there too.
+the dialog process it goes away with the dialog. Theme Studio runs there too
+([themes-spec](design/themes-spec.md) §4).
 
 Measured on 2026-10-16 with `tools/measure/measure.ps1 -Variants lastdrop-app` (the app's own
 `--bench` timeline, five runs; Windows 11 build 26200 at 100 % scale, readout visible, four
@@ -291,7 +292,9 @@ Rules for every provider:
   secrets); the user's described services in `%APPDATA%\Lastdrop\providers\*.json`
   (only read, by both processes at start-up); the user's token prices in
   `%APPDATA%\Lastdrop\prices.json` (only read, by the usage history window, over the bundled
-  `crates/core/prices.json`); history in `%LOCALAPPDATA%\Lastdrop\` (thinned to one sample per meter per
+  `crates/core/prices.json`); the user's themes in `%APPDATA%\Lastdrop\themes\*.json` (written
+  by Theme Studio in the dialog process; the tray process reads the one in use at start-up and
+  after each settings change, a few kilobytes, [themes-spec](design/themes-spec.md) §3); history in `%LOCALAPPDATA%\Lastdrop\` (thinned to one sample per meter per
   5 minutes, 90 days); `%LOCALAPPDATA%\Lastdrop\state.json` (what the app remembers that is
   not a setting: the meters a source has reported, so their room in the readout survives a
   restart, what notifications announced, so a restart repeats none, and the hash of who each
