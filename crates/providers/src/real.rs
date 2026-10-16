@@ -1284,12 +1284,15 @@ mod tests {
         let status = child.child.try_wait().expect("status").expect("exited");
         assert_eq!(status.code(), Some(0), "exited by itself");
 
-        // Ignores its input: terminated after the grace period.
+        // Ignores its input: terminated after the grace period. `WaitForSingleObject` counts its
+        // timeout in system clock ticks (15.6 ms by default) from a tick that has already begun,
+        // so as `Instant` measures it the wait can end up to a tick early: allow two.
         let mut busy = spawn_child(&spec(&["/c", "for /l %i in (0,0,1) do @rem"])).expect("spawn");
         busy.grace = Duration::from_millis(200);
         let started = Instant::now();
         busy.kill().expect("kill");
-        assert!(started.elapsed() >= Duration::from_millis(200));
+        let waited = started.elapsed();
+        assert!(waited >= Duration::from_millis(200 - 32), "{waited:?}");
         let status = busy.child.try_wait().expect("status").expect("exited");
         assert_eq!(status.code(), Some(1), "terminated");
     }
