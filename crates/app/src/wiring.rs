@@ -68,7 +68,9 @@ use lastdrop_win::geom::{Point, Rect, Size};
 use lastdrop_win::hotkey::HotkeyRegistration;
 use lastdrop_win::palette::{self, Argb};
 use lastdrop_win::placement::{Placement, TaskbarEdge};
-use lastdrop_win::readout::{ReadoutConfig, ReadoutEvent, ReadoutHandle, SystemEvent};
+use lastdrop_win::readout::{
+    ReadoutConfig, ReadoutEvent, ReadoutHandle, SystemEvent, TaskbarTarget,
+};
 use lastdrop_win::render::RenderFactory;
 use lastdrop_win::single_instance::{self, InstanceGuard, Listener};
 use lastdrop_win::theme::ThemeInfo;
@@ -235,6 +237,7 @@ pub fn run(startup: Startup) -> Result<(), AppError> {
             enabled: readout_enabled,
             hover_delay: None,
             theme,
+            target: TaskbarTarget::Primary,
         },
         Box::new(|event| {
             let _ = slint::invoke_from_event_loop(move || {
@@ -302,6 +305,7 @@ pub fn run(startup: Startup) -> Result<(), AppError> {
         state,
         windows: Windows { flyout, hover_card },
         readout,
+        secondary: RefCell::new(Vec::new()),
         scheduler,
         tray,
         menu: RefCell::new(menu),
@@ -323,6 +327,7 @@ pub fn run(startup: Startup) -> Result<(), AppError> {
     if let Some(hotkey) = hotkey_setting {
         register_hotkey(&app, &hotkey);
     }
+    crate::secondary::sync(&app);
 
     // Keep-alive windows: shown off-screen and inactive so winit creates them, then styled and
     // hidden with Win32 (F§1.1, R§8.1).
@@ -390,6 +395,7 @@ fn shutdown() {
     if let Some(hotkey) = app.hotkey.borrow_mut().take() {
         hotkey.unregister();
     }
+    crate::secondary::stop_all(&app);
     match Rc::try_unwrap(app) {
         Ok(app) => {
             let App {
@@ -719,6 +725,8 @@ pub struct App {
     pub windows: Windows,
     /// The readout thread.
     pub readout: ReadoutHandle,
+    /// The readouts on the secondary taskbars (every-taskbar-spec), main thread only.
+    pub secondary: RefCell<Vec<crate::secondary::SecondaryReadout>>,
     /// The refresh workers.
     pub scheduler: Scheduler,
     /// The tray icon (dropping it removes it: `NIM_DELETE`); input arrives as [`TrayInput`].
@@ -1115,6 +1123,7 @@ fn on_system_event(app: &App, event: SystemEvent) {
             arm_minute_tick(app);
             replan(app);
         }
+        SystemEvent::Taskbars => crate::secondary::sync(app),
     }
 }
 
@@ -1132,6 +1141,7 @@ fn apply_theme(app: &App) {
     }
     app.state.borrow_mut().theme = theme;
     app.readout.set_theme(theme);
+    crate::secondary::set_theme(app, theme);
     set_theme(&app.windows.flyout.global::<ui::Theme>(), &theme);
     set_theme(&app.windows.hover_card.global::<ui::Theme>(), &theme);
     let backdrop_kind = if theme.high_contrast.is_some() {
@@ -1192,7 +1202,7 @@ pub fn on_tray_input(app: &App, input: TrayInput) {
 }
 
 /// Shows the R§10 context menu at `pt` and runs the chosen command.
-fn show_tray_menu(app: &App, pt: Point) {
+pub(crate) fn show_tray_menu(app: &App, pt: Point) {
     let menu = {
         let st = app.state.borrow();
         TrayMenu::build(st.strings, &MenuState::of(&st.settings, Timestamp::now()))
@@ -1232,6 +1242,7 @@ pub fn on_menu_command(app: &App, command: MenuCommand) {
                 app.readout_allowed(&st.settings)
             };
             app.readout.set_enabled(allowed);
+            crate::secondary::sync(app);
             save_settings(app);
             rebuild(app, now);
         }
@@ -1372,12 +1383,13 @@ fn apply_reloaded(app: &App, previous: &Settings, settings: Settings) {
     // The language may have changed; the models follow with the next rebuild.
     set_flyout_labels(&app.windows.flyout, strings);
     app.readout.set_enabled(allowed);
+    crate::secondary::sync(app);
 }
 
 // ---- Flyout ------------------------------------------------------------------------------------------
 
 /// The tray icon's anchor (`Shell_NotifyIconGetRect`), else the cursor position.
-fn tray_anchor(app: &App) -> Anchor {
+pub(crate) fn tray_anchor(app: &App) -> Anchor {
     if let Some(rect) = app
         .tray
         .icon_rect()
@@ -1952,6 +1964,7 @@ pub fn rebuild(app: &App, now: Timestamp) {
         (st.flyout.open, hover)
     };
     app.readout.update(readout.clone());
+    crate::secondary::update(app, &readout);
     *app.rt.last_readout.borrow_mut() = Some(readout);
     update_tray(app, false);
     if flyout_open {

@@ -461,6 +461,7 @@ catalogue! {
         SettingsRefreshManual = "settings.refresh.manual",
         SettingsReadout = "settings.readout",
         SettingsReadoutShow = "settings.readout.show",
+        SettingsReadoutEvery = "settings.readout.every",
         SettingsReadoutRows = "settings.readout.rows",
         SettingsReadoutAuto = "settings.readout.auto",
         SettingsReadoutPinned = "settings.readout.pinned",

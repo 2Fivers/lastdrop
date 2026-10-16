@@ -52,7 +52,7 @@ use windows::core::{PCWSTR, w};
 use super::frame::{self, FrameInput, Plate};
 use super::layered::Surface;
 use super::uia::{self, UiaData, UiaRow};
-use super::{EventSink, ReadoutConfig, ReadoutEvent, SystemEvent, gather};
+use super::{EventSink, ReadoutConfig, ReadoutEvent, SystemEvent, TaskbarTarget, gather};
 use crate::flyout_pos::MonitorInfo;
 use crate::geom::{Point, Rect};
 use crate::occupancy::{OccupancyHandle, OccupancyResult};
@@ -392,10 +392,7 @@ fn register_class(
 
 /// Posts an occupancy answer to the host window (runs on the occupancy thread).
 fn post_occupancy(host: isize, result: OccupancyResult) {
-    let (wparam, lparam) = match result {
-        OccupancyResult::Measured(e) => (1, e.rightmost_right.map_or(isize::MIN, |x| x as isize)),
-        OccupancyResult::Unknown => (0, 0),
-    };
+    let (wparam, lparam) = encode_occupancy(result);
     // SAFETY: posting to the readout thread's window; a stale handle only makes the call fail.
     let _ = unsafe {
         PostMessageW(
@@ -407,16 +404,36 @@ fn post_occupancy(host: isize, result: OccupancyResult) {
     };
 }
 
+// The two extents travel in one 64-bit `LPARAM`.
+const _: () = assert!(isize::BITS == 64, "the readout needs a 64-bit target");
+
+/// `None` in a packed extent.
+const NO_EXTENT: u32 = i32::MIN as u32;
+
+/// An occupancy answer as `WM_OCCUPANCY`'s parameters: `wParam` 1 = measured, 0 = unknown;
+/// `lParam` = the rightmost app button's right edge in the low 32 bits and the secondary
+/// taskbar's `tray_left` in the high 32 bits (`i32::MIN` = none).
+fn encode_occupancy(result: OccupancyResult) -> (usize, isize) {
+    match result {
+        OccupancyResult::Measured(e) => {
+            let pack = |x: Option<i32>| x.map_or(NO_EXTENT, |x| x as u32);
+            let packed = u64::from(pack(e.rightmost_right)) | u64::from(pack(e.tray_left)) << 32;
+            (1, packed as isize)
+        }
+        OccupancyResult::Unknown => (0, 0),
+    }
+}
+
 fn decode_occupancy(wparam: WPARAM, lparam: LPARAM) -> OccupancyResult {
     if wparam.0 == 0 {
         return OccupancyResult::Unknown;
     }
-    let rightmost_right = if lparam.0 == isize::MIN {
-        None
-    } else {
-        i32::try_from(lparam.0).ok()
-    };
-    OccupancyResult::Measured(AppButtonExtents { rightmost_right })
+    let packed = lparam.0 as u64;
+    let unpack = |x: u32| (x != NO_EXTENT).then_some(x as i32);
+    OccupancyResult::Measured(AppButtonExtents {
+        rightmost_right: unpack(packed as u32),
+        tray_left: unpack((packed >> 32) as u32),
+    })
 }
 
 impl Host {
@@ -536,6 +553,19 @@ impl Host {
         (self.sink)(event);
     }
 
+    /// This thread docks in a secondary taskbar.
+    fn secondary(&self) -> bool {
+        matches!(self.config.target, TaskbarTarget::Secondary { .. })
+    }
+
+    /// A system broadcast, from the primary thread only (the secondary ones hear the same
+    /// broadcasts; every-taskbar-spec §2).
+    fn emit_system(&self, event: SystemEvent) {
+        if !self.secondary() {
+            self.emit(ReadoutEvent::System(event));
+        }
+    }
+
     fn start(&mut self) {
         self.alignment = gather::read_alignment();
         self.attach_taskbar();
@@ -550,7 +580,7 @@ impl Host {
     /// gathered on each placement, for the reports the hover card and flyout are placed with.
     fn attach_taskbar(&mut self) {
         self.unhook();
-        self.taskbar = gather::find_taskbar();
+        self.taskbar = gather::find_taskbar(self.config.target);
         let taskbar_raw = self.taskbar.map_or(0, raw);
         update_handles(|h| h.taskbar = taskbar_raw);
         self.buttons = None;
@@ -697,7 +727,9 @@ impl Host {
             self.hide();
             return;
         };
-        let Some(geometry) = gather::gather(taskbar, self.alignment, self.buttons) else {
+        let secondary = self.secondary();
+        let Some(geometry) = gather::gather(taskbar, self.alignment, self.buttons, secondary)
+        else {
             self.shown = None;
             self.hide();
             return;
@@ -1011,7 +1043,7 @@ impl Host {
                 self.place_now();
             }
             T_FIND_TASKBAR => {
-                if gather::find_taskbar().is_some() {
+                if gather::find_taskbar(self.config.target).is_some() {
                     self.rebuild();
                 }
             }
@@ -1035,13 +1067,17 @@ impl Host {
             unsafe { PCWSTR(lparam.0 as *const u16).to_string() }.unwrap_or_default()
         };
         if area == "intl" {
-            self.emit(ReadoutEvent::System(SystemEvent::Locale));
+            self.emit_system(SystemEvent::Locale);
         } else if (area == "ImmersiveColorSet" || wparam.0 == SPI_SETHIGHCONTRAST.0 as usize)
             && let Some(change) = theme::classify(WM_SETTINGCHANGE, wparam, lparam)
         {
             // Only the two theme-bearing kinds of WM_SETTINGCHANGE (theme::ThemeChange) are
             // classified; the many other broadcasts ("Environment", "Policy", …) are not.
-            self.emit(ReadoutEvent::System(SystemEvent::Theme(change)));
+            self.emit_system(SystemEvent::Theme(change));
+        }
+        if area == "TraySettings" {
+            // "Show my taskbar on all displays" makes or removes the secondary taskbars.
+            self.emit_system(SystemEvent::Taskbars);
         }
         if area == "TraySettings" || wparam.0 == SPI_SETWORKAREA.0 as usize {
             // Taskbar alignment or size, or the work area (auto-hide on/off).
@@ -1064,6 +1100,17 @@ impl Host {
             WM_INVOKED => self.emit(ReadoutEvent::Invoked),
             WM_TIMER => self.on_timer(wparam.0),
             WM_DISPLAYCHANGE | WM_DPICHANGED => {
+                if msg == WM_DISPLAYCHANGE {
+                    self.emit_system(SystemEvent::Taskbars);
+                    // A secondary taskbar is made anew when displays change: find it again.
+                    let alive = self.taskbar.is_some_and(|t| {
+                        // SAFETY: IsWindow accepts any value.
+                        unsafe { IsWindow(Some(t)) }.as_bool()
+                    });
+                    if !alive {
+                        self.rebuild();
+                    }
+                }
                 arm(host, T_PLACE, PLACE_DEBOUNCE_MS);
                 arm(host, T_MEASURE, MEASURE_DEBOUNCE_MS);
                 return None;
@@ -1074,23 +1121,26 @@ impl Host {
             }
             WM_THEMECHANGED | WM_SYSCOLORCHANGE | WM_DWMCOLORIZATIONCOLORCHANGED => {
                 if let Some(change) = theme::classify(msg, wparam, lparam) {
-                    self.emit(ReadoutEvent::System(SystemEvent::Theme(change)));
+                    self.emit_system(SystemEvent::Theme(change));
                 }
                 return None;
             }
             WM_TIMECHANGE => {
-                self.emit(ReadoutEvent::System(SystemEvent::TimeChanged));
+                self.emit_system(SystemEvent::TimeChanged);
                 return None;
             }
             WM_POWERBROADCAST => {
                 if wparam.0 == PBT_APMRESUMEAUTOMATIC as usize {
-                    self.emit(ReadoutEvent::System(SystemEvent::Resumed));
+                    self.emit_system(SystemEvent::Resumed);
                     arm(host, T_PLACE, PLACE_DEBOUNCE_MS);
                     arm(host, T_MEASURE, MEASURE_DEBOUNCE_MS);
                 }
                 return Some(LRESULT(1));
             }
-            m if m != 0 && m == self.taskbar_created => self.rebuild(),
+            m if m != 0 && m == self.taskbar_created => {
+                self.emit_system(SystemEvent::Taskbars);
+                self.rebuild();
+            }
             _ => return None,
         }
         Some(LRESULT(0))
@@ -1337,20 +1387,22 @@ mod tests {
             OccupancyResult::Unknown,
             OccupancyResult::Measured(AppButtonExtents {
                 rightmost_right: None,
+                tray_left: None,
             }),
             OccupancyResult::Measured(AppButtonExtents {
                 rightmost_right: Some(3040),
+                tray_left: None,
             }),
             OccupancyResult::Measured(AppButtonExtents {
                 rightmost_right: Some(-1200),
+                tray_left: Some(-120),
+            }),
+            OccupancyResult::Measured(AppButtonExtents {
+                rightmost_right: None,
+                tray_left: Some(7000),
             }),
         ] {
-            let (wparam, lparam) = match result {
-                OccupancyResult::Measured(e) => {
-                    (1, e.rightmost_right.map_or(isize::MIN, |x| x as isize))
-                }
-                OccupancyResult::Unknown => (0, 0),
-            };
+            let (wparam, lparam) = encode_occupancy(result);
             assert_eq!(decode_occupancy(WPARAM(wparam), LPARAM(lparam)), result);
         }
     }

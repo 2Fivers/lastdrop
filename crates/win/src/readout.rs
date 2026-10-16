@@ -18,6 +18,11 @@
 //! rebuilds the readout in-process: it finds the new taskbar, re-hooks Explorer's new process,
 //! re-measures the app buttons and places and draws again.
 //!
+//! With "every taskbar" on (every-taskbar-spec), the app runs one readout thread per taskbar: the
+//! primary one ([`TaskbarTarget::Primary`]) forwards system broadcasts; each secondary one
+//! ([`TaskbarTarget::Secondary`]) follows the `Shell_SecondaryTrayWnd` on its monitor and
+//! reports only its own pointer input and placement.
+//!
 //! Submodules: `host` (the thread, its windows, hooks and state), `frame` (drawing a model into a
 //! [`crate::render::Canvas`]), `gather` (taskbar geometry with `GetWindowRect`), `layered` (the
 //! DIB pushed with `UpdateLayeredWindow`) and `uia` (the UI Automation provider, R§11).
@@ -41,6 +46,22 @@ use crate::geom::{Point, Rect};
 use crate::placement::{Placement, TaskbarEdge};
 use crate::theme::{ThemeChange, ThemeInfo};
 
+pub use gather::secondary_monitors;
+
+/// Which taskbar a readout thread docks in (every-taskbar-spec §2).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub enum TaskbarTarget {
+    /// `Shell_TrayWnd`, next to the notification area. This thread also forwards the system
+    /// broadcasts ([`ReadoutEvent::System`]).
+    #[default]
+    Primary,
+    /// The `Shell_SecondaryTrayWnd` on the monitor with this rectangle (device px).
+    Secondary {
+        /// The monitor's rectangle.
+        monitor: Rect,
+    },
+}
+
 /// Start-up options of the readout thread.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct ReadoutConfig {
@@ -54,6 +75,8 @@ pub struct ReadoutConfig {
     /// per change and hands the same value to the readout, the tray icon and the Slint windows,
     /// so they cannot disagree.
     pub theme: ThemeInfo,
+    /// The taskbar it docks in.
+    pub target: TaskbarTarget,
 }
 
 /// A system broadcast seen by the readout thread's message window, forwarded to the main thread.
@@ -68,6 +91,10 @@ pub enum SystemEvent {
     /// Resume from sleep (`WM_POWERBROADCAST` / `PBT_APMRESUMEAUTOMATIC`): re-arm the minute tick
     /// and refresh (R§12).
     Resumed,
+    /// Displays, the taskbar settings or Explorer changed (`WM_DISPLAYCHANGE`, `TaskbarCreated`,
+    /// `WM_SETTINGCHANGE` "TraySettings"): the secondary taskbars may have come or gone
+    /// (every-taskbar-spec §2).
+    Taskbars,
 }
 
 /// What the readout thread reports (R§10).
@@ -215,11 +242,13 @@ impl Drop for ReadoutHandle {
 
 /// The taskbar geometry as the readout thread gathers it right now (`GetWindowRect`,
 /// `GetMonitorInfoW`, `GetDpiForMonitor`; never `SHAppBarMessage`), with `app_buttons` from the
-/// caller (the occupancy thread's last answer). `None` when there is no `Shell_TrayWnd`. For
+/// caller (the occupancy thread's last answer). `None` when there is no such taskbar. For
 /// recording layouts (`tests/layouts/README.md`): it holds only rectangles, DPI and flags.
 pub fn taskbar_geometry(
+    target: TaskbarTarget,
     app_buttons: Option<crate::placement::AppButtonExtents>,
 ) -> Option<crate::placement::TaskbarGeometry> {
-    let taskbar = gather::find_taskbar()?;
-    gather::gather(taskbar, gather::read_alignment(), app_buttons)
+    let taskbar = gather::find_taskbar(target)?;
+    let secondary = matches!(target, TaskbarTarget::Secondary { .. });
+    gather::gather(taskbar, gather::read_alignment(), app_buttons, secondary)
 }

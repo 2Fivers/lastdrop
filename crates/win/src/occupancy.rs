@@ -12,7 +12,13 @@
 //! What counts as an app button (recorded on Windows 11 25H2): every UIA `Button` under
 //! `Shell_TrayWnd` — Start, Search, Task View, Widgets and the `Taskbar.TaskListButtonAutomationPeer`
 //! app buttons — except the notification area's (`SystemTray.*` classes, or anything starting at or
-//! right of `TrayNotifyWnd`'s left edge). One `FindAllBuildCache` with a cache request for
+//! right of `TrayNotifyWnd`'s left edge).
+//!
+//! A secondary taskbar (`Shell_SecondaryTrayWnd`, every-taskbar-spec §3) has no `TrayNotifyWnd`:
+//! its right end holds the clock and Show desktop. There, the buttons right of the rightmost
+//! `Taskbar.TaskListButton*` (or, without one, every button in the right half that is not an app
+//! button) are that end, and their leftmost left edge is reported as `tray_left`, whatever their
+//! classes are. One `FindAllBuildCache` with a cache request for
 //! `BoundingRectangle`, `ControlType` and `ClassName` and `AutomationElementMode_None`, so a
 //! measurement is one cross-process transaction and holds no element references.
 
@@ -274,9 +280,52 @@ fn measure(automation: &Automation, hwnd: isize) -> windows::core::Result<AppBut
         };
         buttons.push((class.to_string(), rect));
     }
-    Ok(AppButtonExtents {
-        rightmost_right: rightmost_app_button(&buttons, tray_left),
-    })
+    if tray_left.is_some() {
+        return Ok(AppButtonExtents {
+            rightmost_right: rightmost_app_button(&buttons, tray_left),
+            tray_left: None,
+        });
+    }
+    let mut rect = RECT::default();
+    // SAFETY: `rect` is a valid out pointer; a stale handle only makes the call fail.
+    unsafe { GetWindowRect(taskbar, &mut rect)? };
+    Ok(secondary_extents(&buttons, rect))
+}
+
+/// A task list (app) button's class: `Taskbar.TaskListButtonAutomationPeer` and its kin.
+fn is_task_button(class: &str) -> bool {
+    class.starts_with("Taskbar.TaskListButton")
+}
+
+/// The extents on a taskbar without `TrayNotifyWnd` (a secondary taskbar): the buttons at its
+/// right end are those right of the rightmost task button (without one: those in the right half
+/// of `taskbar` that are not task buttons), plus every `SystemTray.*` button; the rest are app
+/// buttons. Empty rectangles do not count.
+fn secondary_extents(buttons: &[(String, RECT)], taskbar: RECT) -> AppButtonExtents {
+    let real = || {
+        buttons
+            .iter()
+            .filter(|(_, r)| r.right > r.left && r.bottom > r.top)
+    };
+    let tasks_right = real()
+        .filter(|(class, _)| is_task_button(class))
+        .map(|(_, r)| r.right)
+        .max();
+    let middle = taskbar.left + (taskbar.right - taskbar.left) / 2;
+    let at_end = |class: &str, r: &RECT| {
+        class.starts_with("SystemTray.")
+            || (!is_task_button(class) && r.left >= tasks_right.unwrap_or(middle))
+    };
+    AppButtonExtents {
+        rightmost_right: real()
+            .filter(|(class, r)| !at_end(class, r))
+            .map(|(_, r)| r.right)
+            .max(),
+        tray_left: real()
+            .filter(|(class, r)| at_end(class, r))
+            .map(|(_, r)| r.left)
+            .min(),
+    }
 }
 
 /// The left edge of `TrayNotifyWnd`, the notification area (`GetWindowRect`).
@@ -348,6 +397,62 @@ mod tests {
         // Empty rectangles (off-screen or collapsed buttons) do not count.
         let empty = vec![("ToggleButton".to_owned(), rect(0, 0))];
         assert_eq!(rightmost_app_button(&empty, Some(4798)), None);
+    }
+
+    #[test]
+    fn a_secondary_taskbar_reports_its_right_end() {
+        let taskbar = RECT {
+            left: -1920,
+            top: 1032,
+            right: 0,
+            bottom: 1080,
+        };
+        let r = |left, right| RECT {
+            left,
+            top: 1032,
+            right,
+            bottom: 1080,
+        };
+        let mut buttons = vec![
+            ("ToggleButton".to_owned(), r(-1100, -1056)),
+            (
+                "Taskbar.TaskListButtonAutomationPeer".to_owned(),
+                r(-1056, -1012),
+            ),
+            (
+                "Taskbar.TaskListButtonAutomationPeer".to_owned(),
+                r(-1012, -968),
+            ),
+            // The clock and Show desktop, whatever their classes.
+            ("Clock".to_owned(), r(-120, -12)),
+            ("SystemTray.ShowDesktopButton".to_owned(), r(-12, 0)),
+        ];
+        assert_eq!(
+            secondary_extents(&buttons, taskbar),
+            AppButtonExtents {
+                rightmost_right: Some(-968),
+                tray_left: Some(-120),
+            }
+        );
+        // No app open on that monitor: the right half is the end.
+        buttons.retain(|(class, _)| !is_task_button(class));
+        buttons.push(("ToggleButton".to_owned(), r(-1500, -1456)));
+        assert_eq!(
+            secondary_extents(&buttons, taskbar),
+            AppButtonExtents {
+                rightmost_right: Some(-1056),
+                tray_left: Some(-120),
+            }
+        );
+        // No clock: nothing at the end.
+        buttons.retain(|(_, rect)| rect.right < -200);
+        assert_eq!(
+            secondary_extents(&buttons, taskbar),
+            AppButtonExtents {
+                rightmost_right: Some(-1056),
+                tray_left: None,
+            }
+        );
     }
 
     #[test]

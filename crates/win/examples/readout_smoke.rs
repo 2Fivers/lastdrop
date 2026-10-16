@@ -37,7 +37,9 @@ use lastdrop_win::geom::Rect;
 use lastdrop_win::occupancy::{OccupancyHandle, OccupancyResult};
 use lastdrop_win::palette::Argb;
 use lastdrop_win::placement::Placement;
-use lastdrop_win::readout::{ReadoutConfig, ReadoutEvent, ReadoutHandle, taskbar_geometry};
+use lastdrop_win::readout::{
+    ReadoutConfig, ReadoutEvent, ReadoutHandle, TaskbarTarget, taskbar_geometry,
+};
 use lastdrop_win::render::{RenderFactory, TextMeasurer};
 use lastdrop_win::theme::{AccentShades, ThemeInfo};
 use lastdrop_win::trayicon;
@@ -491,7 +493,7 @@ fn main() {
         let _ = tx.send(r);
     })) {
         Ok(occupancy) => {
-            let taskbar = taskbar_geometry(None);
+            let taskbar = taskbar_geometry(TaskbarTarget::Primary, None);
             let buttons = if taskbar.is_some() {
                 // SAFETY: a plain lookup.
                 let hwnd = unsafe { FindWindowW(w!("Shell_TrayWnd"), None) };
@@ -506,7 +508,7 @@ fn main() {
                 None
             };
             occupancy.shutdown();
-            if let Some(geometry) = taskbar_geometry(buttons) {
+            if let Some(geometry) = taskbar_geometry(TaskbarTarget::Primary, buttons) {
                 let json = serde_json::to_string_pretty(&geometry).unwrap_or_default();
                 let path = out.join("readout-smoke-geometry.json");
                 if let Err(e) = std::fs::write(&path, json) {
@@ -534,6 +536,7 @@ fn main() {
             enabled: true,
             hover_delay: None,
             theme,
+            target: TaskbarTarget::Primary,
         },
         Box::new(move |e| {
             if let Ok(mut list) = sink_events.lock() {

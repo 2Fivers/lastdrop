@@ -53,6 +53,7 @@ pub mod persist;
 pub mod png;
 pub mod preview;
 pub mod scheduler;
+pub mod secondary;
 pub mod settings_accounts;
 pub mod settings_window;
 pub mod state;

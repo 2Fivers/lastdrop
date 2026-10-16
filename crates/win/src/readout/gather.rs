@@ -19,13 +19,52 @@ use windows::Win32::UI::WindowsAndMessaging::{
 };
 use windows::core::w;
 
+use super::TaskbarTarget;
 use crate::geom::Rect;
 use crate::placement::{AppButtonExtents, TaskbarAlignment, TaskbarEdge, TaskbarGeometry};
 
-/// The primary taskbar, `Shell_TrayWnd`.
-pub(super) fn find_taskbar() -> Option<HWND> {
-    // SAFETY: a plain lookup by class name.
-    unsafe { FindWindowW(w!("Shell_TrayWnd"), None) }.ok()
+/// The most secondary taskbars looked at (a guard against an endless window walk).
+const MAX_SECONDARY: usize = 16;
+
+/// The taskbar of `target`: `Shell_TrayWnd`, or the `Shell_SecondaryTrayWnd` on the target's
+/// monitor (every-taskbar-spec §2).
+pub(super) fn find_taskbar(target: TaskbarTarget) -> Option<HWND> {
+    match target {
+        TaskbarTarget::Primary => {
+            // SAFETY: a plain lookup by class name.
+            unsafe { FindWindowW(w!("Shell_TrayWnd"), None) }.ok()
+        }
+        TaskbarTarget::Secondary { monitor } => secondary_windows()
+            .into_iter()
+            .find(|h| monitor_of(*h).is_some_and(|(_, m, _, _)| m == monitor)),
+    }
+}
+
+/// Every `Shell_SecondaryTrayWnd` (top-level windows of that class, in z-order).
+fn secondary_windows() -> Vec<HWND> {
+    let mut out = Vec::new();
+    let mut after: Option<HWND> = None;
+    while out.len() < MAX_SECONDARY {
+        // SAFETY: a plain lookup by class name among top-level windows.
+        let next = unsafe { FindWindowExW(None, after, w!("Shell_SecondaryTrayWnd"), None) }.ok();
+        let Some(next) = next else {
+            break;
+        };
+        out.push(next);
+        after = Some(next);
+    }
+    out
+}
+
+/// The monitors that have a secondary taskbar now, left to right (every-taskbar-spec §2).
+pub fn secondary_monitors() -> Vec<Rect> {
+    let mut monitors: Vec<Rect> = secondary_windows()
+        .into_iter()
+        .filter_map(|h| monitor_of(h).map(|(_, m, _, _)| m))
+        .collect();
+    monitors.sort_by_key(|m| (m.left, m.top));
+    monitors.dedup();
+    monitors
 }
 
 /// `GetWindowRect` as a [`Rect`].
@@ -203,6 +242,7 @@ pub(super) fn gather(
     taskbar: HWND,
     alignment: TaskbarAlignment,
     app_buttons: Option<AppButtonExtents>,
+    secondary: bool,
 ) -> Option<TaskbarGeometry> {
     let taskbar_rect = window_rect(taskbar)?;
     let (monitor_handle, monitor, work_area, dpi) = monitor_of(taskbar)?;
@@ -220,6 +260,7 @@ pub(super) fn gather(
         auto_hide: auto_hidden(taskbar_rect, monitor, work_area, edge),
         fullscreen_app: fullscreen_app_on(monitor_handle, monitor),
         app_buttons,
+        secondary,
     })
 }
 
