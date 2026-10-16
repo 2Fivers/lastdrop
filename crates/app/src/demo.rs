@@ -450,6 +450,62 @@ impl Demo {
             &self.build_context(),
         )
     }
+
+    /// The settings with a second, invented Claude account (`Work`, `~\.claude-work`), and what
+    /// the settings window's accounts section knows of the invented folders: who is signed in to
+    /// each and an unused `~\.claude-old` found on the PC (`--preview-settings`, accounts-spec
+    /// §7). Addresses are under `example.invalid`.
+    pub fn accounts(&self) -> (Settings, crate::settings_accounts::AccountsInfo) {
+        use crate::settings_accounts::{AccountsInfo, folder_id};
+        use lastdrop_core::model::{AccountIdentity, Identity};
+        use lastdrop_core::secret::SecretString;
+        use lastdrop_core::settings::{AccountSettings, SourceSettings};
+        use lastdrop_providers::discover::Candidate;
+
+        let home = std::path::PathBuf::from(r"C:\Users\tester");
+        let signed_in = |name: &str, email: &str| Identity::SignedIn {
+            id: AccountIdentity::of(&["claude", "org", name]),
+            email: Some(SecretString::new(email.to_owned())),
+        };
+        let mut settings = self.settings.clone();
+        let work = SourceSettings::ClaudeConfigDir {
+            path: home.join(".claude-work"),
+        };
+        if let Some(p) = settings.provider_mut(ProviderId::Claude) {
+            let taken: Vec<AccountKey> = p.accounts.iter().map(|a| a.key.clone()).collect();
+            p.accounts
+                .push(AccountSettings::for_folder(work, Some("Work"), &taken));
+        }
+        let mut info = AccountsInfo {
+            home: Some(home.clone()),
+            ..AccountsInfo::default()
+        };
+        info.defaults
+            .insert(ProviderId::Claude, home.join(".claude"));
+        info.defaults.insert(ProviderId::Codex, home.join(".codex"));
+        for (folder, identity) in [
+            (".claude", signed_in("me", "tester@example.invalid")),
+            (
+                ".claude-work",
+                signed_in("work", "tester@work.example.invalid"),
+            ),
+            (".claude-old", Identity::SignedOut),
+            (".codex", Identity::Unknown),
+        ] {
+            info.identities
+                .insert(folder_id(&home.join(folder)), identity);
+        }
+        info.found.insert(
+            ProviderId::Claude,
+            vec![Candidate {
+                folder: home.join(".claude-old"),
+                source: SourceSettings::ClaudeConfigDir {
+                    path: home.join(".claude-old"),
+                },
+            }],
+        );
+        (settings, info)
+    }
 }
 
 #[cfg(test)]

@@ -46,7 +46,7 @@ const CARD_MAX_PREVIEW_H: f32 = 2000.0;
 /// The settings window's preview size: its preferred width, tall enough for the whole page.
 const SETTINGS_PREVIEW_W: f32 = 480.0;
 /// See [`SETTINGS_PREVIEW_W`].
-const SETTINGS_PREVIEW_H: f32 = 900.0;
+const SETTINGS_PREVIEW_H: f32 = 1500.0;
 /// The about window's preferred width.
 const ABOUT_PREVIEW_W: f32 = 420.0;
 
@@ -231,8 +231,9 @@ pub fn render_hover_card(
     Ok(())
 }
 
-/// Renders the settings window with the demo's settings, in the demo's language and regional
-/// format (Windows' display language is the demo's language too).
+/// Renders the settings window with the demo's settings and invented accounts
+/// ([`demo::Demo::accounts`]), in the demo's language and regional format (Windows' display
+/// language is the demo's language too).
 fn render_settings(world: &demo::Demo, scale: f64, out: &Path) -> Result<(), AppError> {
     let window = ui::SettingsWindow::new()?;
     let reported: Vec<(MeterKey, MeterNames)> = world
@@ -256,8 +257,9 @@ fn render_settings(world: &demo::Demo, scale: f64, out: &Path) -> Result<(), App
         ui_languages: vec![world.language.tag().to_owned()],
         locale: world.locale.clone(),
     };
-    let draft = crate::settings_window::draft_with(world.settings.clone(), &reported);
-    crate::settings_window::fill(&window, &draft, &reported, true, &wording);
+    let (settings, accounts) = world.accounts();
+    let draft = crate::settings_window::draft_with(settings, &reported);
+    crate::settings_window::fill(&window, &draft, &reported, true, &wording, &accounts);
     window.show()?;
     snapshot_to_png(
         window.window(),
@@ -355,6 +357,7 @@ fn live_models(language: Option<Language>) -> Result<LiveModels, AppError> {
             account: source.source.clone(),
             manual: true,
             probe: None,
+            identity: crate::scheduler::IdentityRead::Always,
         })
         .collect();
     for job in &jobs {

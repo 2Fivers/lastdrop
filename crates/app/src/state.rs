@@ -10,13 +10,17 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::time::Instant;
 
-use jiff::Timestamp;
+use jiff::{SignedDuration, Timestamp};
 use lastdrop_core::grammar::meters::localize;
-use lastdrop_core::grammar::{Language, LocaleFormat, Strings, TextContext};
-use lastdrop_core::model::{AccountRef, Health, MeterKey, ProviderId, Snapshot, SourceKey};
-use lastdrop_core::notify::{NotificationModel, NotifyMemory, build_notification, notices};
+use lastdrop_core::grammar::strings::text;
+use lastdrop_core::grammar::{Language, LocaleFormat, Msg, Strings, TextContext};
+use lastdrop_core::model::{
+    AccountIdentity, AccountRef, Health, Identity, MeterKey, ProviderId, Snapshot, SourceKey,
+};
+use lastdrop_core::notify::{self, NotificationModel, NotifyMemory, build_notification, notices};
 use lastdrop_core::readout::ReadoutForm;
 use lastdrop_core::refresh::{Activity, AttemptResult, CredentialFingerprint, SourceState, record};
+use lastdrop_core::secret::SecretString;
 use lastdrop_core::settings::{AccountSettings, Settings};
 use lastdrop_core::stats::{
     EvalInput, EvalMemory, Evaluation, FailureKind, HistoryView, ServiceInput, ServiceStatus,
@@ -30,8 +34,21 @@ use lastdrop_win::placement::TaskbarEdge;
 use lastdrop_win::theme::ThemeInfo;
 
 use crate::history::{HistoryStore, IN_MEMORY_SPAN};
-use crate::persist::{self, SavedState, SeenMap};
-use crate::scheduler::{JobResult, poll_interval, reading_pace};
+use crate::persist::{self, IdentityMap, SavedState, SeenMap};
+use crate::scheduler::{IdentityRead, JobResult, poll_interval, reading_pace};
+
+/// How often a source's identity is read again when nothing else asks for it (accounts-spec §2
+/// "When it is read"), and how often a duplicate's identity is rechecked (§3): 30 minutes.
+pub const ACCOUNT_RECHECK: SignedDuration = SignedDuration::from_mins(30);
+
+/// When a source's identity was last read, and with which credential fingerprint.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct IdentityChecked {
+    /// When the job that read it ended.
+    pub at: Timestamp,
+    /// The credential fingerprint after that job.
+    pub credential: Option<CredentialFingerprint>,
+}
 
 /// Everything known about one credential source.
 pub struct SourceRuntime {
@@ -50,6 +67,178 @@ pub struct SourceRuntime {
     /// The credential fingerprint a worker last reported (`JobResult::credential`), the
     /// `PolicyInput::credential` of the next plan.
     pub credential: Option<CredentialFingerprint>,
+    /// Who is signed in, as last read in this run (accounts-spec §2); `None` before the first
+    /// read.
+    pub identity: Option<Identity>,
+    /// The account last known to be signed in: kept through a sign-out, restored from the state
+    /// file (accounts-spec §5).
+    pub known_identity: Option<AccountIdentity>,
+    /// When the identity was last read ([`identity_read_for`]).
+    pub identity_checked: Option<IdentityChecked>,
+    /// The earlier source of the same account, when this one is a duplicate (accounts-spec §3,
+    /// [`mark_duplicates`]): no card, never fetched.
+    pub duplicate_of: Option<SourceKey>,
+}
+
+/// When a duplicate's identity is due for its recheck ([`ACCOUNT_RECHECK`] after the last read;
+/// `now` when it was never read in this run).
+pub fn identity_due(source: &SourceRuntime, now: Timestamp) -> Timestamp {
+    source
+        .identity_checked
+        .as_ref()
+        .and_then(|c| c.at.checked_add(ACCOUNT_RECHECK).ok())
+        .unwrap_or(now)
+}
+
+/// Whether a fetch job of `source` reads who is signed in (accounts-spec §2): always on its first
+/// job in this run and once the last read is [`ACCOUNT_RECHECK`] old, else when the credential
+/// changed since that read.
+pub fn identity_read_for(source: &SourceRuntime, now: Timestamp) -> IdentityRead {
+    match &source.identity_checked {
+        Some(checked) if identity_due(source, now) > now => {
+            IdentityRead::IfCredentialChanged(checked.credential.clone())
+        }
+        _ => IdentityRead::Always,
+    }
+}
+
+/// Takes a job's identity reading into `source` at `at`. Returns `true` when the folder is signed
+/// in to another account now (accounts-spec §5: a known identity followed by another known one);
+/// a sign-out or an unknown answer keeps the last known identity.
+pub fn apply_identity(
+    source: &mut SourceRuntime,
+    identity: Identity,
+    at: Timestamp,
+    credential: Option<CredentialFingerprint>,
+) -> bool {
+    source.identity_checked = Some(IdentityChecked { at, credential });
+    let switched = match (identity.id(), &source.known_identity) {
+        (Some(now), Some(before)) => now != before,
+        _ => false,
+    };
+    if let Some(id) = identity.id() {
+        source.known_identity = Some(id.clone());
+    }
+    source.identity = Some(identity);
+    switched
+}
+
+/// Starts a source over for the account its folder holds now (accounts-spec §5): no reading, no
+/// freshness, no refresh memory, so it is read again at once. Its credential fingerprint and
+/// identity stay.
+pub fn reset_for_new_account(source: &mut SourceRuntime) {
+    source.latest = None;
+    source.account.plan = None;
+    source.status = ServiceStatus {
+        poll_interval: source.status.poll_interval,
+        reading_pace: source.status.reading_pace,
+        ..ServiceStatus::default()
+    };
+    let in_flight = source.refresh.in_flight;
+    source.refresh = SourceState {
+        in_flight,
+        ..SourceState::default()
+    };
+}
+
+/// The account a source counts as signed in to for [`mark_duplicates`]: its answer in this run
+/// (none when it said signed out or unknown), else the identity restored from the state file.
+pub fn signed_in(source: &SourceRuntime) -> Option<&AccountIdentity> {
+    match &source.identity {
+        Some(identity) => identity.id(),
+        None => source.known_identity.as_ref(),
+    }
+}
+
+/// Marks the duplicates (accounts-spec §3): an enabled source whose known identity an earlier
+/// enabled source of the same service (settings order) has too is a duplicate of the first one.
+/// Sources whose identity is not known (signed out, unknown, never read) are never duplicates.
+/// Returns whether any source changed.
+pub fn mark_duplicates(
+    settings: &Settings,
+    sources: &mut BTreeMap<SourceKey, SourceRuntime>,
+) -> bool {
+    let mut changed = false;
+    for (_, p) in settings.enabled_providers() {
+        let mut first: Vec<(AccountIdentity, SourceKey)> = Vec::new();
+        for account in &p.accounts {
+            let key = SourceKey {
+                provider: p.id,
+                account: account.key.clone(),
+            };
+            let Some(source) = sources.get_mut(&key) else {
+                continue;
+            };
+            let signed_in = signed_in(source);
+            let duplicate = signed_in.and_then(|id| {
+                first
+                    .iter()
+                    .find(|(seen, _)| seen == id)
+                    .map(|(_, k)| k.clone())
+            });
+            if duplicate.is_none()
+                && let Some(id) = signed_in
+            {
+                first.push((id.clone(), key.clone()));
+            }
+            if source.duplicate_of != duplicate {
+                if let Some(of) = &duplicate {
+                    log::info!(
+                        "{:?}/{}: same account as {}, shown once",
+                        key.provider,
+                        key.account.0,
+                        of.account.0
+                    );
+                }
+                source.duplicate_of = duplicate;
+                changed = true;
+            }
+        }
+    }
+    changed
+}
+
+/// Names each account for the surfaces (accounts-spec §4): when a service shows two or more
+/// accounts, every one without an alias gets a label, its e-mail address (unless
+/// `hide_personal_info`, or the address is unknown) or `Account {n}`, `{n}` its place among the
+/// shown accounts in settings order. A service showing one account has no labels.
+pub fn label_accounts(
+    settings: &Settings,
+    sources: &mut BTreeMap<SourceKey, SourceRuntime>,
+    strings: &dyn Strings,
+) {
+    for (_, p) in settings.enabled_providers() {
+        let shown: Vec<SourceKey> = p
+            .accounts
+            .iter()
+            .map(|a| SourceKey {
+                provider: p.id,
+                account: a.key.clone(),
+            })
+            .filter(|k| sources.get(k).is_some_and(|s| s.duplicate_of.is_none()))
+            .collect();
+        let several = shown.len() >= 2;
+        for (i, key) in shown.iter().enumerate() {
+            let Some(source) = sources.get_mut(key) else {
+                continue;
+            };
+            source.account.label = several.then(|| {
+                let email = source
+                    .identity
+                    .as_ref()
+                    .and_then(Identity::email)
+                    .filter(|_| !settings.hide_personal_info);
+                match email {
+                    Some(email) => email.clone(),
+                    None => SecretString::new(text(
+                        strings,
+                        Msg::AccountN,
+                        &[("n", &(i + 1).to_string())],
+                    )),
+                }
+            });
+        }
+    }
 }
 
 /// The flyout's show/hide bookkeeping (F§1.4).
@@ -132,6 +321,8 @@ pub struct AppState {
     pub notified: NotifyMemory,
     /// `notified` as the state file has it ([`AppState::state_to_save`]).
     pub saved_notified: NotifyMemory,
+    /// The known identities as the state file has them ([`AppState::state_to_save`]).
+    pub saved_identities: IdentityMap,
 }
 
 /// The providers for `after`: the existing instance of a provider whose options did not change
@@ -218,6 +409,7 @@ pub fn build_sources(
                         alias: account.alias.clone(),
                         tag: account.tag.clone(),
                         plan: None,
+                        label: None,
                     },
                     source: resolved,
                     provider: provider.clone(),
@@ -229,11 +421,16 @@ pub fn build_sources(
                     },
                     refresh: SourceState::default(),
                     credential: None,
+                    identity: None,
+                    known_identity: None,
+                    identity_checked: None,
+                    duplicate_of: None,
                 },
             };
             sources.insert(key, runtime);
         }
     }
+    mark_duplicates(settings, &mut sources);
     sources
 }
 
@@ -337,10 +534,13 @@ pub fn evaluate_sources(
         .enabled_providers()
         .flat_map(|(_, p)| {
             p.accounts.iter().filter_map(move |a| {
-                sources.get(&SourceKey {
-                    provider: p.id,
-                    account: a.key.clone(),
-                })
+                sources
+                    .get(&SourceKey {
+                        provider: p.id,
+                        account: a.key.clone(),
+                    })
+                    // A duplicate's account is shown through its first source (accounts-spec §3).
+                    .filter(|s| s.duplicate_of.is_none())
             })
         })
         .map(|s| {
@@ -401,6 +601,7 @@ impl AppState {
             saved_seen: SeenMap::new(),
             notified: NotifyMemory::new(),
             saved_notified: NotifyMemory::new(),
+            saved_identities: IdentityMap::new(),
         }
     }
 
@@ -441,13 +642,40 @@ impl AppState {
     /// - Always: `credential` = `result.credential`; `refresh` via
     ///   `lastdrop_core::refresh::record` (not for an unchanged probe), `in_flight` cleared,
     ///   `status.next_try` from the next plan.
-    pub fn apply_result(&mut self, result: JobResult) {
-        let Some(source) = self.sources.get_mut(&result.source) else {
+    ///
+    /// The job's identity reading (accounts-spec §2) is taken first: when the folder is signed in
+    /// to another account now (§5), the source starts over, its history is retired and what the
+    /// evaluations and notifications remembered about its meters is forgotten, so the reading of
+    /// the same job lands in a clean history. Duplicates are marked again (§3).
+    pub fn apply_result(&mut self, mut result: JobResult) {
+        let key = result.source.clone();
+        let Some(source) = self.sources.get_mut(&key) else {
             // The service was turned off while its fetch ran.
             return;
         };
+        let mut identity_changed = false;
+        if let Some(identity) = result.identity.take() {
+            let before = signed_in(source).cloned();
+            let switched =
+                apply_identity(source, identity, result.finished, result.credential.clone());
+            identity_changed = before.as_ref() != signed_in(source);
+            if switched {
+                log::info!(
+                    "{:?}/{}: signed in to another account",
+                    key.provider,
+                    key.account.0
+                );
+                reset_for_new_account(source);
+                self.history.retire(&key, result.finished);
+                self.memory.forget_source(&key);
+                notify::forget_source(&mut self.notified, &key);
+            }
+        }
         if let Some(snapshot) = apply_to_source(source, result) {
             self.history.record(&snapshot);
+        }
+        if identity_changed {
+            mark_duplicates(&self.settings, &mut self.sources);
         }
     }
 
@@ -468,17 +696,47 @@ impl AppState {
         self.saved_seen = all;
         self.notified = saved.notified_map();
         self.saved_notified = self.notified.clone();
+        let identities = saved.identity_map();
+        for (key, source) in &mut self.sources {
+            source.known_identity = identities.get(key).cloned();
+        }
+        self.saved_identities = identities;
+        mark_duplicates(&self.settings, &mut self.sources);
+    }
+
+    /// The identity each source is last known to be signed in to (the state file's
+    /// `identities`): this run's sources, plus what the file had for sources that are not
+    /// enabled now (a service turned off keeps its folders' identities).
+    fn known_identities(&self) -> IdentityMap {
+        let mut out = self.saved_identities.clone();
+        for (key, source) in &self.sources {
+            match &source.known_identity {
+                Some(id) => {
+                    out.insert(key.clone(), id.clone());
+                }
+                None => {
+                    out.remove(key);
+                }
+            }
+        }
+        out
     }
 
     /// The state file's new bytes when `EvalMemory::seen` or `notified` changed since the last
     /// save (or the restore); `None` otherwise. The caller queues them for the writer thread.
     pub fn state_to_save(&mut self) -> Option<Vec<u8>> {
-        if self.memory.seen == self.saved_seen && self.notified == self.saved_notified {
+        let identities = self.known_identities();
+        if self.memory.seen == self.saved_seen
+            && self.notified == self.saved_notified
+            && identities == self.saved_identities
+        {
             return None;
         }
         self.saved_seen = self.memory.seen.clone();
         self.saved_notified = self.notified.clone();
-        match persist::state_bytes(&SavedState::new(&self.memory.seen, &self.notified)) {
+        self.saved_identities = identities;
+        let state = SavedState::new(&self.memory.seen, &self.notified, &self.saved_identities);
+        match persist::state_bytes(&state) {
             Ok(bytes) => Some(bytes),
             Err(e) => {
                 log::warn!("cannot encode the state file: {e}");
@@ -490,6 +748,7 @@ impl AppState {
     /// Re-evaluates at `now` (`lastdrop_core::stats::evaluate`) and stores the result, with
     /// every meter named in the language of the strings (`grammar::meters::localize`).
     pub fn evaluate(&mut self, now: Timestamp) -> &Evaluation {
+        label_accounts(&self.settings, &mut self.sources, self.strings);
         let mut eval = evaluate_sources(
             &self.settings,
             &self.sources,
@@ -541,7 +800,7 @@ pub(crate) mod tests {
     use std::time::Duration;
 
     use lastdrop_core::model::{AccountKey, Meter, MeterId, ProviderId, SourceKind, WindowLen};
-    use lastdrop_core::settings::{ProviderEntry, ProviderSettings};
+    use lastdrop_core::settings::{ProviderEntry, ProviderSettings, SourceSettings};
     use lastdrop_core::stats::{Freshness, RowState, Sample, StaleReason};
     use lastdrop_providers::FetchContext;
     use lastdrop_providers::io::CredentialName;
@@ -611,8 +870,8 @@ pub(crate) mod tests {
                 order: 1,
                 used,
                 limited: false,
-                resets_at: at.checked_add(jiff::SignedDuration::from_hours(48)).ok(),
-                window: WindowLen::Fixed(jiff::SignedDuration::from_hours(7 * 24)),
+                resets_at: at.checked_add(SignedDuration::from_hours(48)).ok(),
+                window: WindowLen::Fixed(SignedDuration::from_hours(7 * 24)),
                 starts_on_use: false,
             }],
             balances: Vec::new(),
@@ -668,31 +927,86 @@ pub(crate) mod tests {
         providers
             .iter()
             .map(|p| {
-                let provider = FakeProvider::ok(*p);
                 (
                     SourceKey {
                         provider: *p,
                         account: AccountKey::primary(),
                     },
-                    SourceRuntime {
-                        account: AccountRef::primary(),
-                        source: source_of(*p),
-                        status: ServiceStatus {
-                            poll_interval: poll_interval(
-                                settings,
-                                provider.as_ref(),
-                                Activity::default(),
-                            ),
-                            ..ServiceStatus::default()
-                        },
-                        provider,
-                        latest: None,
-                        refresh: SourceState::default(),
-                        credential: None,
-                    },
+                    runtime_of(settings, *p, AccountKey::primary()),
                 )
             })
             .collect()
+    }
+
+    /// The source of account `key` of `provider`, with a fake provider and the default account's
+    /// invented folder.
+    pub(crate) fn runtime_of(settings: &Settings, p: ProviderId, key: AccountKey) -> SourceRuntime {
+        let provider = FakeProvider::ok(p);
+        SourceRuntime {
+            account: AccountRef {
+                key,
+                ..AccountRef::primary()
+            },
+            source: source_of(p),
+            status: ServiceStatus {
+                poll_interval: poll_interval(settings, provider.as_ref(), Activity::default()),
+                ..ServiceStatus::default()
+            },
+            provider,
+            latest: None,
+            refresh: SourceState::default(),
+            credential: None,
+            identity: None,
+            known_identity: None,
+            identity_checked: None,
+            duplicate_of: None,
+        }
+    }
+
+    /// The key of Codex's second account in [`two_codex`].
+    pub(crate) fn work() -> SourceKey {
+        SourceKey {
+            provider: ProviderId::Codex,
+            account: AccountKey("f-work".to_owned()),
+        }
+    }
+
+    /// The key of Codex's default account.
+    pub(crate) fn codex() -> SourceKey {
+        SourceKey {
+            provider: ProviderId::Codex,
+            account: AccountKey::primary(),
+        }
+    }
+
+    /// Codex with its default folder and a second one ([`work`]), both enabled, and their sources.
+    pub(crate) fn two_codex() -> (Settings, BTreeMap<SourceKey, SourceRuntime>) {
+        let mut settings = settings_of(&[ProviderId::Codex]);
+        if let Some(p) = settings.provider_mut(ProviderId::Codex) {
+            p.accounts.push(AccountSettings {
+                key: work().account,
+                alias: None,
+                tag: None,
+                source: SourceSettings::CodexHome {
+                    path: PathBuf::from(r"C:\Users\tester\.codex-work"),
+                },
+                extra: Default::default(),
+            });
+        }
+        let mut sources = sources_of(&settings, &[ProviderId::Codex]);
+        sources.insert(
+            work(),
+            runtime_of(&settings, ProviderId::Codex, work().account),
+        );
+        (settings, sources)
+    }
+
+    /// Someone signed in, named by `name`, with an invented address when `email` is given.
+    pub(crate) fn signed_in_as(name: &str, email: Option<&str>) -> Identity {
+        Identity::SignedIn {
+            id: AccountIdentity::of(&["codex", "ws", name]),
+            email: email.map(|e| SecretString::new(e.to_owned())),
+        }
     }
 
     fn ts(s: &str) -> Timestamp {
@@ -734,6 +1048,7 @@ pub(crate) mod tests {
             saved_seen: SeenMap::new(),
             notified: NotifyMemory::new(),
             saved_notified: NotifyMemory::new(),
+            saved_identities: IdentityMap::new(),
         }
     }
 
@@ -780,7 +1095,7 @@ pub(crate) mod tests {
             account: AccountKey::primary(),
             meter: MeterId::new(meter),
         };
-        let earlier = now - jiff::SignedDuration::from_hours(1);
+        let earlier = now - SignedDuration::from_hours(1);
         let mut with_fable = snapshot(ProviderId::Claude, earlier, 0.3);
         let mut fable = with_fable.meters[0].clone();
         fable.id = MeterId::new("weekly:fable");
@@ -940,6 +1255,7 @@ pub(crate) mod tests {
             outcome,
             credential: Some(CredentialFingerprint("v1".to_owned())),
             internet: None,
+            identity: None,
         }
     }
 
@@ -1130,9 +1446,263 @@ pub(crate) mod tests {
         };
         assert_eq!(
             pace(ProviderId::Codex),
-            Some(jiff::SignedDuration::from_mins(15)),
+            Some(SignedDuration::from_mins(15)),
             "the app-server's pace"
         );
         assert_eq!(pace(ProviderId::Claude), None);
+    }
+
+    // ---- Several accounts (accounts-spec §3–§5) ------------------------------------------------
+
+    fn set_identity(
+        sources: &mut BTreeMap<SourceKey, SourceRuntime>,
+        key: &SourceKey,
+        identity: Identity,
+    ) -> bool {
+        let at = ts("2026-10-10T10:42:00Z");
+        let source = sources.get_mut(key).expect("source");
+        apply_identity(source, identity, at, None)
+    }
+
+    #[test]
+    fn the_same_account_in_two_folders_shows_once() {
+        let (settings, mut sources) = two_codex();
+        let now = ts("2026-10-10T10:42:00Z");
+        let same = signed_in_as("one", Some("one@example.invalid"));
+        set_identity(&mut sources, &codex(), same.clone());
+        set_identity(&mut sources, &work(), same);
+        assert!(mark_duplicates(&settings, &mut sources));
+        assert_eq!(sources[&work()].duplicate_of, Some(codex()));
+        assert_eq!(
+            sources[&codex()].duplicate_of,
+            None,
+            "the first one is the account"
+        );
+        assert!(!mark_duplicates(&settings, &mut sources), "nothing changed");
+
+        let eval = evaluate_sources(
+            &settings,
+            &sources,
+            &lastdrop_core::stats::NoHistory,
+            &mut EvalMemory::default(),
+            now,
+        );
+        assert_eq!(eval.services.len(), 1);
+        assert_eq!(eval.services[0].source, codex());
+
+        // The second folder signs in to someone else: two accounts.
+        set_identity(&mut sources, &work(), signed_in_as("two", None));
+        assert!(mark_duplicates(&settings, &mut sources));
+        assert_eq!(sources[&work()].duplicate_of, None);
+
+        // Signed out or unknown is never a duplicate, whatever was known before.
+        set_identity(&mut sources, &work(), signed_in_as("one", None));
+        mark_duplicates(&settings, &mut sources);
+        assert!(sources[&work()].duplicate_of.is_some());
+        set_identity(&mut sources, &work(), Identity::SignedOut);
+        mark_duplicates(&settings, &mut sources);
+        assert_eq!(sources[&work()].duplicate_of, None);
+        assert_eq!(
+            sources[&work()].known_identity.as_ref(),
+            signed_in_as("one", None).id(),
+            "a sign-out keeps the last known account"
+        );
+    }
+
+    #[test]
+    fn identities_from_an_earlier_run_mark_duplicates_before_the_first_read() {
+        let (settings, mut sources) = two_codex();
+        let id = AccountIdentity::of(&["codex", "ws", "one"]);
+        for key in [codex(), work()] {
+            sources.get_mut(&key).expect("source").known_identity = Some(id.clone());
+        }
+        mark_duplicates(&settings, &mut sources);
+        assert_eq!(sources[&work()].duplicate_of, Some(codex()));
+        // Once read in this run, the answer counts.
+        set_identity(&mut sources, &codex(), Identity::Unknown);
+        mark_duplicates(&settings, &mut sources);
+        assert_eq!(sources[&work()].duplicate_of, None);
+    }
+
+    #[test]
+    fn accounts_are_named_when_a_service_shows_several() {
+        let (mut settings, mut sources) = two_codex();
+        let now = ts("2026-10-10T10:42:00Z");
+        set_identity(
+            &mut sources,
+            &codex(),
+            signed_in_as("one", Some("one@example.invalid")),
+        );
+        set_identity(
+            &mut sources,
+            &work(),
+            signed_in_as("two", Some("two@example.invalid")),
+        );
+        let names = |settings: &Settings,
+                     sources: &mut BTreeMap<SourceKey, SourceRuntime>,
+                     strings: &dyn Strings| {
+            label_accounts(settings, sources, strings);
+            let eval = evaluate_sources(
+                settings,
+                sources,
+                &lastdrop_core::stats::NoHistory,
+                &mut EvalMemory::default(),
+                now,
+            );
+            eval.services
+                .iter()
+                .map(|s| s.display_name().into_owned())
+                .collect::<Vec<String>>()
+        };
+        let english = &lastdrop_core::grammar::English;
+        assert_eq!(
+            names(&settings, &mut sources, english),
+            ["Codex · one@example.invalid", "Codex · two@example.invalid"]
+        );
+
+        // An alias wins; hiding personal info numbers the others.
+        if let Some(p) = settings.provider_mut(ProviderId::Codex) {
+            p.accounts[0].alias = Some("Work".to_owned());
+        }
+        for source in sources.values_mut() {
+            let alias = settings
+                .provider(ProviderId::Codex)
+                .and_then(|p| p.accounts.iter().find(|a| a.key == source.account.key))
+                .and_then(|a| a.alias.clone());
+            source.account.alias = alias;
+        }
+        settings.hide_personal_info = true;
+        assert_eq!(
+            names(&settings, &mut sources, english),
+            ["Codex · Work", "Codex · Account 2"]
+        );
+        assert_eq!(
+            names(&settings, &mut sources, &lastdrop_core::grammar::Swedish),
+            ["Codex · Work", "Codex · Konto 2"]
+        );
+
+        // No address known: numbered too.
+        settings.hide_personal_info = false;
+        set_identity(&mut sources, &work(), signed_in_as("two", None));
+        assert_eq!(
+            names(&settings, &mut sources, english),
+            ["Codex · Work", "Codex · Account 2"]
+        );
+
+        // One account shown (the other is the same account): the service name alone.
+        if let Some(p) = settings.provider_mut(ProviderId::Codex) {
+            p.accounts[0].alias = None;
+        }
+        for source in sources.values_mut() {
+            source.account.alias = None;
+        }
+        set_identity(&mut sources, &work(), signed_in_as("one", None));
+        mark_duplicates(&settings, &mut sources);
+        assert_eq!(names(&settings, &mut sources, english), ["Codex"]);
+    }
+
+    #[test]
+    fn identity_reads_follow_the_credential_and_the_clock() {
+        let (_, mut sources) = two_codex();
+        let now = ts("2026-10-10T10:42:00Z");
+        let source = sources.get_mut(&codex()).expect("source");
+        assert_eq!(
+            identity_read_for(source, now),
+            IdentityRead::Always,
+            "never read"
+        );
+        let v1 = Some(CredentialFingerprint("v1".to_owned()));
+        apply_identity(source, Identity::Unknown, now, v1.clone());
+        assert_eq!(
+            identity_read_for(source, now + SignedDuration::from_mins(5)),
+            IdentityRead::IfCredentialChanged(v1)
+        );
+        assert_eq!(
+            identity_read_for(source, now + ACCOUNT_RECHECK),
+            IdentityRead::Always,
+            "30 minutes on"
+        );
+        assert_eq!(identity_due(source, now), now + ACCOUNT_RECHECK);
+    }
+
+    #[test]
+    fn a_folder_signed_in_to_someone_else_starts_over() {
+        let dir = std::env::temp_dir().join(format!(
+            "lastdrop-switch-test-{}-{}",
+            std::process::id(),
+            Timestamp::now().as_nanosecond()
+        ));
+        let writer = crate::writer::Writer::start().expect("writer");
+        let now = ts("2026-10-10T10:42:00Z");
+        let history_dir = dir.join("history");
+        let history = HistoryStore::open(&history_dir, now, writer.handle()).expect("open");
+        let mut state = app_state(&[ProviderId::Codex], history);
+        let key = codex();
+        let meter = MeterKey {
+            provider: ProviderId::Codex,
+            account: AccountKey::primary(),
+            meter: MeterId::new(MeterId::WEEKLY),
+        };
+
+        // The first account: read, recorded, announced.
+        let first = snapshot(ProviderId::Codex, now - SignedDuration::from_mins(1), 0.85);
+        let mut job = result(&key, Some(Ok(first)));
+        job.identity = Some(signed_in_as("one", None));
+        state.apply_result(job);
+        state.evaluate(now);
+        assert!(state.take_notification(now).is_some(), "85 % announced");
+        assert!(!state.notified.is_empty());
+        assert_eq!(state.history.samples(&meter, Timestamp::MIN).len(), 1);
+        writer.handle().flush();
+
+        // The folder now holds another account: its reading lands in a clean history.
+        let second = snapshot(ProviderId::Codex, now, 0.1);
+        let mut job = result(&key, Some(Ok(second.clone())));
+        job.identity = Some(signed_in_as("two", None));
+        state.apply_result(job);
+        assert!(
+            state.notified.is_empty(),
+            "the new account's levels come afresh"
+        );
+        let samples = state.history.samples(&meter, Timestamp::MIN);
+        assert_eq!(samples.len(), 1);
+        assert!((samples[0].value - 0.1).abs() < 1e-9);
+        let source = &state.sources[&key];
+        assert_eq!(source.latest.as_ref(), Some(&second));
+        assert_eq!(
+            source.known_identity.as_ref(),
+            signed_in_as("two", None).id()
+        );
+
+        // On disk the first account's file was retired before the new reading was appended.
+        writer.handle().flush();
+        let names: Vec<String> = std::fs::read_dir(&history_dir)
+            .expect("list")
+            .filter_map(|e| e.ok()?.file_name().into_string().ok())
+            .collect();
+        let weekly = HistoryStore::file_name(&meter);
+        assert!(names.contains(&weekly), "{names:?}");
+        assert!(
+            names
+                .iter()
+                .any(|n| n.starts_with(&weekly) && n.ends_with(".retired")),
+            "{names:?}"
+        );
+        let text = std::fs::read_to_string(history_dir.join(&weekly)).expect("read");
+        assert_eq!(text.lines().count(), 1, "{text}");
+
+        // Signing out is not another account.
+        let mut job = result(&key, None);
+        job.identity = Some(Identity::SignedOut);
+        state.apply_result(job);
+        assert!(state.sources[&key].latest.is_some(), "kept");
+        let saved = state.state_to_save().expect("identities changed");
+        let saved: SavedState = serde_json::from_slice(&saved).expect("state json");
+        assert_eq!(
+            saved.identity_map().get(&key),
+            signed_in_as("two", None).id()
+        );
+        writer.shutdown();
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

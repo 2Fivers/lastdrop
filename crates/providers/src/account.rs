@@ -1,7 +1,7 @@
 //! Where one account's data and credentials are (ROADMAP "Multiple accounts": a **source** is a
 //! config folder; an **account** is who is signed in there).
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use lastdrop_core::model::{AccountKey, ProviderId};
 use lastdrop_core::settings::{AccountSettings, SourceSettings};
@@ -188,6 +188,16 @@ impl AccountSource {
             AccountSource::Codex { .. } => ProviderId::Codex,
             AccountSource::Copilot { .. } => ProviderId::Copilot,
             AccountSource::Meshy { .. } => ProviderId::Meshy,
+        }
+    }
+
+    /// The config folder of a Claude or Codex source (`config_dir`, `codex_home`); `None` for
+    /// Copilot and Meshy, whose sign-in is not a folder of their own.
+    pub fn folder(&self) -> Option<&Path> {
+        match self {
+            AccountSource::Claude { config_dir, .. } => Some(config_dir),
+            AccountSource::Codex { codex_home, .. } => Some(codex_home),
+            AccountSource::Copilot { .. } | AccountSource::Meshy { .. } => None,
         }
     }
 

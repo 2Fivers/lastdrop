@@ -1,6 +1,6 @@
-//! The dialog process (ARCHITECTURE "Processes"): `lastdrop.exe --settings`, `--settings-pins`
-//! and `--about` show the settings window or the about window in a short-lived process of their
-//! own, which ends when its last window closes.
+//! The dialog process (ARCHITECTURE "Processes"): `lastdrop.exe --settings`, `--settings-pins`,
+//! `--settings-accounts` and `--about` show the settings window or the about window in a
+//! short-lived process of their own, which ends when its last window closes.
 //!
 //! Why a process: the tray process measured 10.1–10.3 MB private working set fresh and
 //! 11.9–12.25 MB once Settings had been opened. Slint's own caches kept only about 0.2 MB of
@@ -33,6 +33,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
 };
 
 use crate::persist::Paths;
+use crate::settings_window::Focus;
 use crate::{AppError, logger, settings_window, ui, wiring};
 
 /// How long a second launch keeps trying to reach a dialog process that is just starting (no
@@ -47,15 +48,19 @@ pub enum DialogKind {
     /// `--settings-pins`: the settings window scrolled to the readout's pins (tray menu
     /// "Taskbar readout ▸ Pinned meters…", R§10).
     SettingsPins,
+    /// `--settings-accounts`: the settings window scrolled to the accounts (the first run found
+    /// more folders than the default ones, accounts-spec §6).
+    SettingsAccounts,
     /// `--about`: the about window (R§10 "About Lastdrop", Slint licence).
     About,
 }
 
 impl DialogKind {
     /// Every dialog.
-    pub const ALL: [DialogKind; 3] = [
+    pub const ALL: [DialogKind; 4] = [
         DialogKind::Settings,
         DialogKind::SettingsPins,
+        DialogKind::SettingsAccounts,
         DialogKind::About,
     ];
 
@@ -64,6 +69,7 @@ impl DialogKind {
         match self {
             DialogKind::Settings => "--settings",
             DialogKind::SettingsPins => "--settings-pins",
+            DialogKind::SettingsAccounts => "--settings-accounts",
             DialogKind::About => "--about",
         }
     }
@@ -79,6 +85,7 @@ impl DialogKind {
             DialogKind::Settings => 1,
             DialogKind::SettingsPins => 2,
             DialogKind::About => 3,
+            DialogKind::SettingsAccounts => 4,
         }
     }
 
@@ -159,10 +166,10 @@ pub fn notify(changes: Changes) {
     }
 }
 
-/// The dialog process's `main` (`lastdrop.exe --settings | --settings-pins | --about`): the
-/// dialog mutex (or the request forwarded to the dialog process that runs already), folders, its
-/// own log file, the Slint backend, the requested window, the event loop until the last window
-/// closes.
+/// The dialog process's `main` (`lastdrop.exe --settings | --settings-pins | --settings-accounts
+/// | --about`): the dialog mutex (or the request forwarded to the dialog process that runs
+/// already), folders, its own log file, the Slint backend, the requested window, the event loop
+/// until the last window closes.
 pub fn run(kind: DialogKind) -> ExitCode {
     let guard = match first_or_forward(kind) {
         Ok(Some(guard)) => guard,
@@ -246,8 +253,9 @@ fn run_dialogs(guard: &InstanceGuard, paths: &Paths, kind: DialogKind) -> Result
 /// Opens `kind`, or brings it to the front when it is open.
 fn open(paths: &Paths, kind: DialogKind) -> Result<(), AppError> {
     match kind {
-        DialogKind::Settings => settings_window::open(paths, false),
-        DialogKind::SettingsPins => settings_window::open(paths, true),
+        DialogKind::Settings => settings_window::open(paths, Focus::None),
+        DialogKind::SettingsPins => settings_window::open(paths, Focus::Pins),
+        DialogKind::SettingsAccounts => settings_window::open(paths, Focus::Accounts),
         DialogKind::About => open_about(paths),
     }
 }

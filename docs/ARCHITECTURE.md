@@ -49,10 +49,12 @@ Two processes run the same `lastdrop.exe`:
 
 - **The tray process** runs all the time: tray icon, readout, flyout, hover card, refreshes,
   history. Everything below ("Threads") is about it.
-- **The dialog process** (`lastdrop.exe --settings`, `--settings-pins` or `--about`) shows the
-  settings window or the about window and ends when its last window closes. The tray process
-  starts it for "Settings…", "Taskbar readout ▸ Pinned meters…", "About Lastdrop", the flyout's
-  gear and a card's "Settings" link. It does not wait for it and keeps no handle to it; it passes
+- **The dialog process** (`lastdrop.exe --settings`, `--settings-pins`, `--settings-accounts` or
+  `--about`) shows the settings window or the about window and ends when its last window closes.
+  The tray process starts it for "Settings…", "Taskbar readout ▸ Pinned meters…", "About
+  Lastdrop", the flyout's gear, a card's "Settings" link and, on the first run, when Claude Code
+  or Codex has more folders than its default one (`--settings-accounts`, accounts-spec §6). It
+  does not wait for it and keeps no handle to it; it passes
   its foreground right on (`AllowSetForegroundWindow`) so the dialog comes to the front.
 
 Why: while Settings ran in the tray process, it measured 10.1–10.3 MB fresh and 11.9–12.25 MB
@@ -202,6 +204,18 @@ fixed order and returns the freshest success; every attempt is logged (without s
 | Copilot | `GET https://api.github.com/copilot_internal/user` (undocumented; what Copilot's editor clients read) with the GitHub CLI's token from `gh auth token --hostname github.com`, run without a window per fetch (`gh.exe` on `PATH`, else the installer's `GitHub CLI` folder), held in memory for the one request; at most every 5 min; `hosts.yml` in gh's config folder is the credential fingerprint. Each limited `quota_snapshots` entry becomes a calendar-month meter: `premium` (paid plans), `chat` and `completions` (Copilot Free); unlimited and zero-entitlement quotas are left out, so the catalogue has none |
 | Meshy | `GET https://api.meshy.ai/openapi/v1/balance` with the key from Credential Manager |
 
+**Several accounts** ([accounts-spec](design/accounts-spec.md)): every config folder of Claude
+Code or Codex is a source of its own (an entry of the service's `accounts`). `Provider::identity`
+reads who is signed in there from the folder's own files (`lastdrop_providers::identity`: Claude's
+`oauthAccount`, the claims of Codex's ID token), read-only, and keeps only a 16-hex-digit hash
+(`AccountIdentity`) and, in memory, the e-mail address as a secret. The refresh worker reads it on
+a source's first job, after its credential changed and at most every 30 minutes. A later folder
+signed in to the same account is a duplicate: no card, never fetched, only its identity rechecked.
+A folder signed in to another account starts over: its history files are retired
+(`<file>.<seconds>.retired`, deleted after the retention), and what the evaluations and
+notifications remembered about its meters is forgotten. `lastdrop_providers::discover` lists the
+`~\.claude-*` and `~\.codex-*` folders with data for the settings window and the first run.
+
 Rules for every provider:
 - **Never write, refresh or copy another tool's credentials.** Read, use in memory, drop.
 - **Never log a secret** (tokens, keys, cookies, account ids, e-mail addresses). The logger
@@ -264,8 +278,10 @@ Rules for every provider:
   secrets); history in `%LOCALAPPDATA%\Lastdrop\` (thinned to one sample per meter per
   5 minutes, 90 days); `%LOCALAPPDATA%\Lastdrop\state.json` (what the app remembers that is
   not a setting: the meters a source has reported, so their room in the readout survives a
-  restart, and what notifications announced, so a restart repeats none; meter keys, names,
-  levels and reset times only, no secrets); logs in `%LOCALAPPDATA%\Lastdrop\logs`
+  restart, what notifications announced, so a restart repeats none, and the hash of who each
+  source was last signed in to, so a restart knows the duplicates and notices a folder signed in
+  to someone else meanwhile; meter keys, names, levels, reset times and identity hashes only, no
+  secrets); logs in `%LOCALAPPDATA%\Lastdrop\logs`
   (rotated, local only; `lastdrop.log` for the tray process, `settings.log` for the dialog
   process). Start-up reads them on the main thread before the event loop; every later write is
   queued for the writer thread, so the UI thread never waits on the disk. The one later read is

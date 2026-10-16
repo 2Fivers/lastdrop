@@ -1,5 +1,6 @@
 //! The settings window (ROADMAP M1 "settings basics"; out of both specs' scope, F§12): services
-//! on/off, the Meshy API key (Credential Manager, never echoed back), the refresh interval, the
+//! on/off, Claude Code's and Codex's accounts ([`crate::settings_accounts`], accounts-spec §7),
+//! the Meshy API key (Credential Manager, never echoed back), the refresh interval, the
 //! readout (on/off, auto or pinned meters, time style), notifications (N§2), the global hotkey,
 //! the language (ROADMAP M4) and start with Windows. Its texts are the `settings.*` strings in the
 //! language the settings pick (else Windows' display language, [`Wording`]); when Apply changes
@@ -18,6 +19,7 @@
 //! Threading: the dialog process's main thread.
 
 use std::cell::RefCell;
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::rc::Rc;
 
@@ -26,7 +28,7 @@ use lastdrop_core::grammar::meters::localized;
 use lastdrop_core::grammar::numbers::percent;
 use lastdrop_core::grammar::strings::{capitalise, text};
 use lastdrop_core::grammar::{Language, LocaleFormat, Msg, Strings, TimeStyle};
-use lastdrop_core::model::{AccountKey, MeterKey, MeterNames, ProviderId, catalog};
+use lastdrop_core::model::{AccountKey, MeterKey, MeterNames, ProviderId, SourceKey, catalog};
 use lastdrop_core::secret::SecretString;
 use lastdrop_core::settings::{
     Hotkey, ProviderEntry, ReadoutContent, RefreshInterval, Settings, SourceSettings,
@@ -38,6 +40,7 @@ use slint::{ComponentHandle, ModelRc, SharedString, VecModel};
 
 use crate::dialog::{self, Changes};
 use crate::persist::{self, LoadOutcome, Paths, SavedState};
+use crate::settings_accounts::{self, AccountsInfo, NotAdded, SERVICES};
 use crate::wiring::{self, toggle_in};
 use crate::{AppError, ui};
 
@@ -64,6 +67,17 @@ pub const LEVELS: [Option<u8>; 9] = [
     Some(90),
     Some(95),
 ];
+
+/// Where the window opens.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Focus {
+    /// At the top.
+    None,
+    /// At the readout's pins, highlighted (tray menu "Taskbar readout ▸ Pinned meters…").
+    Pins,
+    /// At the accounts (the first run found more folders, accounts-spec §6).
+    Accounts,
+}
 
 /// What the window's texts depend on besides the settings: the language, Windows' display
 /// languages (what "Same as Windows" follows) and the regional format (the levels' percents).
@@ -267,32 +281,43 @@ fn listed_keys(settings: &Settings, reported: &[(MeterKey, MeterNames)]) -> Vec<
         .collect()
 }
 
-/// The [`listed_meters`] with their labels in the language of `strings` ([`meter_label`]).
+/// The [`listed_meters`] with their labels in the language of `strings` ([`meter_label`]);
+/// `accounts` names the accounts of services with two or more
+/// ([`settings_accounts::labels`]).
 pub fn meter_choices(
     settings: &Settings,
     reported: &[(MeterKey, MeterNames)],
     strings: &dyn Strings,
+    accounts: &BTreeMap<SourceKey, String>,
 ) -> Vec<(MeterKey, String)> {
     listed_meters(settings, reported)
         .into_iter()
         .map(|(key, names)| {
-            let label = meter_label(&key, &names, strings);
+            let account = accounts.get(&key.source()).map(String::as_str);
+            let label = meter_label(&key, &names, strings, account);
             (key, label)
         })
         .collect()
 }
 
 /// A meter's row label: its localized `short_name` with its service (`settings.meter`,
-/// capitalised): `Claude weekly`, `Veckogränsen för Claude`.
-pub fn meter_label(key: &MeterKey, names: &MeterNames, strings: &dyn Strings) -> String {
+/// capitalised): `Claude weekly`, `Veckogränsen för Claude`; with the account's name when its
+/// service has several (`Claude · Work weekly`, accounts-spec §7).
+pub fn meter_label(
+    key: &MeterKey,
+    names: &MeterNames,
+    strings: &dyn Strings,
+    account: Option<&str>,
+) -> String {
     let names = localized(key.provider, &key.meter, names, strings);
+    let service = match account {
+        Some(account) => format!("{} · {account}", key.provider.display_name()),
+        None => key.provider.display_name().to_owned(),
+    };
     capitalise(&text(
         strings,
         Msg::SettingsMeter,
-        &[
-            ("service", key.provider.display_name()),
-            ("short_name", &names.short_name),
-        ],
+        &[("service", &service), ("short_name", &names.short_name)],
     ))
 }
 
@@ -367,6 +392,9 @@ struct Session {
     /// What the texts are made of: read when the window opened, the language again after each
     /// Apply.
     wording: RefCell<Wording>,
+    /// Who is signed in to each listed folder and the folders found on this PC: read when the
+    /// window opened, a folder added later when it is added.
+    accounts: RefCell<AccountsInfo>,
     /// `settings.json`.
     settings_path: PathBuf,
 }
@@ -387,10 +415,12 @@ fn with_session(f: impl FnOnce(&Session)) {
 }
 
 /// Opens the settings window, created on each open and released by [`close`]: reads
-/// `settings.json` and `state.json`, fills the window and brings it to the front. `focus_pins`
-/// scrolls to the readout's pins (tray menu "Taskbar readout ▸ Pinned meters…"). When the window
-/// is open already it keeps its edits and only comes to the front (and to the pins).
-pub fn open(paths: &Paths, focus_pins: bool) -> Result<(), AppError> {
+/// `settings.json`, `state.json` and who is signed in to the accounts' folders, fills the window
+/// and brings it to the front. `focus` scrolls to the readout's pins (tray menu "Taskbar readout
+/// ▸ Pinned meters…") or the accounts (first run). When the window is open already it keeps its
+/// edits and only comes to the front (and to the focus).
+pub fn open(paths: &Paths, focus: Focus) -> Result<(), AppError> {
+    let focus_pins = focus == Focus::Pins;
     let open = SESSION.with(|s| s.borrow().clone());
     if let Some(session) = open {
         let window = &session.window;
@@ -398,9 +428,7 @@ pub fn open(paths: &Paths, focus_pins: bool) -> Result<(), AppError> {
             show_pins(window);
         }
         window.show()?;
-        if focus_pins {
-            window.invoke_show_pins();
-        }
+        scroll_to(window, focus);
         dialog::bring_to_front(window.as_weak());
         return Ok(());
     }
@@ -414,11 +442,12 @@ pub fn open(paths: &Paths, focus_pins: bool) -> Result<(), AppError> {
         settings.readout.enabled = true;
     }
     let wording = Wording::read(&base);
+    let accounts = AccountsInfo::read(&settings);
     let draft = draft_with(settings, &reported);
     let window = wiring::create_window(false, ui::SettingsWindow::new)?;
     connect(&window);
     let stored = meshy_key_stored(&draft.settings);
-    fill(&window, &draft, &reported, stored, &wording);
+    fill(&window, &draft, &reported, stored, &wording, &accounts);
     window.set_focus_pins(false);
     if focus_pins {
         show_pins(&window);
@@ -432,6 +461,7 @@ pub fn open(paths: &Paths, focus_pins: bool) -> Result<(), AppError> {
             base: RefCell::new(base),
             reported,
             wording: RefCell::new(wording),
+            accounts: RefCell::new(accounts),
             settings_path: paths.settings.clone(),
         }));
     });
@@ -439,11 +469,18 @@ pub fn open(paths: &Paths, focus_pins: bool) -> Result<(), AppError> {
         release();
         return Err(e.into());
     }
-    if focus_pins {
-        window.invoke_show_pins();
-    }
+    scroll_to(&window, focus);
     dialog::bring_to_front(window.as_weak());
     Ok(())
+}
+
+/// Scrolls the shown window to `focus`.
+fn scroll_to(window: &ui::SettingsWindow, focus: Focus) {
+    match focus {
+        Focus::Pins => window.invoke_show_pins(),
+        Focus::Accounts => window.invoke_show_accounts(),
+        Focus::None => {}
+    }
 }
 
 /// Highlights the readout's pins: the readout on and in pinned mode (Apply saves it so).
@@ -478,16 +515,17 @@ fn meshy_key_stored(settings: &Settings) -> bool {
 }
 
 /// Fills every property of the window from the draft, the meters the readings reported,
-/// whether a Meshy key is stored and the wording (no I/O; `--preview-settings` uses it
-/// directly).
+/// whether a Meshy key is stored, the wording and what the accounts section knows (no I/O;
+/// `--preview-settings` uses it directly).
 pub fn fill(
     window: &ui::SettingsWindow,
     draft: &Draft,
     reported: &[(MeterKey, MeterNames)],
     meshy_key_stored: bool,
     wording: &Wording,
+    accounts: &AccountsInfo,
 ) {
-    set_texts(window, draft, reported, wording);
+    set_texts(window, draft, reported, wording, accounts);
     let s = &draft.settings;
     let rows: Vec<ui::ProviderRow> = s
         .providers
@@ -545,6 +583,7 @@ fn set_texts(
     draft: &Draft,
     reported: &[(MeterKey, MeterNames)],
     wording: &Wording,
+    accounts: &AccountsInfo,
 ) {
     let strings = wording.strings();
     window.set_texts(texts(strings));
@@ -554,7 +593,22 @@ fn set_texts(
         &wording.ui_languages,
         strings,
     )));
-    fill_meters(window, draft, reported, strings);
+    fill_accounts(window, draft, reported, accounts, strings);
+}
+
+/// Fills the accounts section and the meter rows (whose labels name the accounts) from the draft.
+fn fill_accounts(
+    window: &ui::SettingsWindow,
+    draft: &Draft,
+    reported: &[(MeterKey, MeterNames)],
+    accounts: &AccountsInfo,
+    strings: &dyn Strings,
+) {
+    let blocks = settings_accounts::blocks(&draft.settings, accounts, strings);
+    window.set_account_blocks(ModelRc::new(VecModel::from(blocks)));
+    window.set_hide_personal_info(draft.settings.hide_personal_info);
+    let names = settings_accounts::labels(&draft.settings, accounts, strings);
+    fill_meters(window, draft, reported, strings, &names);
 }
 
 /// A Slint model of `items`.
@@ -571,6 +625,18 @@ pub fn texts(strings: &dyn Strings) -> ui::SettingsTexts {
         heading: t(Msg::SettingsHeading),
         services: t(Msg::SettingsServices),
         services_hint: t(Msg::SettingsServicesHint),
+        accounts: t(Msg::SettingsAccounts),
+        accounts_hint: t(Msg::SettingsAccountsHint),
+        accounts_alias: t(Msg::SettingsAccountsAlias),
+        accounts_alias_none: t(Msg::SettingsAccountsAliasNone),
+        accounts_remove: t(Msg::SettingsAccountsRemove),
+        accounts_found: t(Msg::SettingsAccountsFound),
+        accounts_add: t(Msg::SettingsAccountsAdd),
+        accounts_add_folder: t(Msg::SettingsAccountsAddFolder),
+        accounts_new: t(Msg::SettingsAccountsNew),
+        accounts_new_name: t(Msg::SettingsAccountsNewName),
+        accounts_new_create: t(Msg::SettingsAccountsNewCreate),
+        privacy_hide: t(Msg::SettingsPrivacyHide),
         key: t(Msg::SettingsKey),
         key_paste: t(Msg::SettingsKeyPaste),
         key_replace: t(Msg::SettingsKeyReplace),
@@ -615,15 +681,16 @@ pub fn texts(strings: &dyn Strings) -> ui::SettingsTexts {
 }
 
 /// Fills the meter rows of the draft from the reported meters, labelled in the language of
-/// `strings`.
+/// `strings` with the account names of `accounts`.
 fn fill_meters(
     window: &ui::SettingsWindow,
     draft: &Draft,
     reported: &[(MeterKey, MeterNames)],
     strings: &dyn Strings,
+    accounts: &BTreeMap<SourceKey, String>,
 ) {
     let pinned = pins(&draft.settings);
-    let choices = meter_choices(&draft.settings, reported, strings);
+    let choices = meter_choices(&draft.settings, reported, strings, accounts);
     let rows: Vec<ui::MeterChoice> = choices
         .iter()
         .map(|(key, label)| {
@@ -641,7 +708,7 @@ fn fill_meters(
     window.set_meters(ModelRc::new(VecModel::from(rows)));
 }
 
-/// Runs `f` on the draft, then refreshes the meter rows.
+/// Runs `f` on the draft, then refreshes the accounts section and the meter rows.
 fn edit(f: impl FnOnce(&mut Draft)) {
     with_session(|session| {
         let draft = {
@@ -651,7 +718,14 @@ fn edit(f: impl FnOnce(&mut Draft)) {
             draft.clone()
         };
         let strings = session.wording.borrow().strings();
-        fill_meters(&session.window, &draft, &session.reported, strings);
+        let accounts = session.accounts.borrow();
+        fill_accounts(
+            &session.window,
+            &draft,
+            &session.reported,
+            &accounts,
+            strings,
+        );
     });
 }
 
@@ -703,6 +777,36 @@ fn connect(window: &ui::SettingsWindow) {
             set_pins(&mut draft.settings, current);
         });
     });
+    window.on_account_alias_edited(|block, row, alias| {
+        // Kept in the draft only: refilling the rows while typing would reset the box.
+        with_session(|session| {
+            let mut draft = session.draft.borrow_mut();
+            let account = service_of(block)
+                .and_then(|p| draft.settings.provider_mut(p))
+                .and_then(|p| p.accounts.get_mut(usize::try_from(row).ok()?));
+            if let Some(account) = account {
+                account.alias = lastdrop_core::settings::clean_alias(&alias);
+            }
+        });
+    });
+    window.on_account_removed(|block, row| {
+        let (Some(provider), Ok(row)) = (service_of(block), usize::try_from(row)) else {
+            return;
+        };
+        edit(|draft| {
+            settings_accounts::remove(&mut draft.settings, provider, row);
+        });
+    });
+    window.on_found_added(|block, index| {
+        with_session(|session| add_found(session, block, index));
+    });
+    window.on_add_folder(|block| with_session(|session| pick_and_add(session, block)));
+    window.on_new_account(|block, name| {
+        with_session(|session| new_account(session, block, &name));
+    });
+    window.on_privacy_toggled(|hide| {
+        edit(|draft| draft.settings.hide_personal_info = hide);
+    });
     window.on_set_meshy_key(|key| with_session(|session| store_key(session, &key)));
     window.on_clear_meshy_key(|| with_session(clear_key));
     window.on_apply(|| with_session(apply));
@@ -711,6 +815,179 @@ fn connect(window: &ui::SettingsWindow) {
         close();
         slint::CloseRequestResponse::HideWindow
     });
+}
+
+/// The service of an accounts block.
+fn service_of(block: i32) -> Option<ProviderId> {
+    usize::try_from(block)
+        .ok()
+        .and_then(|b| SERVICES.get(b))
+        .copied()
+}
+
+/// Shows `msg` (with `{client}` the service's client) under the buttons.
+fn account_status(session: &Session, msg: Msg, provider: ProviderId, detail: Option<&str>) {
+    let strings = session.wording.borrow().strings();
+    let client = provider.client_name().unwrap_or(provider.display_name());
+    let mut values = vec![("client", client)];
+    if let Some(detail) = detail {
+        values.push(("detail", detail));
+    }
+    session
+        .window
+        .set_status_text(text(strings, msg, &values).into());
+}
+
+/// Adds `folder` as an account of `provider` (`alias` for a new account), reads who is signed in
+/// there, refreshes the section and says what happened. Returns whether it was added.
+fn add_account(
+    session: &Session,
+    provider: ProviderId,
+    folder: &std::path::Path,
+    alias: Option<&str>,
+) -> bool {
+    let added = {
+        let info = session.accounts.borrow();
+        let mut draft = session.draft.borrow_mut();
+        settings_accounts::add(&mut draft.settings, &info, provider, folder, alias)
+    };
+    match added {
+        Ok(key) => {
+            log::info!("settings window: added {:?} account {}", provider, key.0);
+            {
+                let draft = session.draft.borrow();
+                let mut info = session.accounts.borrow_mut();
+                if let Some(account) = draft
+                    .settings
+                    .provider(provider)
+                    .and_then(|p| p.accounts.iter().find(|a| a.key == key))
+                {
+                    info.learn(
+                        provider,
+                        account,
+                        &lastdrop_providers::real::RealEnv,
+                        &lastdrop_providers::real::RealFs,
+                    );
+                }
+            }
+            edit(|_| {});
+            account_status(session, Msg::SettingsAccountsAdded, provider, None);
+            true
+        }
+        Err(NotAdded::AlreadyUsed) => {
+            account_status(session, Msg::SettingsAccountsAlready, provider, None);
+            false
+        }
+        Err(NotAdded::NoService) => false,
+    }
+}
+
+/// **Add** on a found folder (accounts-spec §6).
+fn add_found(session: &Session, block: i32, index: i32) {
+    let Some(provider) = service_of(block) else {
+        return;
+    };
+    let found = {
+        let info = session.accounts.borrow();
+        let draft = session.draft.borrow();
+        settings_accounts::unused(&draft.settings, &info, provider)
+    };
+    if let Some(candidate) = usize::try_from(index).ok().and_then(|i| found.get(i)) {
+        add_account(session, provider, &candidate.folder, None);
+    }
+}
+
+/// **Add folder…**: the folder picker, owned by the window, opening in the profile folder.
+fn pick_and_add(session: &Session, block: i32) {
+    let Some(provider) = service_of(block) else {
+        return;
+    };
+    let strings = session.wording.borrow().strings();
+    let client = provider.client_name().unwrap_or(provider.display_name());
+    let title = text(strings, Msg::SettingsAccountsPicker, &[("client", client)]);
+    let owner = wiring::hwnd_of_window(session.window.window());
+    let home = session.accounts.borrow().home.clone();
+    match lastdrop_win::folder_picker::pick_folder(owner, &title, home.as_deref()) {
+        Ok(Some(folder)) => {
+            add_account(session, provider, &folder, None);
+        }
+        Ok(None) => {}
+        Err(e) => log::warn!("settings window: folder picker: {e}"),
+    }
+}
+
+/// **Create and sign in** (accounts-spec §7): a folder of its own in the profile folder, added
+/// with the name as its alias, and the vendor's sign-in in a terminal with the folder set.
+/// Lastdrop never signs in itself.
+fn new_account(session: &Session, block: i32, name: &str) {
+    let Some(provider) = service_of(block) else {
+        return;
+    };
+    let Some(alias) = lastdrop_core::settings::clean_alias(name) else {
+        return;
+    };
+    let Some(home) = session.accounts.borrow().home.clone() else {
+        return;
+    };
+    let Some(folder) = settings_accounts::new_folder(&home, provider, &alias, &|p| p.exists())
+    else {
+        return;
+    };
+    if let Err(e) = std::fs::create_dir_all(&folder) {
+        log::warn!("settings window: cannot create a {provider:?} folder: {e}");
+        account_status(
+            session,
+            Msg::SettingsAccountsNotCreated,
+            provider,
+            Some(&e.to_string()),
+        );
+        return;
+    }
+    if !add_account(session, provider, &folder, Some(&alias)) {
+        return;
+    }
+    let command = {
+        let draft = session.draft.borrow();
+        let source = draft
+            .settings
+            .provider(provider)
+            .and_then(|p| p.accounts.last())
+            .and_then(|a| {
+                lastdrop_providers::AccountSource::resolve(
+                    provider,
+                    a,
+                    &lastdrop_providers::real::RealEnv,
+                )
+                .ok()
+            });
+        let providers = lastdrop_providers::providers(&draft.settings);
+        source.and_then(|s| {
+            providers
+                .iter()
+                .find(|p| p.id() == provider)
+                .and_then(|p| p.sign_in_command(&s))
+        })
+    };
+    let Some(command) = command else {
+        return;
+    };
+    match lastdrop_win::shell::open_console(
+        &command.program,
+        &command.args,
+        &command.env,
+        command.cwd.as_deref(),
+    ) {
+        Ok(()) => account_status(session, Msg::SettingsAccountsCreated, provider, None),
+        Err(e) => {
+            log::warn!("settings window: cannot open the sign-in console: {e}");
+            account_status(
+                session,
+                Msg::SettingsAccountsNotCreated,
+                provider,
+                Some(&e.to_string()),
+            );
+        }
+    }
 }
 
 /// Closes the settings window (Close button or the title bar's ✕) and releases it, not inside
@@ -1019,6 +1296,8 @@ fn apply(session: &Session) {
             session.base.borrow_mut().clone_from(&settings);
             session.draft.borrow_mut().settings = settings;
             switch_language(session);
+            // The accounts' names follow the aliases typed since.
+            edit(|_| {});
         }
         Err(e) => log::error!("cannot save settings: {e}"),
     }
@@ -1048,7 +1327,14 @@ fn switch_language(session: &Session) {
     }
     log::info!("settings window: language {}", language.tag());
     wording.language = language;
-    set_texts(&session.window, &draft, &session.reported, &wording);
+    let accounts = session.accounts.borrow();
+    set_texts(
+        &session.window,
+        &draft,
+        &session.reported,
+        &wording,
+        &accounts,
+    );
 }
 
 #[cfg(test)]
@@ -1155,7 +1441,7 @@ mod tests {
             meter: MeterId::weekly_model("fable"),
         };
         let reported = [(fable.clone(), MeterNames::weekly_model("Fable"))];
-        let choices = meter_choices(&settings, &reported, &English);
+        let choices = meter_choices(&settings, &reported, &English, &BTreeMap::new());
         let labels: Vec<&str> = choices.iter().map(|(_, l)| l.as_str()).collect();
         assert_eq!(
             labels,
@@ -1168,7 +1454,7 @@ mod tests {
         );
 
         // In Swedish the meter comes first, with "limit" in it, and is capitalised.
-        let choices = meter_choices(&settings, &reported, &Swedish);
+        let choices = meter_choices(&settings, &reported, &Swedish, &BTreeMap::new());
         let labels: Vec<&str> = choices.iter().map(|(_, l)| l.as_str()).collect();
         assert_eq!(
             labels,
@@ -1249,7 +1535,7 @@ mod tests {
         let reported = reported_meters(&saved, &settings);
         let labels: Vec<String> = reported
             .iter()
-            .map(|(key, names)| meter_label(key, names, &English))
+            .map(|(key, names)| meter_label(key, names, &English, None))
             .collect();
         assert_eq!(
             labels,
@@ -1260,7 +1546,7 @@ mod tests {
             [fable, opus.clone(), five]
         );
         assert_eq!(
-            meter_label(&opus, &reported[1].1, &Swedish),
+            meter_label(&opus, &reported[1].1, &Swedish, None),
             "Opus-veckogränsen för Claude"
         );
         assert!(reported_meters(&SavedState::default(), &Settings::default()).is_empty());

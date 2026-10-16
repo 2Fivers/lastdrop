@@ -36,7 +36,8 @@ _researching_ are being verified against primary sources before anything is buil
 
 ### Multiple accounts
 
-Claude Code and Codex support more than one account each. A **source** is a config folder
+Built ([accounts-spec](design/accounts-spec.md)). Claude Code and Codex support more than one
+account each. A **source** is a config folder
 (`CLAUDE_CONFIG_DIR` for Claude Code, `CODEX_HOME` for Codex, Claude Desktop's data folder);
 an **account** is who is actually signed in there. Cards are keyed by the account, not the
 folder: two folders signed in to the same account become one card, and a folder that switches
@@ -157,7 +158,7 @@ Status as of 2026-10-16.
 |---|---|---|---|
 | M0 | **Stack spike** | Same flyout in Rust + Slint and Rust + Tauri; measure idle/open memory, flyout latency, size and look; pick one. | Done: Rust + Slint with the software renderer ([ADR 0001](adr/0001-rust-and-slint-software-renderer.md)) |
 | M1 | **First useful build** | Core, tray icon, taskbar readout, flyout, settings basics, autostart. Claude Code, Codex and Meshy. | Done, plus hover card, global hotkey, pause, and Settings and About in a dialog process of their own |
-| M2 | **More services** | Copilot, Cursor, Antigravity, OpenCode Go, Grok Build; declarative balance providers; multiple accounts for Claude Code and Codex. | Copilot quotas built; everything else left. The settings schema already has room for accounts (alias, tag, source folder) |
+| M2 | **More services** | Copilot, Cursor, Antigravity, OpenCode Go, Grok Build; declarative balance providers; multiple accounts for Claude Code and Codex. | Copilot quotas and multiple accounts built ([accounts-spec](design/accounts-spec.md): who is signed in to each folder, the same account in two folders shown once, a folder signed in to someone else starts over, found folders, add and create accounts, hide personal info); the other services and declarative providers left |
 | M3 | **Statistics** | History store, pace, forecasts, charts, threshold and reset notifications. | History store (90 days, one sample per meter per 5 minutes), pace, forecasts, a 14-day sparkline and notifications (levels, used up, resets, low balances) built; charts left |
 | M4 | **Make it yours** | Readout on every taskbar, themes and Theme Studio, languages, adaptive refresh. | Adaptive refresh built; English and Swedish, following Windows' display language or the setting, with numbers and times in the Windows regional format. The settings and about windows switch language too. The readout shows on the primary taskbar only; themes and Theme Studio are left |
 | M5 | **v0.1** | Updates, code signing, installer; decide on distribution and licensing. | Not started |

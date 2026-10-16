@@ -10,7 +10,7 @@ use std::ffi::OsString;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
-use lastdrop_core::model::{MeterKey, MeterNames};
+use lastdrop_core::model::{AccountIdentity, MeterKey, MeterNames, SourceKey};
 use lastdrop_core::notify::{Announced, NotifyMemory};
 use lastdrop_core::settings::{SETTINGS_VERSION, Settings};
 use serde::{Deserialize, Serialize};
@@ -203,9 +203,10 @@ pub const STATE_VERSION: u32 = 1;
 
 /// The state file (`%LOCALAPPDATA%\Lastdrop\state.json`): what the app remembers between runs
 /// that is not a setting. A cache: an unreadable file is ignored and rewritten. **No secrets**:
-/// meter keys (service, the account's key — `default` in M1, never an e-mail address or an
-/// account id — and the meter id), the meters' display names and what notifications announced
-/// (levels, severities and reset times).
+/// meter keys (service, the account's key — `default` or `f-…`, never an e-mail address or an
+/// account id — and the meter id), the meters' display names, what notifications announced
+/// (levels, severities and reset times) and who each source was last signed in to, as the hash of
+/// `lastdrop_core::model::AccountIdentity` (accounts-spec §5).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct SavedState {
@@ -217,6 +218,10 @@ pub struct SavedState {
     /// What notifications announced per meter (`lastdrop_core::notify::NotifyMemory`), so a
     /// restart repeats nothing (N§1). Missing in a file of an older build: nothing announced.
     pub notified: Vec<NotifiedMeter>,
+    /// Who each source was last known to be signed in to (accounts-spec §3, §5), so a restart
+    /// knows the duplicates before the first job and notices a folder signed in to someone else
+    /// meanwhile. Missing in a file of an older build: nothing known.
+    pub identities: Vec<SavedIdentity>,
 }
 
 impl Default for SavedState {
@@ -225,9 +230,24 @@ impl Default for SavedState {
             version: STATE_VERSION,
             seen: Vec::new(),
             notified: Vec::new(),
+            identities: Vec::new(),
         }
     }
 }
+
+/// One entry of [`SavedState::identities`].
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SavedIdentity {
+    /// The source.
+    #[serde(flatten)]
+    pub source: SourceKey,
+    /// [`AccountIdentity`]'s hex digits; an entry that is not one is ignored, never the whole
+    /// file.
+    pub identity: String,
+}
+
+/// Who each source was last known to be signed in to, as kept in memory.
+pub type IdentityMap = BTreeMap<SourceKey, AccountIdentity>;
 
 /// One entry of [`SavedState::notified`].
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -256,8 +276,8 @@ pub struct SeenMeter {
 pub type SeenMap = BTreeMap<MeterKey, (MeterNames, bool)>;
 
 impl SavedState {
-    /// The state of `seen` and `notified`.
-    pub fn new(seen: &SeenMap, notified: &NotifyMemory) -> SavedState {
+    /// The state of `seen`, `notified` and `identities`.
+    pub fn new(seen: &SeenMap, notified: &NotifyMemory, identities: &IdentityMap) -> SavedState {
         SavedState {
             version: STATE_VERSION,
             seen: seen
@@ -275,7 +295,25 @@ impl SavedState {
                     announced: *announced,
                 })
                 .collect(),
+            identities: identities
+                .iter()
+                .map(|(source, identity)| SavedIdentity {
+                    source: source.clone(),
+                    identity: identity.as_str().to_owned(),
+                })
+                .collect(),
         }
+    }
+
+    /// [`SavedState::identities`] as kept in memory, without entries that are not an identity.
+    pub fn identity_map(&self) -> IdentityMap {
+        self.identities
+            .iter()
+            .filter_map(|e| {
+                let identity = AccountIdentity::try_from(e.identity.clone()).ok()?;
+                Some((e.source.clone(), identity))
+            })
+            .collect()
     }
 
     /// [`SavedState::seen`] as kept in memory.
@@ -456,20 +494,47 @@ mod tests {
                 level: 95,
             },
         );
-        let state = SavedState::new(&seen, &notified);
+        let mut identities = IdentityMap::new();
+        let identity = AccountIdentity::of(&["claude", "org", "account"]);
+        identities.insert(
+            SourceKey {
+                provider: ProviderId::Claude,
+                account: AccountKey::primary(),
+            },
+            identity.clone(),
+        );
+        let state = SavedState::new(&seen, &notified, &identities);
         write_atomic(&path, &state_bytes(&state).expect("encode")).expect("write");
         let back = load_state(&path);
         assert_eq!(back, state);
         assert_eq!(back.seen_map(), seen);
         assert_eq!(back.notified_map(), notified);
-        // The file holds keys, names and what was announced only.
+        assert_eq!(back.identity_map(), identities);
+        // The file holds keys, names, what was announced and identity hashes only.
         let text = std::fs::read_to_string(&path).expect("read");
         assert!(text.contains("\"meter\": \"weekly:fable\""), "{text}");
         assert!(text.contains("\"account\": \"default\""), "{text}");
         assert!(text.contains("\"kind\": \"window\""), "{text}");
-        // An older build's file has no notifications: nothing was announced.
+        assert!(
+            text.contains(&format!("\"identity\": \"{}\"", identity.as_str())),
+            "{text}"
+        );
+        // An older build's file has no notifications or identities: nothing known.
         std::fs::write(&path, br#"{ "version": 1, "seen": [] }"#).expect("write");
         assert_eq!(load_state(&path).notified_map(), NotifyMemory::new());
+        assert_eq!(load_state(&path).identity_map(), IdentityMap::new());
+        // An entry that is not an identity is dropped, not the file.
+        std::fs::write(
+            &path,
+            br#"{ "identities": [
+                { "provider": "claude", "account": "default", "identity": "tester@example.invalid" },
+                { "provider": "codex", "account": "default", "identity": "0123456789abcdef" }
+            ] }"#,
+        )
+        .expect("write");
+        let kept = load_state(&path).identity_map();
+        assert_eq!(kept.len(), 1);
+        assert!(kept.keys().all(|k| k.provider == ProviderId::Codex));
 
         std::fs::write(&path, b"{ not json").expect("damage");
         assert_eq!(load_state(&path), SavedState::default());

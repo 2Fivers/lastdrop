@@ -61,6 +61,9 @@ pub struct Settings {
     pub hotkey: Option<Hotkey>,
     /// Windows notifications at levels, when used up and on resets (N§2).
     pub notifications: NotificationSettings,
+    /// Hide personal info (accounts-spec §4): no e-mail address is shown anywhere; accounts
+    /// without an alias are `Account 1`, `Account 2`. Default off.
+    pub hide_personal_info: bool,
     /// Unknown fields.
     #[serde(flatten)]
     pub extra: Extra,
@@ -159,6 +162,7 @@ impl Default for Settings {
             language: None,
             hotkey: None,
             notifications: NotificationSettings::default(),
+            hide_personal_info: false,
             extra: Extra::new(),
         }
     }
@@ -262,7 +266,9 @@ pub struct ProviderSettings {
     /// User thresholds for balances that raise WARNING/CRITICAL earlier, never later (R§3.7).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub balance_alert: Option<BalanceAlert>,
-    /// Accounts of this service. M1 has one, keyed [`AccountKey::primary`].
+    /// Accounts of this service, in the user's order (accounts-spec §1): one per source folder.
+    /// The default folder is keyed [`AccountKey::primary`]; Claude Code and Codex can have more
+    /// (keys from [`AccountKey::for_folder`]).
     #[serde(default)]
     pub accounts: Vec<AccountSettings>,
     /// Unknown fields.
@@ -285,16 +291,16 @@ impl ProviderSettings {
     }
 }
 
-/// One account of a service (ROADMAP "Multiple accounts"). Holds folder paths and aliases,
-/// never tokens.
+/// One account of a service (ROADMAP "Multiple accounts", accounts-spec §1): one source folder.
+/// Holds folder paths and aliases, never tokens or e-mail addresses.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct AccountSettings {
     /// Stable key ([`AccountKey`]).
     pub key: AccountKey,
-    /// Alias shown as `Claude · Work` (M2).
+    /// Alias shown as `Claude · Work`, at most [`ALIAS_MAX_CHARS`] characters.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub alias: Option<String>,
-    /// 1–2 character readout tag (R§6.4, M2).
+    /// 1–2 character readout tag (R§6.4).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tag: Option<String>,
     /// Where the account's data and credentials are.
@@ -305,8 +311,11 @@ pub struct AccountSettings {
     pub extra: Extra,
 }
 
+/// The longest account alias, in characters (accounts-spec §7).
+pub const ALIAS_MAX_CHARS: usize = 24;
+
 impl AccountSettings {
-    /// The M1 account: default source location, no alias.
+    /// The default account: default source location, no alias.
     pub fn primary() -> AccountSettings {
         AccountSettings {
             key: AccountKey::primary(),
@@ -316,6 +325,41 @@ impl AccountSettings {
             extra: Extra::new(),
         }
     }
+
+    /// An account for `source` (a folder), keyed by [`AccountKey::for_folder`] against the keys
+    /// in `taken`, with `alias` cleaned by [`clean_alias`].
+    pub fn for_folder(
+        source: SourceSettings,
+        alias: Option<&str>,
+        taken: &[AccountKey],
+    ) -> AccountSettings {
+        let path = source
+            .folder()
+            .map(|p| p.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        AccountSettings {
+            key: AccountKey::for_folder(&path, taken),
+            alias: alias.and_then(clean_alias),
+            tag: None,
+            source,
+            extra: Extra::new(),
+        }
+    }
+}
+
+/// An alias as typed, as settings keep it: trimmed, at most [`ALIAS_MAX_CHARS`] characters,
+/// without control characters; `None` when nothing is left.
+pub fn clean_alias(alias: &str) -> Option<String> {
+    let cleaned: String = alias
+        .chars()
+        .filter(|c| !c.is_control())
+        .collect::<String>()
+        .trim()
+        .chars()
+        .take(ALIAS_MAX_CHARS)
+        .collect();
+    let cleaned = cleaned.trim_end().to_owned();
+    (!cleaned.is_empty()).then_some(cleaned)
 }
 
 /// Where an account's data comes from. `lastdrop-providers` resolves it into an
@@ -343,6 +387,29 @@ pub enum SourceSettings {
         /// The credential name.
         name: String,
     },
+}
+
+impl SourceSettings {
+    /// The folder of a folder source (`ClaudeConfigDir`, `CodexHome`); `None` for the default
+    /// location and API keys.
+    pub fn folder(&self) -> Option<&std::path::Path> {
+        match self {
+            SourceSettings::ClaudeConfigDir { path } | SourceSettings::CodexHome { path } => {
+                Some(path)
+            }
+            SourceSettings::Default | SourceSettings::ApiKey { .. } => None,
+        }
+    }
+
+    /// The folder source of `provider` for `path`: `ClaudeConfigDir` for Claude, `CodexHome` for
+    /// Codex; `None` for services without folders.
+    pub fn folder_of(provider: ProviderId, path: PathBuf) -> Option<SourceSettings> {
+        match provider {
+            ProviderId::Claude => Some(SourceSettings::ClaudeConfigDir { path }),
+            ProviderId::Codex => Some(SourceSettings::CodexHome { path }),
+            ProviderId::Copilot | ProviderId::Meshy => None,
+        }
+    }
 }
 
 /// Options that only some providers have.
@@ -609,6 +676,58 @@ mod tests {
             Language::resolve(s.language.as_deref(), &windows),
             Language::English
         );
+    }
+
+    #[test]
+    fn aliases_are_trimmed_and_capped() {
+        assert_eq!(clean_alias("  Work  ").as_deref(), Some("Work"));
+        assert_eq!(clean_alias("   "), None);
+        assert_eq!(clean_alias(""), None);
+        assert_eq!(clean_alias("Wo\u{7}rk\n").as_deref(), Some("Work"));
+        let long = "abcdefghijklmnopqrstuvwxyz";
+        assert_eq!(clean_alias(long).as_deref(), Some(&long[..ALIAS_MAX_CHARS]));
+        assert_eq!(
+            clean_alias("Ett mycket långt alias med mellanslag").as_deref(),
+            Some("Ett mycket långt alias m")
+        );
+        assert_eq!(
+            clean_alias("abcdefghijklmnopqrstuvw xyz").as_deref(),
+            Some("abcdefghijklmnopqrstuvw"),
+            "no trailing space after the cut"
+        );
+    }
+
+    #[test]
+    fn folder_accounts_are_keyed_by_their_folder() {
+        let source = SourceSettings::folder_of(
+            ProviderId::Claude,
+            PathBuf::from(r"C:\Users\tester\.claude-work"),
+        )
+        .expect("Claude has folders");
+        let account = AccountSettings::for_folder(source.clone(), Some(" Work "), &[]);
+        assert!(account.key.0.starts_with("f-"));
+        assert_eq!(account.alias.as_deref(), Some("Work"));
+        assert_eq!(account.source, source);
+        assert_eq!(
+            account.source.folder(),
+            Some(std::path::Path::new(r"C:\Users\tester\.claude-work"))
+        );
+        assert_eq!(
+            SourceSettings::folder_of(ProviderId::Meshy, PathBuf::new()),
+            None
+        );
+        assert_eq!(SourceSettings::Default.folder(), None);
+        let again = AccountSettings::for_folder(source, None, std::slice::from_ref(&account.key));
+        assert_ne!(again.key, account.key);
+        assert_eq!(again.alias, None);
+    }
+
+    #[test]
+    fn personal_info_shows_until_hidden() {
+        assert!(!Settings::default().hide_personal_info);
+        let s: Settings =
+            serde_json::from_str(r#"{ "version": 1, "hide_personal_info": true }"#).expect("read");
+        assert!(s.hide_personal_info);
     }
 
     #[test]

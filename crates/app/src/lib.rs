@@ -4,8 +4,9 @@
 //!
 //! Two processes run the same executable (ARCHITECTURE "Processes"): the **tray process**
 //! (always running: tray icon, readout, flyout, hover card, refreshes) and the short-lived
-//! **dialog process** (`--settings`, `--settings-pins`, `--about`: [`dialog`]), so the window
-//! setup a decorated window with text fields costs never stays in the tray process.
+//! **dialog process** (`--settings`, `--settings-pins`, `--settings-accounts`, `--about`:
+//! [`dialog`]), so the window setup a decorated window with text fields costs never stays in the
+//! tray process.
 //!
 //! - [`ui`]: the compiled Slint windows and structs (`ui/*.slint`).
 //! - [`state`]: [`state::AppState`], the main thread's state.
@@ -19,7 +20,8 @@
 //! - [`preview`]: `--preview-flyout`: renders the flyout headless and saves a PNG.
 //! - [`png`]: the minimal PNG writer the preview uses.
 //! - [`dialog`]: the dialog process, the requests between it and the tray process.
-//! - [`settings_window`]: the settings window's draft and callbacks (dialog process).
+//! - [`settings_window`]: the settings window's draft and callbacks (dialog process);
+//!   [`settings_accounts`]: its Accounts section (accounts-spec §6–§7).
 //! - [`writer`]: the file writer thread (history appends and compaction, settings and state
 //!   saves, in queue order).
 //!
@@ -48,6 +50,7 @@ pub mod persist;
 pub mod png;
 pub mod preview;
 pub mod scheduler;
+pub mod settings_accounts;
 pub mod settings_window;
 pub mod state;
 pub mod ui;
@@ -131,7 +134,9 @@ impl Args {
                 Some("--language") => {
                     out.language = iter.next().and_then(|v| v.to_str().map(str::to_owned));
                 }
-                Some(flag @ ("--settings" | "--settings-pins" | "--about")) => {
+                Some(
+                    flag @ ("--settings" | "--settings-pins" | "--settings-accounts" | "--about"),
+                ) => {
                     out.dialog = dialog::DialogKind::from_flag(flag);
                 }
                 Some("--scale") => {

@@ -27,7 +27,8 @@
 //! meter's `short_name`; `{detail}` a secret-free failure detail; `{rows}` a joined list;
 //! `{today}`, `{max}`, `{avg}` bare numbers and `{day}` a full weekday (sparkline); `{model}` a
 //! model's display name (`meter.*`); `{language}` a language's own name ([`Language::native_name`])
-//! and `{version}` the app's version (`settings.*`, `about.*`).
+//! and `{version}` the app's version (`settings.*`, `about.*`); `{email}` the e-mail address an
+//! account is signed in with and `{name}` an account's name (accounts-spec §4, `settings.accounts.*`).
 //!
 //! Titles, verdicts, notification titles, "Also tracked" lines and the settings window's meter
 //! rows are capitalised as a whole after filling ([`capitalise`]; Appendix B: `{meter}`
@@ -474,6 +475,31 @@ catalogue! {
         SettingsSavedNoStartup = "settings.saved.nostartup",
         SettingsSavedNeither = "settings.saved.neither",
         SettingsNotSaved = "settings.notsaved",
+
+        // ---- Accounts (accounts-spec §4, §7)
+        AccountN = "account.n",
+        SettingsAccounts = "settings.accounts",
+        SettingsAccountsHint = "settings.accounts.hint",
+        SettingsAccountsSignedIn = "settings.accounts.signedin",
+        SettingsAccountsSignedInHidden = "settings.accounts.signedin.hidden",
+        SettingsAccountsSignedOut = "settings.accounts.signedout",
+        SettingsAccountsUnknown = "settings.accounts.unknown",
+        SettingsAccountsSame = "settings.accounts.same",
+        SettingsAccountsAlias = "settings.accounts.alias",
+        SettingsAccountsAliasNone = "settings.accounts.alias.none",
+        SettingsAccountsRemove = "settings.accounts.remove",
+        SettingsAccountsFound = "settings.accounts.found",
+        SettingsAccountsAdd = "settings.accounts.add",
+        SettingsAccountsAddFolder = "settings.accounts.addfolder",
+        SettingsAccountsPicker = "settings.accounts.picker",
+        SettingsAccountsNew = "settings.accounts.new",
+        SettingsAccountsNewName = "settings.accounts.new.name",
+        SettingsAccountsNewCreate = "settings.accounts.new.create",
+        SettingsAccountsAdded = "settings.accounts.added",
+        SettingsAccountsAlready = "settings.accounts.already",
+        SettingsAccountsCreated = "settings.accounts.created",
+        SettingsAccountsNotCreated = "settings.accounts.notcreated",
+        SettingsPrivacyHide = "settings.privacy.hide",
 
         // ---- About window (R§10 "About Lastdrop")
         AboutTitle = "about.title",

@@ -16,7 +16,7 @@ use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 use jiff::{SignedDuration, Timestamp};
-use lastdrop_core::model::{Snapshot, SourceKey};
+use lastdrop_core::model::{Identity, Snapshot, SourceKey};
 use lastdrop_core::refresh::{
     Activity, CredentialFingerprint, Due, PolicyInput, effective_interval, next_due,
 };
@@ -56,6 +56,22 @@ pub struct Job {
     /// `Provider::credential_fingerprint` and fetches only when it differs from this stopped
     /// fingerprint. `None` = a normal fetch.
     pub probe: Option<CredentialFingerprint>,
+    /// Whether the worker reads who is signed in (`Provider::identity`, accounts-spec §2).
+    pub identity: IdentityRead,
+}
+
+/// When a job reads who is signed in (accounts-spec §2 "When it is read").
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum IdentityRead {
+    /// After the attempt (the source's first job in this run, or the last read is
+    /// `ACCOUNT_RECHECK` old).
+    Always,
+    /// After the attempt, when the credential fingerprint is no longer the one it was last read
+    /// with (someone signed in again since).
+    IfCredentialChanged(Option<CredentialFingerprint>),
+    /// Instead of a fetch: a duplicate's recheck (accounts-spec §3). Nothing is fetched or
+    /// recorded as an attempt.
+    Only,
 }
 
 /// The result of one job.
@@ -76,6 +92,8 @@ pub struct JobResult {
     /// success or when NLM fails). `Some(false)` turns any failure into OFFLINE (R§3.8: "no
     /// internet per Network List Manager, or DNS/connect failures").
     pub internet: Option<bool>,
+    /// Who is signed in, when the job read it ([`Job::identity`]); `None` when it did not.
+    pub identity: Option<Identity>,
 }
 
 /// Receives results on a worker thread; must not block.
@@ -173,6 +191,30 @@ pub fn run_job(
         .flatten()
     };
     let fetch = || guarded(&|| job.provider.fetch(&ctx, &job.account));
+    let identity = || {
+        catch_unwind(AssertUnwindSafe(|| {
+            job.provider.identity(&ctx, &job.account)
+        }))
+        .unwrap_or(Identity::Unknown)
+    };
+
+    if job.identity == IdentityRead::Only {
+        let identity = identity();
+        log::debug!(
+            "{:?}/{}: checked who is signed in",
+            job.source.provider,
+            job.source.account.0
+        );
+        return JobResult {
+            source: job.source.clone(),
+            started,
+            finished: clock.now(),
+            outcome: None,
+            credential: fingerprint(),
+            internet: None,
+            identity: Some(identity),
+        };
+    }
 
     let (outcome, credential) = match &job.probe {
         Some(stopped) => {
@@ -195,6 +237,15 @@ pub fn run_job(
         Some(Err(_)) => internet(),
         _ => None,
     };
+    // Read after the attempt, so a sign-in the fetch already used is the one named.
+    let identity = match (&job.identity, &outcome) {
+        // A probe that found the credential unchanged attempted nothing.
+        (_, None) | (IdentityRead::Only, _) => None,
+        (IdentityRead::Always, Some(_)) => Some(identity()),
+        (IdentityRead::IfCredentialChanged(read_with), Some(_)) => {
+            (&credential != read_with).then(identity)
+        }
+    };
     match &outcome {
         Some(Ok(s)) => log::info!(
             "{:?}/{}: read from {:?}",
@@ -216,6 +267,7 @@ pub fn run_job(
         outcome,
         credential,
         internet,
+        identity,
     }
 }
 
@@ -329,6 +381,9 @@ pub struct Plan {
     /// Auth-stopped sources whose credential fingerprint a worker should re-read now
     /// (`Due::ProbeCredential`).
     pub probes: Vec<SourceKey>,
+    /// Duplicates whose identity is due for its recheck ([`IdentityRead::Only`], accounts-spec
+    /// §3): they are never fetched.
+    pub identity_checks: Vec<SourceKey>,
     /// When to look again (`None` = only on events).
     pub next_wake: Option<Timestamp>,
     /// The next planned attempt per source (`ServiceStatus::next_try`, `next try 13:30` in
@@ -374,6 +429,7 @@ pub fn plan_sources(
     let mut out = Plan {
         due: Vec::new(),
         probes: Vec::new(),
+        identity_checks: Vec::new(),
         next_wake: None,
         next_try: BTreeMap::new(),
     };
@@ -383,6 +439,19 @@ pub fn plan_sources(
     // Service order first (R§3.10 tie break), then accounts.
     for (_, provider) in settings.enabled_providers() {
         for (key, source) in sources.iter().filter(|(k, _)| k.provider == provider.id) {
+            if source.duplicate_of.is_some() {
+                // Read through the account it duplicates; only its identity is rechecked, also
+                // while paused (no service is asked).
+                if !source.refresh.in_flight {
+                    let at = crate::state::identity_due(source, now);
+                    if at <= now {
+                        out.identity_checks.push(key.clone());
+                    } else {
+                        wake(at, &mut out);
+                    }
+                }
+                continue;
+            }
             let resets: Vec<Timestamp> = source
                 .latest
                 .iter()
@@ -520,6 +589,7 @@ mod tests {
             account: source.clone(),
             manual: false,
             probe,
+            identity: IdentityRead::Always,
         };
         let offline = || Some(false);
 
@@ -544,6 +614,101 @@ mod tests {
     }
 
     #[test]
+    fn identity_is_read_after_the_attempt_or_alone() {
+        let now = ts("2026-10-10T10:42:00Z");
+        let fakes = Fakes::new(now);
+        // An invented `auth.json` without a sign-in.
+        fakes.fs.add_file(
+            r"C:\Users\tester\.codex\auth.json",
+            r#"{ "OPENAI_API_KEY": null }"#,
+            now,
+        );
+        let ctx = fakes.context(SignedDuration::from_secs(20));
+        let recorder = Arc::new(ManualRecorder(Mutex::new(Vec::new())));
+        let source = crate::state::tests::source_of(ProviderId::Codex);
+        let job = |identity: IdentityRead| Job {
+            source: crate::state::tests::codex(),
+            provider: recorder.clone(),
+            account: source.clone(),
+            manual: false,
+            probe: None,
+            identity,
+        };
+
+        // Alone: nothing is fetched.
+        let r = run_job(&job(IdentityRead::Only), &fakes.clock, &ctx, &|| None);
+        assert!(r.outcome.is_none());
+        assert_eq!(r.identity, Some(Identity::SignedOut));
+        assert!(recorder.0.lock().expect("lock").is_empty(), "no fetch");
+
+        // After the attempt: always, or when the credential is not the one it was read with
+        // (this provider has no fingerprint: `None`).
+        let r = run_job(&job(IdentityRead::Always), &fakes.clock, &ctx, &|| None);
+        assert!(r.outcome.is_some());
+        assert_eq!(r.identity, Some(Identity::SignedOut));
+        let r = run_job(
+            &job(IdentityRead::IfCredentialChanged(None)),
+            &fakes.clock,
+            &ctx,
+            &|| None,
+        );
+        assert_eq!(r.identity, None, "same credential: not read");
+        let r = run_job(
+            &job(IdentityRead::IfCredentialChanged(Some(
+                CredentialFingerprint("before".to_owned()),
+            ))),
+            &fakes.clock,
+            &ctx,
+            &|| None,
+        );
+        assert_eq!(
+            r.identity,
+            Some(Identity::SignedOut),
+            "signed in again since"
+        );
+        assert_eq!(recorder.0.lock().expect("lock").len(), 3);
+    }
+
+    #[test]
+    fn duplicates_are_rechecked_never_fetched() {
+        use crate::state::tests::{codex, signed_in_as, two_codex, work};
+        use crate::state::{ACCOUNT_RECHECK, apply_identity, mark_duplicates};
+        let now = ts("2026-10-10T10:42:00Z");
+        let (settings, mut sources) = two_codex();
+        for key in [codex(), work()] {
+            let source = sources.get_mut(&key).expect("source");
+            source.known_identity = signed_in_as("one", None).id().cloned();
+        }
+        mark_duplicates(&settings, &mut sources);
+        let p = plan_sources(&settings, &sources, now, Activity::default(), &mut || 0.5);
+        assert_eq!(p.due, [codex()], "only the account's first source is read");
+        assert_eq!(
+            p.identity_checks,
+            [work()],
+            "never checked in this run: now"
+        );
+        assert!(!p.next_try.contains_key(&work()));
+
+        // Checked: the next check is 30 minutes on.
+        let source = sources.get_mut(&work()).expect("source");
+        apply_identity(source, signed_in_as("one", None), now, None);
+        mark_duplicates(&settings, &mut sources);
+        for source in sources.values_mut() {
+            source.refresh.last_attempt = Some(now);
+            source.refresh.last_success = Some(now);
+        }
+        let p = plan_sources(&settings, &sources, now, Activity::default(), &mut || 0.5);
+        assert!(p.identity_checks.is_empty());
+        assert!(p.next_wake.is_some_and(|w| w <= now + ACCOUNT_RECHECK));
+
+        // While a check runs, nothing more is planned for it.
+        sources.get_mut(&work()).expect("source").refresh.in_flight = true;
+        let later = now + ACCOUNT_RECHECK;
+        let p = plan_sources(&settings, &sources, later, Activity::default(), &mut || 0.5);
+        assert!(p.identity_checks.is_empty());
+    }
+
+    #[test]
     fn a_worker_pool_runs_jobs_and_shuts_down() {
         // The pool itself, with a provider that needs no real I/O.
         let (tx, rx) = mpsc::channel();
@@ -561,6 +726,7 @@ mod tests {
             account: source,
             manual: true,
             probe: None,
+            identity: IdentityRead::Always,
         });
         let done = rx.recv_timeout(Duration::from_secs(10)).expect("result");
         assert_eq!(done.provider, ProviderId::Codex);
@@ -607,6 +773,7 @@ mod tests {
                 account: source.clone(),
                 manual,
                 probe: None,
+                identity: IdentityRead::Always,
             };
             run_job(&job, &fakes.clock, &ctx, &|| None);
         }
@@ -669,6 +836,7 @@ mod tests {
                 account: source.clone(),
                 manual: false,
                 probe: None,
+                identity: IdentityRead::Always,
             });
         }
         // Let both workers pick up a job, then quit.
@@ -698,6 +866,7 @@ mod tests {
             account: source,
             manual: false,
             probe: None,
+            identity: IdentityRead::Always,
         });
         std::thread::sleep(Duration::from_millis(50));
         let started = Instant::now();
