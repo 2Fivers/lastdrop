@@ -452,3 +452,29 @@ lowercase_names = true
 # Third-party credit line (open-source components and their licences).
 "about.credits" = "Built with Slint (Royalty-free License 2.0), jiff, serde, ureq and windows-rs (MIT / Apache-2.0). No telemetry: Lastdrop only talks to the services whose usage it reads."
 "about.close" = "Close"
+
+# ---- Usage history window (charts-spec)
+"menu.history" = "Usage history…"
+"menu.card.history" = "Usage history…"
+"history.title" = "Usage history"
+"history.service" = "Service"
+"history.range" = "Period"
+"history.range.days" = "Last {n} days"
+"history.over_time" = "Over time"
+"history.per_day" = "Use per day"
+# `{avg}`, `{max}`: a percent (`6%`) or an amount with its unit; `{date}`: a card date.
+"history.per_day.summary" = "Average {avg} a day · highest {max} on {date}"
+"history.hours" = "Active hours"
+# `{day}`: a full weekday; `{time}`, `{until}`: the start and end of the hour.
+"history.hours.summary" = "Most use: {day} {time}–{until}"
+"history.empty" = "No history yet. Lastdrop records a reading every 5 minutes while it runs."
+"history.empty.range" = "Nothing was recorded in this period."
+"history.close" = "Close"
+"a11y.history.span" = "the last {n} days"
+"a11y.history.percent" = "{n} percent"
+# `{meter}`: the meter's name; `{span}`: `a11y.history.span`; `{date}`: a full weekday and date.
+"a11y.history.window" = "{meter}, {span}: now {n} percent, highest {course} percent on {date}."
+"a11y.history.balance" = "{meter}, {span}: now {amount}, highest {max} on {date}."
+"a11y.history.per_day" = "Use per day, {span}: average {avg}, highest {max} on {date}."
+"a11y.history.hours" = "Active hours, {span}: most use on {day} between {time} and {until}."
+"a11y.history.used_up" = { one = "Used up {n} time.", other = "Used up {n} times." }

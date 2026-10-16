@@ -1636,6 +1636,7 @@ mod tests {
                 key: fable.clone(),
                 names: MeterNames::weekly_model("Fable"),
                 balance: false,
+                unit: None,
             }],
             ..SavedState::default()
         };

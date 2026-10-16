@@ -423,3 +423,26 @@ lowercase_names = true
 # The licence names stay as their authors wrote them.
 "about.credits" = "Byggt med Slint (Royalty-free License 2.0), jiff, serde, ureq och windows-rs (MIT / Apache-2.0). Ingen telemetri: Lastdrop pratar bara med de tjänster vars användning den läser."
 "about.close" = "Stäng"
+
+# ---- Usage history window (charts-spec)
+"menu.history" = "Användningshistorik…"
+"menu.card.history" = "Användningshistorik…"
+"history.title" = "Användningshistorik"
+"history.service" = "Tjänst"
+"history.range" = "Period"
+"history.range.days" = "Senaste {n} dagarna"
+"history.over_time" = "Över tid"
+"history.per_day" = "Användning per dag"
+"history.per_day.summary" = "Snitt {avg} per dag · mest {max} {date}"
+"history.hours" = "Aktiva timmar"
+"history.hours.summary" = "Mest användning: {day} {time}–{until}"
+"history.empty" = "Ingen historik än. Lastdrop sparar en mätning var 5:e minut medan den körs."
+"history.empty.range" = "Inget sparades under den här perioden."
+"history.close" = "Stäng"
+"a11y.history.span" = "de senaste {n} dagarna"
+"a11y.history.percent" = "{n} procent"
+"a11y.history.window" = "{meter}, {span}: nu {n} procent, högst {course} procent {date}."
+"a11y.history.balance" = "{meter}, {span}: nu {amount}, högst {max} {date}."
+"a11y.history.per_day" = "Användning per dag, {span}: i snitt {avg}, mest {max} {date}."
+"a11y.history.hours" = "Aktiva timmar, {span}: mest användning på {day} mellan {time} och {until}."
+"a11y.history.used_up" = { one = "Slut {n} gång.", other = "Slut {n} gånger." }

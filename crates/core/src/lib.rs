@@ -30,6 +30,7 @@
 //! its own scale, so a DPI change never needs a new model.
 #![forbid(unsafe_code)]
 
+pub mod charts;
 pub mod color;
 pub mod consts;
 pub mod custom;

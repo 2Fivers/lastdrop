@@ -34,7 +34,7 @@ use lastdrop_win::placement::TaskbarEdge;
 use lastdrop_win::theme::ThemeInfo;
 
 use crate::history::{HistoryStore, IN_MEMORY_SPAN};
-use crate::persist::{self, IdentityMap, SavedState, SeenMap};
+use crate::persist::{self, IdentityMap, SavedState, SeenMap, UnitMap};
 use crate::scheduler::{IdentityRead, JobResult, poll_interval, reading_pace};
 
 /// How often a source's identity is read again when nothing else asks for it (accounts-spec §2
@@ -318,6 +318,8 @@ pub struct AppState {
     pub providers: Vec<Arc<dyn Provider>>,
     /// `memory.seen` as the state file has it ([`AppState::state_to_save`]).
     pub saved_seen: SeenMap,
+    /// `memory.units` as the state file has it.
+    pub saved_units: UnitMap,
     /// What notifications announced (N§1), kept across restarts in the state file.
     pub notified: NotifyMemory,
     /// `notified` as the state file has it ([`AppState::state_to_save`]).
@@ -609,6 +611,7 @@ impl AppState {
             readout: ReadoutState::default(),
             refreshing: false,
             saved_seen: SeenMap::new(),
+            saved_units: UnitMap::new(),
             notified: NotifyMemory::new(),
             saved_notified: NotifyMemory::new(),
             identities: IdentityMap::new(),
@@ -723,6 +726,13 @@ impl AppState {
             .map(|(key, entry)| (key.clone(), entry.clone()))
             .collect();
         self.saved_seen = all;
+        let units = saved.units_map();
+        self.memory.units = units
+            .iter()
+            .filter(|(key, _)| self.memory.seen.contains_key(*key))
+            .map(|(key, unit)| (key.clone(), unit.clone()))
+            .collect();
+        self.saved_units = units;
         self.notified = saved.notified_map();
         self.saved_notified = self.notified.clone();
         self.identities = saved.identity_map();
@@ -749,15 +759,22 @@ impl AppState {
     pub fn state_to_save(&mut self) -> Option<Vec<u8>> {
         let identities = self.known_identities();
         if self.memory.seen == self.saved_seen
+            && self.memory.units == self.saved_units
             && self.notified == self.saved_notified
             && identities == self.saved_identities
         {
             return None;
         }
         self.saved_seen = self.memory.seen.clone();
+        self.saved_units = self.memory.units.clone();
         self.saved_notified = self.notified.clone();
         self.saved_identities = identities;
-        let state = SavedState::new(&self.memory.seen, &self.notified, &self.saved_identities);
+        let state = SavedState::new(
+            &self.memory.seen,
+            &self.memory.units,
+            &self.notified,
+            &self.saved_identities,
+        );
         match persist::state_bytes(&state) {
             Ok(bytes) => Some(bytes),
             Err(e) => {
@@ -1097,6 +1114,7 @@ pub(crate) mod tests {
             refreshing: false,
             providers: Vec::new(),
             saved_seen: SeenMap::new(),
+            saved_units: UnitMap::new(),
             notified: NotifyMemory::new(),
             saved_notified: NotifyMemory::new(),
             identities: IdentityMap::new(),
@@ -1173,6 +1191,7 @@ pub(crate) mod tests {
             key: key("weekly:retired"),
             names: lastdrop_core::model::MeterNames::new("Old", "old weekly", "Weekly · Old"),
             balance: false,
+            unit: None,
         });
         writer.handle().replace(
             state_file.clone(),

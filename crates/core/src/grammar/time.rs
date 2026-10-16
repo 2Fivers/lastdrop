@@ -64,19 +64,19 @@ fn days_between(from: Timestamp, to: Timestamp, locale: &LocaleFormat) -> i64 {
 }
 
 /// The locale's abbreviated weekday of `t` (`Mon`, sv-SE `mån`).
-fn weekday_abbrev(t: Timestamp, locale: &LocaleFormat) -> &str {
+pub(crate) fn weekday_abbrev(t: Timestamp, locale: &LocaleFormat) -> &str {
     let day = local_date(t, locale).weekday().to_monday_zero_offset();
     &locale.weekdays_abbrev[usize::try_from(day).unwrap_or(0) % 7]
 }
 
 /// The locale's full weekday of `t` (`Monday`).
-fn weekday_full(t: Timestamp, locale: &LocaleFormat) -> &str {
+pub(crate) fn weekday_full(t: Timestamp, locale: &LocaleFormat) -> &str {
     let day = local_date(t, locale).weekday().to_monday_zero_offset();
     &locale.weekdays_full[usize::try_from(day).unwrap_or(0) % 7]
 }
 
 /// Day and abbreviated month in the locale's order (`1 Nov`, `Nov 1`).
-fn day_month(t: Timestamp, locale: &LocaleFormat) -> String {
+pub(crate) fn day_month(t: Timestamp, locale: &LocaleFormat) -> String {
     let date = local_date(t, locale);
     let month = usize::try_from(date.month() - 1).unwrap_or(0) % 12;
     let month = &locale.months_abbrev[month];
@@ -136,7 +136,11 @@ pub fn time_token(t: Timestamp, cx: &TextContext<'_>) -> String {
 /// designator where the locale has one (`2:56 PM`), else without (`2:56`) (R§5.2).
 pub fn clock_time(t: Timestamp, locale: &LocaleFormat, ampm: bool) -> String {
     let local = round_min(t).to_zoned(locale.tz.clone());
-    let (hour, minute) = (local.hour(), local.minute());
+    hour_minute(local.hour(), local.minute(), locale, ampm)
+}
+
+/// `hour:minute` (0–23, 0–59) in the locale's short time, as [`clock_time`] writes it.
+pub(crate) fn hour_minute(hour: i8, minute: i8, locale: &LocaleFormat, ampm: bool) -> String {
     let clock = &locale.clock;
     let shown_hour = if clock.hour24 {
         hour

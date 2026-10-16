@@ -1,0 +1,391 @@
+// The usage history window (docs/design/charts-spec.md): each meter of one service over time, use
+// per day and the active hours, drawn from what Rust computed (`lastdrop_core::charts`). Every
+// text and every path comes from Rust in the chosen language; nothing here formats a number.
+// Fluent, following the app theme like the settings window.
+
+import { Button, ComboBox, ScrollView, Palette } from "std-widgets.slint";
+
+// A step of a chart: x0–x1 and height as shares of the chart's width and height.
+export struct BarData {
+    x0: float,
+    x1: float,
+    height: float,
+    used-up: bool,
+}
+
+// The vertical between two adjacent steps, as shares of the chart.
+export struct RiserData {
+    x: float,
+    low: float,
+    high: float,
+}
+
+// One meter over time (charts-spec §2): steps filled to the baseline (a window meter) or a line
+// (a balance).
+export struct ChartData {
+    title: string,
+    value: string,
+    top: string,
+    bars: [BarData],
+    risers: [RiserData],
+    filled: bool,
+    a11y: string,
+}
+
+// A label of the time axis: where its day starts, 0 to 1 across the chart.
+export struct TickData {
+    at: float,
+    label: string,
+}
+
+// One day's column of the use per day: height 0 to 1 of the chart.
+export struct DayData {
+    height: float,
+    today: bool,
+}
+
+// One weekday of the active hours: its abbreviation and 24 shades (0 to 4).
+export struct HourRow {
+    label: string,
+    levels: [int],
+}
+
+// An hour label above the active hours (0, 6, 12, 18).
+export struct HourLabel {
+    hour: int,
+    label: string,
+}
+
+// The window's fixed texts (`history.*` strings), from Rust.
+export struct HistoryTexts {
+    title: string,
+    service: string,
+    range: string,
+    over-time: string,
+    per-day: string,
+    hours: string,
+    close: string,
+}
+
+component SectionTitle inherits Text {
+    font-size: 14px;
+    font-weight: 600;
+    color: Palette.foreground;
+}
+
+component Secondary inherits Text {
+    font-size: 12px;
+    color: Palette.foreground.with-alpha(0.62);
+    wrap: word-wrap;
+}
+
+// The colours of the charts (charts-spec §6).
+global ChartColors {
+    out property <bool> dark: Palette.color-scheme == ColorScheme.dark;
+    out property <color> accent: Palette.accent-background;
+    out property <color> critical: dark ? #ff99a4 : #c42b1c;
+    out property <color> hairline: Palette.foreground.with-alpha(dark ? 0.36 : 0.36);
+    out property <color> grid: Palette.foreground.with-alpha(0.08);
+    out property <color> past: Palette.foreground.with-alpha(dark ? 0.53 : 0.45);
+}
+
+// The top of a chart's scale, readable over what is drawn.
+component ScaleLabel inherits Rectangle {
+    in property <string> text;
+    x: 2px;
+    y: 2px;
+    width: label.preferred-width + 6px;
+    height: label.preferred-height;
+    border-radius: 3px;
+    background: Palette.background.with-alpha(0.85);
+    label := Text {
+        x: 3px;
+        text: root.text;
+        font-size: 11px;
+        color: Palette.foreground.with-alpha(0.62);
+    }
+}
+
+component MeterChart inherits VerticalLayout {
+    in property <ChartData> data;
+    in property <[TickData]> ticks;
+    spacing: 4px;
+
+    HorizontalLayout {
+        spacing: 8px;
+        Text {
+            text: root.data.title;
+            font-size: 13px;
+            font-weight: 600;
+            color: Palette.foreground;
+            overflow: elide;
+            horizontal-stretch: 1;
+        }
+        Text {
+            text: root.data.value;
+            font-size: 13px;
+            color: Palette.foreground;
+        }
+    }
+
+    plot := Rectangle {
+        height: 64px;
+        accessible-role: image;
+        accessible-label: root.data.a11y;
+
+        for tick in root.ticks: Rectangle {
+            x: tick.at * plot.width;
+            y: 0;
+            width: 1px;
+            height: plot.height;
+            background: ChartColors.grid;
+        }
+        // The top of the scale (100 %, a round amount) and the baseline.
+        Rectangle {
+            y: 0;
+            height: 1px;
+            background: ChartColors.grid;
+        }
+        Rectangle {
+            y: plot.height - 1px;
+            height: 1px;
+            background: ChartColors.hairline;
+        }
+        // The drawing height: the baseline's hairline stays clear.
+        property <length> h: plot.height - 1px;
+        for bar in root.data.bars: Rectangle {
+            x: bar.x0 * plot.width;
+            width: max(1px, (bar.x1 - bar.x0) * plot.width);
+            y: (1 - bar.height) * plot.h;
+            height: bar.height * plot.h;
+            background: !root.data.filled ? transparent
+                : bar.used-up ? ChartColors.critical.with-alpha(0.45)
+                : ChartColors.accent.with-alpha(0.3);
+            Rectangle {
+                y: bar.height > 0 ? 0px : -1px;
+                height: 1.5px;
+                background: bar.used-up ? ChartColors.critical : ChartColors.accent;
+            }
+        }
+        for riser in root.data.risers: Rectangle {
+            x: riser.x * plot.width - 0.75px;
+            width: 1.5px;
+            y: (1 - riser.high) * plot.h;
+            height: max(1.5px, (riser.high - riser.low) * plot.h);
+            background: ChartColors.accent;
+        }
+        ScaleLabel {
+            text: root.data.top;
+        }
+    }
+}
+
+component TimeAxis inherits Rectangle {
+    in property <[TickData]> ticks;
+    height: 16px;
+    for tick in root.ticks: Text {
+        x: min(tick.at * root.width, root.width - self.width);
+        y: 0;
+        text: tick.label;
+        font-size: 11px;
+        color: Palette.foreground.with-alpha(0.62);
+    }
+}
+
+export component HistoryWindow inherits Window {
+    title: root.texts.title;
+    preferred-width: 640px;
+    preferred-height: 720px;
+    min-width: 480px;
+    min-height: 400px;
+    background: Palette.background;
+
+    in property <HistoryTexts> texts;
+    // The services with history, as the flyout names them, and the selected one.
+    in property <[string]> services;
+    in-out property <int> service-index;
+    // The ranges (`Last 7 days`, …) and the selected one.
+    in property <[string]> ranges;
+    in-out property <int> range-index;
+    // Why there is nothing to show; empty when there are charts.
+    in property <string> empty;
+    in property <[ChartData]> charts;
+    in property <[TickData]> ticks;
+    in property <bool> has-per-day;
+    in property <[DayData]> days;
+    in property <string> per-day-top;
+    in property <string> per-day-summary;
+    in property <string> per-day-a11y;
+    in property <bool> has-hours;
+    in property <[HourRow]> hour-rows;
+    in property <[HourLabel]> hour-labels;
+    in property <string> hours-summary;
+    in property <string> hours-a11y;
+
+    callback service-changed(int);
+    callback range-changed(int);
+    // `close` would shadow Window's builtin close() (Slint 1.18), hence `dismiss`.
+    callback dismiss();
+
+    VerticalLayout {
+        HorizontalLayout {
+            padding: 16px;
+            padding-bottom: 8px;
+            spacing: 12px;
+            VerticalLayout {
+                spacing: 4px;
+                horizontal-stretch: 1;
+                Secondary {
+                    text: root.texts.service;
+                }
+                ComboBox {
+                    model: root.services;
+                    enabled: root.services.length > 0;
+                    current-index <=> root.service-index;
+                    selected => {
+                        root.service-changed(self.current-index);
+                    }
+                }
+            }
+            VerticalLayout {
+                spacing: 4px;
+                Secondary {
+                    text: root.texts.range;
+                }
+                ComboBox {
+                    model: root.ranges;
+                    current-index <=> root.range-index;
+                    selected => {
+                        root.range-changed(self.current-index);
+                    }
+                }
+            }
+        }
+
+        sv := ScrollView {
+            vertical-stretch: 1;
+            content-width: self.visible-width;
+            content-height: page.preferred-height;
+            page := VerticalLayout {
+                width: sv.visible-width;
+                padding: 16px;
+                padding-top: 8px;
+                spacing: 12px;
+
+                if root.empty != "": Text {
+                    text: root.empty;
+                    font-size: 14px;
+                    color: Palette.foreground;
+                    wrap: word-wrap;
+                }
+
+                if root.empty == "": SectionTitle {
+                    text: root.texts.over-time;
+                }
+                for chart in root.charts: MeterChart {
+                    data: chart;
+                    ticks: root.ticks;
+                }
+                if root.empty == "": TimeAxis {
+                    ticks: root.ticks;
+                }
+
+                if root.has-per-day: SectionTitle {
+                    text: root.texts.per-day;
+                }
+                if root.has-per-day: days := Rectangle {
+                    height: 72px;
+                    accessible-role: image;
+                    accessible-label: root.per-day-a11y;
+                    property <length> slot: self.width / max(1, root.days.length);
+                    property <length> gap: root.days.length > 45 ? 1px : 2px;
+                    Rectangle {
+                        y: 0;
+                        height: 1px;
+                        background: ChartColors.grid;
+                    }
+                    Rectangle {
+                        y: days.height - 1px;
+                        height: 1px;
+                        background: ChartColors.hairline;
+                    }
+                    for day[i] in root.days: Rectangle {
+                        x: i * days.slot + days.gap / 2;
+                        width: max(1px, days.slot - days.gap);
+                        height: day.height > 0 ? max(1px, day.height * (days.height - 1px)) : 0;
+                        y: days.height - 1px - self.height;
+                        background: day.today ? ChartColors.accent : ChartColors.past;
+                    }
+                    ScaleLabel {
+                        text: root.per-day-top;
+                    }
+                }
+                if root.has-per-day: Secondary {
+                    text: root.per-day-summary;
+                }
+
+                if root.has-hours: SectionTitle {
+                    text: root.texts.hours;
+                }
+                if root.has-hours: grid := Rectangle {
+                    height: 16px + 7 * 16px;
+                    accessible-role: image;
+                    accessible-label: root.hours-a11y;
+                    property <length> label-w: 40px;
+                    property <length> cell: (self.width - self.label-w) / 24;
+                    for label in root.hour-labels: Text {
+                        x: grid.label-w + label.hour * grid.cell;
+                        y: 0;
+                        text: label.label;
+                        font-size: 11px;
+                        color: Palette.foreground.with-alpha(0.62);
+                    }
+                    for row[r] in root.hour-rows: Rectangle {
+                        x: 0;
+                        y: 16px + r * 16px;
+                        width: grid.width;
+                        height: 16px;
+                        Text {
+                            x: 0;
+                            width: grid.label-w - 6px;
+                            height: parent.height;
+                            vertical-alignment: center;
+                            text: row.label;
+                            font-size: 11px;
+                            color: Palette.foreground.with-alpha(0.62);
+                            overflow: elide;
+                        }
+                        for level[h] in row.levels: Rectangle {
+                            x: grid.label-w + h * grid.cell + 1px;
+                            y: 1px;
+                            width: max(1px, grid.cell - 2px);
+                            height: 14px;
+                            border-radius: 2px;
+                            background: level == 0 ? transparent : ChartColors.accent.with-alpha(level * 0.25);
+                            border-width: level == 0 ? 1px : 0;
+                            border-color: ChartColors.grid;
+                        }
+                    }
+                }
+                if root.has-hours: Secondary {
+                    text: root.hours-summary;
+                }
+            }
+        }
+
+        Rectangle {
+            height: 1px;
+            background: Palette.border;
+        }
+        HorizontalLayout {
+            padding: 16px;
+            alignment: end;
+            Button {
+                text: root.texts.close;
+                clicked => {
+                    root.dismiss();
+                }
+            }
+        }
+    }
+}

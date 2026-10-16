@@ -49,11 +49,13 @@ Two processes run the same `lastdrop.exe`:
 
 - **The tray process** runs all the time: tray icon, readout, flyout, hover card, refreshes,
   history. Everything below ("Threads") is about it.
-- **The dialog process** (`lastdrop.exe --settings`, `--settings-pins`, `--settings-accounts` or
-  `--about`) shows the settings window or the about window and ends when its last window closes.
-  The tray process starts it for "Settings…", "Taskbar readout ▸ Pinned meters…", "About
-  Lastdrop", the flyout's gear, a card's "Settings" link and, on the first run, when Claude Code
-  or Codex has more folders than its default one (`--settings-accounts`, accounts-spec §6). It
+- **The dialog process** (`lastdrop.exe --settings`, `--settings-pins`, `--settings-accounts`,
+  `--history[=<tag>]` or `--about`) shows the settings window, the usage history window
+  ([charts-spec](design/charts-spec.md)) or the about window and ends when its last window
+  closes. The tray process starts it for "Settings…", "Usage history…", "Taskbar readout ▸ Pinned
+  meters…", "About Lastdrop", the flyout's gear, a card's "Settings" link and "Usage history…"
+  (with the card's service as the tag) and, on the first run, when Claude Code or Codex has more
+  folders than its default one (`--settings-accounts`, accounts-spec §6). It
   does not wait for it and keeps no handle to it; it passes
   its foreground right on (`AllowSetForegroundWindow`) so the dialog comes to the front.
 
@@ -134,9 +136,11 @@ attaches its thread's input queue to Explorer's, which in the reference tool fro
 input (its issues #22 and #92). The readout thread does nothing but draw a small model and handle
 a handful of messages.
 
-The dialog process has only its main thread (Slint event loop, settings and about windows) and
-the log's writer thread. As a dialog it may wait on the disk: it reads and writes `settings.json`
-on its main thread.
+The dialog process has only its main thread (Slint event loop, settings, usage history and about
+windows) and the log's writer thread. As a dialog it may wait on the disk: it reads and writes
+`settings.json` on its main thread, and the usage history window reads the selected service's
+history files there (read-only, while the tray process may append to them; a line still being
+written does not parse and is skipped).
 
 Messages between threads: workers send results to the main thread with
 `slint::invoke_from_event_loop`; the main thread hands the readout a new immutable

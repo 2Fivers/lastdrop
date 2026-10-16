@@ -230,6 +230,26 @@ fn load_file(path: &Path, since: Timestamp, until: Timestamp) -> io::Result<Load
     })
 }
 
+/// The samples of `key`'s file in `dir` up to `until`, ascending, for the usage history window
+/// (charts-spec §4): read-only, in the dialog process, while the tray process may append to it
+/// (a line it is still writing does not parse and is skipped). A missing file has none.
+pub fn read_meter(dir: &Path, key: &MeterKey, until: Timestamp) -> Vec<Sample> {
+    let name = HistoryStore::file_name(key);
+    match load_file(&dir.join(&name), Timestamp::MIN, until) {
+        Ok(loaded) => loaded.samples,
+        Err(e) if e.kind() == io::ErrorKind::NotFound => Vec::new(),
+        Err(e) => {
+            log::warn!("history: cannot read {name}: {e}");
+            Vec::new()
+        }
+    }
+}
+
+/// `key` has a history file in `dir`.
+pub fn has_file(dir: &Path, key: &MeterKey) -> bool {
+    dir.join(HistoryStore::file_name(key)).is_file()
+}
+
 /// `samples` as complete JSONL lines.
 fn lines_of(samples: &[Sample]) -> Result<String, serde_json::Error> {
     let mut text = String::new();
