@@ -67,23 +67,33 @@ services signed in). Tray process only, private working set:
 
 | Moment on the bench timeline | MB, median (min–max) |
 |---|---|
-| Fresh: readout visible, flyout built but not yet shown | 9.5 (9.4–9.7) |
-| Flyout shown, then hidden | 10.0 (9.7–10.25) |
-| Shown and hidden a second time | 10.1 (9.8–10.4) |
-| Settings open (the dialog process: 5.0 MB of its own) | 10.2 (9.9–10.4) |
-| Settings closed again | 10.1 (9.9–10.4) |
+| Fresh: readout visible, flyout built but not yet shown | 8.95 (8.91–9.19) |
+| Flyout shown, then hidden | 9.55 (9.53–9.70) |
+| Shown and hidden a second time | 9.50 (9.47–9.59) |
+| Settings open (the dialog process: 4.9 MB of its own) | 9.65 (9.57–9.70) |
+| Settings closed again | 9.62 (9.57–9.70) |
 
-Hiding the flyout changes nothing, and opening and closing Settings moves the tray process by
-less than 0.15 MB, so the split does its job. The 10 MB budget is still missed by up to 0.4 MB
-once the flyout has been shown. Where it goes (`tools/measure/map-app.ps1` on a 10.2 MB run, the
-flyout hidden after two shows): the process heap 5.6 MB (4.2 MB live blocks, about 1.4 MB of free
-blocks still committed after start-up's fetches and parsing; the run-to-run spread is here),
-other heaps 0.7 MB, private pages of DLL images 1.8 MB, the flyout's and hover card's pixel
-buffers 1.0 MB (kept while the windows are hidden; they grow with the square of the scale),
-20 thread stacks 0.5 MB, the rest 0.5 MB. By feature, the taskbar readout costs about 2.5 MB
-(`--no-readout`: 7.6–7.8 MB) against the 2 MB the roadmap allows it: about 0.7 MB for the
-occupancy thread's UI Automation, the rest on the readout thread (its own Direct2D software
-target and DirectWrite text, its windows).
+Every moment is under the 10 MB budget: by 0.35 MB at the highest median (Settings open) and by
+0.13 MB at the highest single sample (9.87 MB, during start-up's first fetches). Hiding the flyout
+changes nothing or lowers it a little, and opening and closing Settings moves the tray process by
+about 0.1 MB, so the split does its job.
+
+The heaps give their free blocks back (`HeapOptimizeResources`: a real decommit, not a
+working-set trim) a second after a refresh round settles and after the flyout is shown or a popup
+hidden (`wiring::release_free_heap_soon`). Start-up's fetches and parsing leave about 1.4 MB of
+free blocks committed, and drawing the flyout's first frame a little more; the call gives back
+about 0.6 MB of it. Without it the same timeline measured 9.5 MB fresh and 10.0–10.2 MB once the
+flyout had been shown (up to 10.4 in single runs); with the call only after a settled round, phase
+medians of 9.75–9.87 MB, one run reaching 10.05.
+
+Where the rest goes (`tools/measure/map-app.ps1` on a 10.2 MB run before that call, the flyout
+hidden after two shows): the process heap 5.6 MB (4.2 MB live blocks and the free blocks above;
+the run-to-run spread is here), other heaps 0.7 MB, private pages of DLL images 1.8 MB, the
+flyout's and hover card's pixel buffers 1.0 MB (kept while the windows are hidden; they grow with
+the square of the scale, so above 100 % the margin shrinks or goes), 20 thread stacks 0.5 MB, the
+rest 0.5 MB. By feature, the taskbar readout costs about 2.5 MB (`--no-readout`: 7.6–7.8 MB)
+against the 2 MB the roadmap allows it: about 0.7 MB for the occupancy thread's UI Automation, the
+rest on the readout thread (its own Direct2D software target and DirectWrite text, its windows).
 
 Single instance and messages, all per session ("Single instance" below):
 

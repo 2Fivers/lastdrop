@@ -17,7 +17,9 @@
 //!   process, which [`open_dialog`] starts);
 //! - the minute tick: a `slint::Timer` at the next local minute boundary + 250 ms (R§12), re-armed
 //!   after every tick, resume and time change;
-//! - the refresh timer: one `slint::Timer` for the scheduler's next wake-up.
+//! - the refresh timer: one `slint::Timer` for the scheduler's next wake-up;
+//! - the heap release: one `slint::Timer` shortly after a settled refresh round, the flyout shown
+//!   or a popup hidden ([`release_free_heap_soon`]).
 //!
 //! On each new reading and each minute tick: evaluate (`lastdrop_core::stats::evaluate`), then
 //! build the readout model (handed to the readout thread as an `Arc`), the tray model (icon image +
@@ -76,6 +78,10 @@ use slint::winit_030::WinitWindowAccessor;
 use slint::{ComponentHandle, Model, ModelRc, SharedString, TimerMode, VecModel};
 use windows::Win32::Foundation::{HWND, POINT};
 use windows::Win32::System::Com::{COINIT_APARTMENTTHREADED, CoInitializeEx};
+use windows::Win32::System::Memory::{HeapOptimizeResources, HeapSetInformation};
+use windows::Win32::System::SystemServices::{
+    HEAP_OPTIMIZE_RESOURCES_CURRENT_VERSION, HEAP_OPTIMIZE_RESOURCES_INFORMATION,
+};
 use windows::Win32::UI::HiDpi::GetDpiForSystem;
 use windows::Win32::UI::WindowsAndMessaging::{
     GetCursorPos, GetForegroundWindow, GetWindowThreadProcessId,
@@ -671,6 +677,9 @@ pub struct Runtime {
     /// Whether the user was idle when the refresh was last planned ([`user_idle`]); the minute
     /// tick replans when that changes.
     pub planned_idle: Cell<bool>,
+    /// Gives the heaps' free blocks back once a burst of activity is over
+    /// ([`release_free_heap_soon`]).
+    pub heap_release: slint::Timer,
     /// `--bench`.
     pub bench: Option<Rc<bench::Bench>>,
 }
@@ -730,6 +739,7 @@ impl App {
 // ---- Refreshes ------------------------------------------------------------------------------------
 
 /// A refresh result arrived: apply it, record history, rebuild the models, re-plan the timer.
+/// The last result of a round (no job running or queued) also gives the heaps' free blocks back.
 pub fn on_job_result(app: &App, result: JobResult) {
     let source = result.source.clone();
     app.rt.manual.borrow_mut().remove(&source);
@@ -740,6 +750,53 @@ pub fn on_job_result(app: &App, result: JobResult) {
     }
     rebuild(app, Timestamp::now());
     replan(app);
+    let settled = !app
+        .state
+        .borrow()
+        .sources
+        .values()
+        .any(|s| s.refresh.in_flight);
+    if settled {
+        release_free_heap_soon(app);
+    }
+}
+
+/// How long the heaps' free blocks wait after a settled refresh round, the flyout shown or a popup
+/// hidden: past the first frame, so a burst (a round ending as the flyout opens) ends in one call.
+const HEAP_RELEASE_DELAY: Duration = Duration::from_secs(1);
+
+/// Gives the heaps' free blocks back [`HEAP_RELEASE_DELAY`] from now ([`release_free_heap`]);
+/// calling it again before then moves the call, so there is one per burst.
+fn release_free_heap_soon(app: &App) {
+    app.rt
+        .heap_release
+        .start(TimerMode::SingleShot, HEAP_RELEASE_DELAY, release_free_heap);
+}
+
+/// Decommits the free blocks the heaps keep committed (`HeapOptimizeResources`, every heap of the
+/// process; a real decommit, not a working-set trim). Start-up's fetches and parsing leave about
+/// 1.4 MB of free blocks committed and the flyout's first frame a little more; giving back what
+/// it can (about 0.6 MB, measured 2026-10-16) keeps the tray process under its 10 MB budget
+/// (ARCHITECTURE "Processes"). One call per settled refresh round, flyout shown or popup hidden:
+/// cheap.
+fn release_free_heap() {
+    let info = HEAP_OPTIMIZE_RESOURCES_INFORMATION {
+        Version: HEAP_OPTIMIZE_RESOURCES_CURRENT_VERSION,
+        Flags: 0,
+    };
+    // SAFETY: no heap handle means every heap of the process; `info` is a properly laid out
+    // HEAP_OPTIMIZE_RESOURCES_INFORMATION of the size passed and outlives the call.
+    let result = unsafe {
+        HeapSetInformation(
+            None,
+            HeapOptimizeResources,
+            Some((&raw const info).cast()),
+            size_of::<HEAP_OPTIMIZE_RESOURCES_INFORMATION>(),
+        )
+    };
+    if let Err(e) = result {
+        log::debug!("HeapOptimizeResources failed: {e}");
+    }
 }
 
 /// The user is idle for the adaptive refresh ("slower when idle"): no keyboard or mouse input
@@ -1354,6 +1411,7 @@ pub fn open_flyout(app: &App, anchor: Anchor, by_keyboard: bool) {
     }
     if !was_open {
         replan(app);
+        release_free_heap_soon(app);
     }
 }
 
@@ -1542,6 +1600,7 @@ pub fn hide_flyout(app: &App, deactivated: bool) {
     window.set_refreshing(false);
     app.rt.flyout_rect.set(None);
     replan(app);
+    release_free_heap_soon(app);
 }
 
 /// A notice of the flyout's window procedure (already deferred).
@@ -2066,6 +2125,7 @@ pub fn hide_hover_card(app: &App) {
     // The next show starts from the full content again, and is announced again.
     app.windows.hover_card.set_show_sentence(true);
     app.windows.hover_card.set_announcement(SharedString::new());
+    release_free_heap_soon(app);
 }
 
 // ---- Model → Slint conversions (geometry in device px as floats, F§11) ---------------------------
