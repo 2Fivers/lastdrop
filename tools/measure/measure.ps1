@@ -1,7 +1,14 @@
+# Memory, CPU and latency along a --bench timeline, sampled once a second for the process tree.
+# The app:  cargo build --release -p lastdrop --locked
+#           .\tools\measure\measure.ps1 -Variants lastdrop-app -Runs 1,2,3,4,5
+#           .\tools\measure\analyze-app.ps1
+# Quit Lastdrop first: the bench run must be the first instance. A run takes about 80 s and
+# opens Settings in front at T0 + 50 s; the script closes it at T0 + 60 s.
 param(
     [string[]]$Variants = @(),          # empty = all
     [int[]]$Runs = @(1, 2, 3),
     [string]$ResultsDir = (Join-Path $PSScriptRoot 'results'),
+    [string]$AppExe = (Join-Path $PSScriptRoot '..\..\target\release\lastdrop.exe'),
     [switch]$RoundRobin
 )
 $ErrorActionPreference = 'Stop'
@@ -26,6 +33,9 @@ $ALL = [ordered]@{
     'tauri-keepalive'     = @{ exe = "$SPIKE\tauri-flyout\target\release\lastdrop-tauri.exe"; args = '--bench "{OUT}" --mode keepalive'; env = @{} }
     'tauri-destroy'       = @{ exe = "$SPIKE\tauri-flyout\target\release\lastdrop-tauri.exe"; args = '--bench "{OUT}" --mode destroy'; env = @{} }
     'tauri-keepalive-lowmem' = @{ exe = "$SPIKE\tauri-flyout\target\release\lastdrop-tauri.exe"; args = '--bench "{OUT}" --mode keepalive --lowmem'; env = @{} }
+    # The app's own --bench (crates/app/src/bench.rs): the spike's timeline, then Settings at
+    # T0 + 50 s (the dialog process), closed here at T0 + 60 s, exit at T0 + 70 s.
+    'lastdrop-app'        = @{ exe = $AppExe; args = '--bench "{OUT}"'; env = @{}; secs = 75; closeDialogAt = 60; firstInstance = $true; readoutClass = 'LastdropReadout' }
 }
 if ($Variants.Count -eq 0) { $Variants = @($ALL.Keys) }
 
@@ -92,7 +102,14 @@ function Invoke-Run([string]$variant, [int]$run) {
     $tag = "$variant-run$run"
     $out = Join-Path $ResultsDir "$tag.json"
     Remove-Item -ErrorAction SilentlyContinue $out, "$out.tmp"
+    if (-not (Test-Path $cfg.exe)) { throw "not built: $($cfg.exe)" }
     Wait-Quiet
+    if ($cfg.firstInstance) {
+        # A second instance only asks the first to open its flyout, then exits.
+        $running = @(Get-Process -Name lastdrop -ErrorAction SilentlyContinue)
+        if ($running.Count -gt 0) { throw "Lastdrop is running (pid $($running.Id -join ', ')): quit it first" }
+    }
+    $secs = if ($cfg.secs) { $cfg.secs } else { 65 }
     [LdMeasure]::Reset()
     $argStr = $cfg.args.Replace('{OUT}', $out)
     foreach ($k in $cfg.env.Keys) { Set-Item "Env:$k" $cfg.env[$k] }
@@ -114,7 +131,7 @@ function Invoke-Run([string]$variant, [int]$run) {
     $totRows = New-Object System.Collections.Generic.List[object]
     $prevSys = [LdMeasure]::SysTimes()
     $shot = $null; $shotRect = $null
-    for ($k = 0; $k -le 65; $k++) {
+    for ($k = 0; $k -le $secs; $k++) {
         $target = $t0 + $k * 1000 + 250
         $wait = $target - (NowMs)
         if ($wait -gt 0) { Start-Sleep -Milliseconds $wait }
@@ -179,6 +196,20 @@ function Invoke-Run([string]$variant, [int]$run) {
                 $shot = $png
                 Log "  shot $png rect(+24)=$shotRect at T0+$([math]::Round(((NowMs) - $t0)/1000,1))s"
             } else { Log "  WARN no flyoutRectPx in json at T0+14" }
+        }
+        if ($cfg.readoutClass -and $k -eq 8) {
+            Log "  readout visible=$([LdMeasure]::HasVisibleWindow($root, $cfg.readoutClass)) at T0+$([math]::Round(((NowMs) - $t0)/1000,1))s"
+        }
+        if ($cfg.closeDialogAt -and $k -eq $cfg.closeDialogAt) {
+            # WM_CLOSE to the dialog process's window, as its title bar's close button sends.
+            $at = "T0+$([math]::Round(((NowMs) - $t0)/1000,1))s"
+            $dialogs = @(Get-CimInstance -CimSession $cs -ClassName Win32_Process -Filter "ParentProcessId=$root" | Where-Object { $_.CommandLine -match '--(settings|settings-pins|about)\b' })
+            if ($dialogs.Count -eq 0) { Log "  WARN no dialog process to close at $at" }
+            foreach ($d in $dialogs) {
+                $dp = Get-Process -Id ([int]$d.ProcessId) -ErrorAction SilentlyContinue
+                $sent = if ($dp) { $dp.CloseMainWindow() } else { $false }
+                Log "  close dialog pid=$($d.ProcessId) sent=$sent at $at"
+            }
         }
         $rootQ = [LdMeasure]::Query($root)
         if ($rootQ[4] -eq 1 -and $sum.n -eq 0) { break }

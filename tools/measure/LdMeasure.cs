@@ -94,6 +94,26 @@ public static class LdMeasure
         return r;
     }
 
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+    static extern IntPtr FindWindowExW(IntPtr parent, IntPtr after, string cls, string title);
+    [DllImport("user32.dll")]
+    static extern bool IsWindowVisible(IntPtr h);
+    [DllImport("user32.dll")]
+    static extern uint GetWindowThreadProcessId(IntPtr h, out uint pid);
+
+    // Whether `pid` has a visible top-level window of class `cls` (the app's taskbar readout).
+    public static bool HasVisibleWindow(int pid, string cls)
+    {
+        IntPtr h = IntPtr.Zero;
+        while ((h = FindWindowExW(IntPtr.Zero, h, cls, null)) != IntPtr.Zero)
+        {
+            uint p;
+            GetWindowThreadProcessId(h, out p);
+            if (p == (uint)pid && IsWindowVisible(h)) return true;
+        }
+        return false;
+    }
+
     public static long[] SysTimes()
     {
         long i, k, u; GetSystemTimes(out i, out k, out u);

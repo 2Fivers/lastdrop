@@ -55,11 +55,35 @@ Two processes run the same `lastdrop.exe`:
   gear and a card's "Settings" link. It does not wait for it and keeps no handle to it; it passes
   its foreground right on (`AllowSetForegroundWindow`) so the dialog comes to the front.
 
-Why: the tray process measured 10.1–10.3 MB fresh and 11.9–12.25 MB once Settings had been
-opened. Slint's own caches kept only about 0.2 MB of that. The rest, about 1.4 MB, is what
-Windows sets up once per thread for a real decorated window with text fields (text services and
-IME, DWM, theme, UI Automation), and it stays as long as the process lives. In the dialog process
-it goes away with the dialog. Theme Studio (M4) will run there too.
+Why: while Settings ran in the tray process, it measured 10.1–10.3 MB fresh and 11.9–12.25 MB
+once Settings had been opened. Slint's own caches kept only about 0.2 MB of that. The rest, about
+1.4 MB, is what Windows sets up once per thread for a real decorated window with text fields
+(text services and IME, DWM, theme, UI Automation), and it stays as long as the process lives. In
+the dialog process it goes away with the dialog. Theme Studio (M4) will run there too.
+
+Measured on 2026-10-16 with `tools/measure/measure.ps1 -Variants lastdrop-app` (the app's own
+`--bench` timeline, five runs; Windows 11 build 26200 at 100 % scale, readout visible, four
+services signed in). Tray process only, private working set:
+
+| Moment on the bench timeline | MB, median (min–max) |
+|---|---|
+| Fresh: readout visible, flyout built but not yet shown | 9.5 (9.4–9.7) |
+| Flyout shown, then hidden | 10.0 (9.7–10.25) |
+| Shown and hidden a second time | 10.1 (9.8–10.4) |
+| Settings open (the dialog process: 5.0 MB of its own) | 10.2 (9.9–10.4) |
+| Settings closed again | 10.1 (9.9–10.4) |
+
+Hiding the flyout changes nothing, and opening and closing Settings moves the tray process by
+less than 0.15 MB, so the split does its job. The 10 MB budget is still missed by up to 0.4 MB
+once the flyout has been shown. Where it goes (`tools/measure/map-app.ps1` on a 10.2 MB run, the
+flyout hidden after two shows): the process heap 5.6 MB (4.2 MB live blocks, about 1.4 MB of free
+blocks still committed after start-up's fetches and parsing; the run-to-run spread is here),
+other heaps 0.7 MB, private pages of DLL images 1.8 MB, the flyout's and hover card's pixel
+buffers 1.0 MB (kept while the windows are hidden; they grow with the square of the scale),
+20 thread stacks 0.5 MB, the rest 0.5 MB. By feature, the taskbar readout costs about 2.5 MB
+(`--no-readout`: 7.6–7.8 MB) against the 2 MB the roadmap allows it: about 0.7 MB for the
+occupancy thread's UI Automation, the rest on the readout thread (its own Direct2D software
+target and DirectWrite text, its windows).
 
 Single instance and messages, all per session ("Single instance" below):
 

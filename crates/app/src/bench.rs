@@ -1,12 +1,16 @@
 //! `--bench <out.json>`: the spike's measurement timeline on the real app, so
-//! `tools/measure/measure.ps1` and `analyze.ps1` can compare it with the spike (ADR 0001, BENCH.md
-//! of `spikes/slint-flyout`).
+//! `tools/measure/measure.ps1 -Variants lastdrop-app` measures it as it measured the spike
+//! (ADR 0001, BENCH.md of `spikes/slint-flyout`) and `analyze-app.ps1` holds the tray process
+//! against the memory budget (ARCHITECTURE "Goals that shape everything").
 //!
 //! T0 is the process creation time (`GetProcessTimes`). At T0 + 10 s the flyout is shown without
-//! activation (cold), + 20 s hidden, + 30 s shown again (warm), + 40 s hidden, + 50 s the app
-//! quits. The JSON is written at + 12 s and + 32 s (partial) and at exit: `t0EpochMs`, `phases`
-//! (name + epoch ms), `showLatencyMs` (`cold`/`warm`: show call → return of the first `WM_PAINT`
-//! after the show, i.e. Slint rendered and presented), `flyoutRectPx`, `trayIconRectPx`.
+//! activation (cold), + 20 s hidden, + 30 s shown again (warm), + 40 s hidden; up to here the
+//! timeline is the spike's. At + 50 s Settings opens the way the tray menu opens it (the dialog
+//! process starts, ARCHITECTURE "Processes"); `measure.ps1` closes that window at + 60 s
+//! (`WM_CLOSE`, like its ✕); + 70 s the app quits. The JSON is written (partial) at T0 + 12,
+//! 32 and 52 s and in full at exit: `t0EpochMs`, `phases` (name + epoch ms), `showLatencyMs`
+//! (`cold`/`warm`: show call → return of the first `WM_PAINT` after the show, i.e. Slint rendered
+//! and presented), `flyoutRectPx`, `trayIconRectPx`.
 
 use std::cell::{Cell, RefCell};
 use std::fmt::Write as _;
@@ -20,6 +24,7 @@ use windows::Win32::System::Threading::{GetCurrentProcess, GetProcessTimes};
 use windows::Win32::UI::Shell::{DefSubclassProc, RemoveWindowSubclass, SetWindowSubclass};
 use windows::Win32::UI::WindowsAndMessaging::{WM_NCDESTROY, WM_PAINT};
 
+use crate::dialog::DialogKind;
 use crate::wiring::{self, App, with_app};
 
 /// The subclass id of the paint watch (any value unique per window and procedure).
@@ -141,6 +146,13 @@ impl Bench {
         self.phase(&format!("hide{}", self.shows.get()));
     }
 
+    /// Opens Settings as the tray menu does: the dialog process starts and this one only spawns
+    /// it.
+    fn open_settings(&self, app: &App) {
+        self.phase("settingsOpened");
+        wiring::open_dialog(app, DialogKind::Settings);
+    }
+
     /// Queues the JSON for the writer thread, which replaces `out` atomically (the UI thread
     /// does no file I/O, so the timeline is not skewed by the disk). The last write at exit is
     /// queued before the writer stops, so it lands before the process ends.
@@ -210,7 +222,7 @@ fn json_string(s: &str) -> String {
 /// One step of the timeline.
 type Step = Box<dyn FnOnce(&App, &Bench)>;
 
-/// Arms the timeline (T0 + 10/12/20/30/32/40/50 s).
+/// Arms the timeline (T0 + 10/12/20/30/32/40/50/52/70 s).
 pub fn schedule(bench: Rc<Bench>) {
     let at = |secs: u64, f: Step, bench: Rc<Bench>| {
         let delay =
@@ -223,8 +235,10 @@ pub fn schedule(bench: Rc<Bench>) {
     at(30, Box::new(|app, b| b.show(app)), bench.clone());
     at(32, Box::new(|app, b| b.write(app, true)), bench.clone());
     at(40, Box::new(|app, b| b.hide(app)), bench.clone());
+    at(50, Box::new(|app, b| b.open_settings(app)), bench.clone());
+    at(52, Box::new(|app, b| b.write(app, true)), bench.clone());
     at(
-        50,
+        70,
         Box::new(|_, _| {
             let _ = slint::quit_event_loop();
         }),
