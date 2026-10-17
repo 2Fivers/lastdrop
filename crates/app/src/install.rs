@@ -12,7 +12,9 @@
 //! uninstall leaves it with the other logs.
 //!
 //! Every step that touches the running app asks it to quit first (the settings-changed message
-//! with [`Changes::quit`]) and waits for its mutex to go.
+//! with [`Changes::quit`]) and an open dialog process to close its windows
+//! ([`dialog::CLOSE_REQUEST`]), and waits for the app's mutex to go and for every process that
+//! runs the installed `lastdrop.exe` to end ([`quit_running_app`]).
 //!
 //! Threading: the installer's own process, main thread (and the logger's writer thread); no
 //! Slint, only message boxes.
@@ -27,7 +29,7 @@ use lastdrop_core::settings::Settings;
 use lastdrop_win::install::{self as win_install, UninstallEntry};
 use lastdrop_win::single_instance;
 
-use crate::dialog::Changes;
+use crate::dialog::{self, Changes};
 use crate::logger;
 
 /// The program's file name in the install folder.
@@ -36,10 +38,11 @@ pub const EXE_NAME: &str = "lastdrop.exe";
 /// The file stem a release's installer has (`Lastdrop-Setup.exe`), compared case-insensitively.
 pub const SETUP_STEM: &str = "lastdrop-setup";
 
-/// How long the installer waits for a running Lastdrop to quit.
+/// How long the installer waits for a running Lastdrop to quit, its process included.
 const QUIT_WAIT: Duration = Duration::from_secs(15);
 
-/// How often it asks again while it waits ([`quit_running_app`]).
+/// How often it asks again, and looks again for the processes, while it waits
+/// ([`quit_running_app`]).
 const QUIT_RESEND: Duration = Duration::from_secs(1);
 
 /// How long it retries replacing a file another process still holds (an anti-virus scan).
@@ -135,38 +138,111 @@ fn run_value(installed: &Path) -> Option<RunValue> {
     })
 }
 
-/// Asks a running Lastdrop to quit and waits for it; `false` when it is still running.
+/// Asks a running Lastdrop to quit and its dialog process to close ([`ask_to_quit`]), and waits,
+/// at most [`QUIT_WAIT`] in all, for the app's mutex to go and then for every process that runs
+/// `exe` (the program about to be replaced or removed) to end; `false` when one is still running.
 ///
-/// It asks again every [`QUIT_RESEND`] until the app is gone: a Lastdrop that has just started
-/// holds its mutex before its settings-changed listener exists, and a quit posted in between is
-/// lost (no listener to post to). That happens when an install is followed at once by an
-/// uninstall, as winget's validation and the release workflow's install test do.
-fn quit_running_app() -> bool {
-    if !single_instance::app_running() {
-        return true;
+/// It asks again every [`QUIT_RESEND`] while it waits: a Lastdrop or a dialog process that was
+/// just starting holds its mutex before it listens, and is asked once it does.
+fn quit_running_app(exe: &Path) -> bool {
+    let deadline = Instant::now() + QUIT_WAIT;
+    loop {
+        ask_to_quit();
+        let until = deadline.min(Instant::now() + QUIT_RESEND);
+        let left = if app_gone(until) {
+            match still_running(exe, until) {
+                None => return true,
+                Some(pid) => format!("process {pid} still runs {}", exe.display()),
+            }
+        } else {
+            "Lastdrop's mutex is still there".to_owned()
+        };
+        if Instant::now() >= deadline {
+            log::warn!("install: {left}");
+            return false;
+        }
+        // A failed wait returns at once: look again a moment later, not in a busy loop.
+        std::thread::sleep(until.saturating_duration_since(Instant::now()));
     }
-    let quit = Changes {
-        quit: true,
-        ..Changes::default()
+}
+
+/// Asks the app (the tray process) to quit, with the settings-changed message and
+/// [`Changes::quit`], and a dialog process (Settings, Theme Studio, Usage history, About) to
+/// close its windows and end ([`dialog::CLOSE_REQUEST`]); each only while its mutex exists.
+///
+/// [`quit_running_app`] asks again every [`QUIT_RESEND`]: a process that has just started holds
+/// its mutex before its listener exists, and a request posted in between is lost (no listener to
+/// post to). That happens when an install is followed at once by an uninstall, as winget's
+/// validation and the release workflow's install test do. A dialog process from 0.1.x ignores
+/// the request and keeps the installer waiting until the user closes its windows.
+fn ask_to_quit() {
+    if single_instance::app_running() {
+        let quit = Changes {
+            quit: true,
+            ..Changes::default()
+        }
+        .to_wparam();
+        match single_instance::signal_settings_changed(quit) {
+            Ok(true) => {}
+            Ok(false) => log::info!("install: Lastdrop is not listening yet; asking again"),
+            Err(e) => log::warn!("install: cannot ask Lastdrop to quit: {e}"),
+        }
     }
-    .to_wparam();
-    let start = Instant::now();
-    let mut asked: Option<Instant> = None;
-    while start.elapsed() < QUIT_WAIT {
+    if single_instance::dialog_running() {
+        match single_instance::post_dialog(dialog::CLOSE_REQUEST) {
+            Ok(true) => {}
+            Ok(false) => {
+                log::info!("install: the dialog process is not listening yet; asking again");
+            }
+            Err(e) => log::warn!("install: cannot ask the dialog process to close: {e}"),
+        }
+    }
+}
+
+/// Waits, at most until `until`, for the app's mutex to go; whether it has.
+fn app_gone(until: Instant) -> bool {
+    loop {
         if !single_instance::app_running() {
             return true;
         }
-        if asked.is_none_or(|at| at.elapsed() >= QUIT_RESEND) {
-            match single_instance::signal_settings_changed(quit) {
-                Ok(true) => {}
-                Ok(false) => log::info!("install: Lastdrop is not listening yet; asking again"),
-                Err(e) => log::warn!("install: cannot ask Lastdrop to quit: {e}"),
-            }
-            asked = Some(Instant::now());
+        let left = until.saturating_duration_since(Instant::now());
+        if left.is_zero() {
+            return false;
         }
-        std::thread::sleep(Duration::from_millis(200));
+        std::thread::sleep(left.min(Duration::from_millis(200)));
     }
-    false
+}
+
+/// Waits, at most until `until`, for every process but this one that runs `exe` to end; the id
+/// of one that still runs then, `None` when none does.
+///
+/// The app closes its mutex at the end of its shutdown, but its process ends a moment later (the
+/// log flushed, the threads and DLLs torn down), and until then `exe` cannot be replaced nor its
+/// folder removed. The dialog process (Settings, Theme Studio, Usage history, About) started
+/// from `exe` runs on as well until its windows have closed. When the processes cannot be
+/// listed, the app's mutex is all the installer waits for.
+fn still_running(exe: &Path, until: Instant) -> Option<u32> {
+    let running = match win_install::processes_running(exe) {
+        Ok(running) => running,
+        Err(e) => {
+            log::warn!(
+                "install: cannot list the processes running {}: {e}",
+                exe.display()
+            );
+            return None;
+        }
+    };
+    running.iter().find_map(|process| {
+        let pid = process.pid();
+        match process.wait(until.saturating_duration_since(Instant::now())) {
+            Ok(true) => None,
+            Ok(false) => Some(pid),
+            Err(e) => {
+                log::warn!("install: cannot wait for process {pid}: {e}");
+                Some(pid)
+            }
+        }
+    })
 }
 
 /// Copies `from` over `to`, retrying while another process holds `to`.
@@ -206,7 +282,7 @@ fn install(quietly: bool) -> Result<PathBuf, String> {
     let dir = install_dir().ok_or_else(|| "%LOCALAPPDATA% is not set".to_owned())?;
     let me = std::env::current_exe().map_err(|e| e.to_string())?;
     let target = dir.join(EXE_NAME);
-    if !quit_running_app() {
+    if !quit_running_app(&target) {
         return Err(strings.template(Msg::InstallStillRunning).to_owned());
     }
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
@@ -254,10 +330,10 @@ fn install(quietly: bool) -> Result<PathBuf, String> {
 /// and logs stay.
 fn uninstall() -> Result<(), String> {
     let strings = strings();
-    if !quit_running_app() {
+    let dir = install_dir().ok_or_else(|| "%LOCALAPPDATA% is not set".to_owned())?;
+    if !quit_running_app(&dir.join(EXE_NAME)) {
         return Err(strings.template(Msg::InstallStillRunning).to_owned());
     }
-    let dir = install_dir().ok_or_else(|| "%LOCALAPPDATA% is not set".to_owned())?;
     if lastdrop_win::autostart::is_enabled(&dir.join(EXE_NAME)).unwrap_or(false) {
         let _ = lastdrop_win::autostart::disable();
     }
@@ -345,12 +421,7 @@ fn run_mode(mode: Mode) -> bool {
                 log::info!("install: not wanted");
                 return true;
             }
-            finish(
-                "install",
-                install(false).map(|_| ()),
-                strings,
-                Msg::InstallDone,
-            )
+            finish(Job::Install, install(false).map(|_| ()), strings)
         }
         Mode::Install { update, quiet } => {
             let result = install(update || quiet).map(|_| ());
@@ -367,7 +438,7 @@ fn run_mode(mode: Mode) -> bool {
                 }
                 return result.is_ok();
             }
-            finish("install", result, strings, Msg::InstallDone)
+            finish(Job::Install, result, strings)
         }
         Mode::Uninstall { quiet: true } => {
             let result = uninstall();
@@ -381,22 +452,57 @@ fn run_mode(mode: Mode) -> bool {
                 log::info!("uninstall: not wanted");
                 return true;
             }
-            finish("uninstall", uninstall(), strings, Msg::UninstallDone)
+            finish(Job::Uninstall, uninstall(), strings)
         }
     }
 }
 
-/// Tells the user how `what` (`install`, `uninstall`) went; whether it went well.
-fn finish(what: &str, result: Result<(), String>, strings: &dyn Strings, done: Msg) -> bool {
+/// What [`finish`] reports on.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Job {
+    /// Run as `Lastdrop-Setup.exe`, or `--install` without `--update` or `--quiet`.
+    Install,
+    /// `--uninstall` without `--quiet`.
+    Uninstall,
+}
+
+impl Job {
+    /// Its name in the log.
+    fn name(self) -> &'static str {
+        match self {
+            Job::Install => "install",
+            Job::Uninstall => "uninstall",
+        }
+    }
+
+    /// What the user is told when it worked.
+    fn done(self) -> Msg {
+        match self {
+            Job::Install => Msg::InstallDone,
+            Job::Uninstall => Msg::UninstallDone,
+        }
+    }
+
+    /// What the user is told when it failed, with `detail` (why).
+    fn failed(self, strings: &dyn Strings, detail: &str) -> String {
+        let msg = match self {
+            Job::Install => Msg::InstallFailed,
+            Job::Uninstall => Msg::UninstallFailed,
+        };
+        text(strings, msg, &[("detail", detail)])
+    }
+}
+
+/// Tells the user how `job` went; whether it went well.
+fn finish(job: Job, result: Result<(), String>, strings: &dyn Strings) -> bool {
     match result {
         Ok(()) => {
-            win_install::tell("Lastdrop", strings.template(done), false);
+            win_install::tell("Lastdrop", strings.template(job.done()), false);
             true
         }
         Err(e) => {
-            log::error!("{what}: {e}");
-            let message = text(strings, Msg::InstallFailed, &[("detail", &e)]);
-            win_install::tell("Lastdrop", &message, true);
+            log::error!("{}: {e}", job.name());
+            win_install::tell("Lastdrop", &job.failed(strings, &e), true);
             false
         }
     }
@@ -404,6 +510,8 @@ fn finish(what: &str, result: Result<(), String>, strings: &dyn Strings, done: M
 
 #[cfg(test)]
 mod tests {
+    use lastdrop_core::grammar::{English, Swedish};
+
     use super::*;
 
     #[test]
@@ -433,5 +541,39 @@ mod tests {
         // still say on, and writes nothing when they say off.
         assert!(writes_run_value(RunValue::Missing, true));
         assert!(!writes_run_value(RunValue::Missing, false));
+    }
+
+    #[test]
+    fn an_uninstall_failure_says_uninstall() {
+        let detail = "Lastdrop is still running";
+        for strings in [&English as &dyn Strings, &Swedish] {
+            let install = Job::Install.failed(strings, detail);
+            let uninstall = Job::Uninstall.failed(strings, detail);
+            assert_ne!(install, uninstall);
+            assert!(uninstall.ends_with(detail), "{uninstall}");
+        }
+        assert_eq!(
+            Job::Uninstall.failed(&English, detail),
+            "Lastdrop was not uninstalled: Lastdrop is still running"
+        );
+        assert_eq!(
+            Job::Install.failed(&English, detail),
+            "Lastdrop was not installed: Lastdrop is still running"
+        );
+        assert_eq!(Job::Uninstall.done(), Msg::UninstallDone);
+    }
+
+    #[test]
+    fn the_installer_never_waits_for_itself() {
+        // The uninstaller runs from the program it removes. Another run of this test program may
+        // be found; this one never is.
+        let me = std::env::current_exe().expect("the test program");
+        assert_ne!(still_running(&me, Instant::now()), Some(std::process::id()));
+        // Nothing runs a program that is not there.
+        let missing = std::env::temp_dir().join(format!(
+            "lastdrop-no-such-program-{}.exe",
+            std::process::id()
+        ));
+        assert_eq!(still_running(&missing, Instant::now()), None);
     }
 }
