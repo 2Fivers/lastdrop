@@ -1,3 +1,5 @@
+<img src="crates/app/icons/lastdrop-64.png" alt="" width="64" height="64" align="right">
+
 # Lastdrop
 
 How much AI is left in the tank, one click away.

@@ -53,6 +53,7 @@
 //! queues the line for its own writer thread (`lastdrop_app::logger`), so logging never blocks on
 //! the file or on a lock another thread holds.
 
+pub mod app_icon;
 pub mod autostart;
 pub mod backdrop;
 pub mod credentials;

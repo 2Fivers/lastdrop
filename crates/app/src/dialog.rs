@@ -375,9 +375,9 @@ fn open(paths: &Paths, kind: DialogKind) -> Result<(), AppError> {
     }
 }
 
-/// Brings a dialog window to the front once winit has created it: restored when minimized, then
-/// `SetForegroundWindow`, which Windows allows because the tray process (or the second launch)
-/// passed its foreground right on.
+/// Brings a dialog window to the front once winit has created it: gives it the app icon (title
+/// bar, Alt+Tab, taskbar button), restores it when minimized, then `SetForegroundWindow`, which
+/// Windows allows because the tray process (or the second launch) passed its foreground right on.
 pub(crate) fn bring_to_front<T: ComponentHandle + 'static>(weak: slint::Weak<T>) {
     let spawned = slint::spawn_local(async move {
         let Some(window) = weak.upgrade() else {
@@ -390,6 +390,9 @@ pub(crate) fn bring_to_front<T: ComponentHandle + 'static>(weak: slint::Weak<T>)
         let Some(hwnd) = wiring::hwnd_of_window(window.window()) else {
             return;
         };
+        if let Err(e) = lastdrop_win::app_icon::set(hwnd.0 as isize) {
+            log::debug!("dialog: no app icon: {e}");
+        }
         // SAFETY: plain calls on our own top-level window.
         unsafe {
             if IsIconic(hwnd).as_bool() {
