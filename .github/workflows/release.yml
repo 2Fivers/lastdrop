@@ -169,7 +169,7 @@ jobs:
           cat > notes.md <<EOF
           Download **Lastdrop-Setup.exe** and run it: it installs Lastdrop for your Windows user,
           without administrator rights, and updates itself from these releases. Or use winget:
-          \`winget install 2Fivers.Lastdrop\`.
+          \`winget install lastdrop\`.
 
           \`SHA256SUMS\` lists the installer's checksum. GitHub's runners built it from ${tag}'s
           commit; to check that, run
