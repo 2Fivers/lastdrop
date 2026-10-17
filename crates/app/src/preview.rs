@@ -124,7 +124,7 @@ pub fn run(args: &Args) -> Result<(), AppError> {
             render_settings(&world, scale, out)?;
         }
         if let Some(out) = args.preview_about.as_deref() {
-            render_about(strings, scale, out)?;
+            render_about(strings, args.dark, scale, out)?;
         }
         if let Some(out) = args.preview_history.as_deref() {
             render_history(&world, scale, out)?;
@@ -520,8 +520,11 @@ fn render_theme_studio(args: &Args, scale: f64, out: &Path) -> Result<(), AppErr
 }
 
 /// Renders the about window in the language of `strings`.
-fn render_about(strings: &dyn Strings, scale: f64, out: &Path) -> Result<(), AppError> {
+fn render_about(strings: &dyn Strings, dark: bool, scale: f64, out: &Path) -> Result<(), AppError> {
     let window = ui::AboutWindow::new()?;
+    if dark {
+        window.invoke_use_dark_scheme();
+    }
     window.set_texts(crate::dialog::about_texts(strings));
     window.show()?;
     let height = window.get_content_height();

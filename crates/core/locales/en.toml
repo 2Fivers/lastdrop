@@ -526,6 +526,9 @@ lowercase_names = true
 "about.copyright" = "© 2026 2Fivers. Open source under the MIT or Apache-2.0 licence."
 # Third-party credit line (open-source components and their licences).
 "about.credits" = "Built with Slint (Royalty-free License 2.0), jiff, serde, ureq and windows-rs (MIT / Apache-2.0). No telemetry: Lastdrop only talks to the services whose usage it reads."
+# The link to the README's "Support Lastdrop" section (GitHub Sponsors, Buy Me a Coffee). The
+# window draws a heart after it, which screen readers skip.
+"about.support" = "Support Lastdrop"
 "about.close" = "Close"
 
 # ---- Usage history window (charts-spec)
