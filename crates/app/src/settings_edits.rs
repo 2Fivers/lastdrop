@@ -543,6 +543,81 @@ impl Outside for RealOutside {
     }
 }
 
+/// An [`Outside`] in memory (previews and the window's interaction tests): the "file" is a
+/// value, the registry and the hotkey test do what the fields say, and nothing reaches the tray.
+#[derive(Clone, Debug, Default)]
+pub struct MemoryOutside {
+    /// The file's settings.
+    pub disk: Settings,
+    /// Writes fail with this detail.
+    pub fail_write: Option<String>,
+    /// The hotkey test refuses with this.
+    pub refuse_hotkey: Option<HotkeyError>,
+    /// Hotkeys tested.
+    pub tested: Vec<Hotkey>,
+    /// Each start with Windows change asked for.
+    pub autostart: Vec<bool>,
+    /// Successful writes.
+    pub writes: usize,
+}
+
+impl Outside for MemoryOutside {
+    fn lock_and_read(&mut self, _base: &Settings) -> Settings {
+        self.disk.clone()
+    }
+
+    fn write(&mut self, settings: &Settings) -> Result<(), String> {
+        if let Some(detail) = &self.fail_write {
+            return Err(detail.clone());
+        }
+        self.disk = settings.clone();
+        self.writes += 1;
+        Ok(())
+    }
+
+    fn unlock(&mut self) {}
+
+    fn set_autostart(&mut self, on: bool) -> Result<(), String> {
+        self.autostart.push(on);
+        Ok(())
+    }
+
+    fn test_hotkey(&mut self, hotkey: &Hotkey) -> Result<(), HotkeyError> {
+        self.tested.push(hotkey.clone());
+        self.refuse_hotkey.clone().map_or(Ok(()), Err)
+    }
+
+    fn written(&mut self) {}
+}
+
+/// An [`Outside`] shared with whoever made it (the window's interaction tests look at it while the
+/// window owns it).
+impl Outside for std::rc::Rc<std::cell::RefCell<MemoryOutside>> {
+    fn lock_and_read(&mut self, base: &Settings) -> Settings {
+        self.borrow_mut().lock_and_read(base)
+    }
+
+    fn write(&mut self, settings: &Settings) -> Result<(), String> {
+        self.borrow_mut().write(settings)
+    }
+
+    fn unlock(&mut self) {
+        self.borrow_mut().unlock();
+    }
+
+    fn set_autostart(&mut self, on: bool) -> Result<(), String> {
+        self.borrow_mut().set_autostart(on)
+    }
+
+    fn test_hotkey(&mut self, hotkey: &Hotkey) -> Result<(), HotkeyError> {
+        self.borrow_mut().test_hotkey(hotkey)
+    }
+
+    fn written(&mut self) {
+        self.borrow_mut().written();
+    }
+}
+
 /// The window's edits: the base, the pending edits and the raw editors (see the module docs).
 #[derive(Clone, Debug)]
 pub struct Edits {
@@ -618,6 +693,13 @@ impl Edits {
             *content = content_of(kept);
         }
         self.pending.insert(edit.field(), edit);
+    }
+
+    /// Another writer wrote `edit` to the file (Theme Studio's "Save and use"): it is part of the
+    /// base now, and a pending edit of its field is dropped.
+    pub fn written_elsewhere(&mut self, edit: &Edit) {
+        self.pending.remove(&edit.field());
+        edit.apply(&mut self.base);
     }
 
     /// The interval combo box picked `index`. An interval it cannot show (a hand-edited 4 min

@@ -1,60 +1,95 @@
-//! The settings window (ROADMAP M1 "settings basics"; out of both specs' scope, F§12): services
-//! on/off, Claude Code's and Codex's accounts ([`crate::settings_accounts`], accounts-spec §7),
-//! the API keys of Meshy and OpenCode Go (Credential Manager, never echoed back), the refresh
-//! interval, the
-//! readout (on/off, auto or pinned meters, time style), notifications (N§2), the global hotkey,
-//! the language (ROADMAP M4) and start with Windows. Its texts are the `settings.*` strings in the
-//! language the settings pick (else Windows' display language, [`Wording`]); when Apply changes
-//! the language, the window switches to it.
+//! The settings window (settings-spec): a navigation pane and four pages of settings cards —
+//! Services (services on or off, Claude Code's and Codex's accounts, [`crate::settings_accounts`],
+//! accounts-spec §7; API keys; privacy), Display (theme, times, the taskbar readout and its pins,
+//! the meters), Notifications (N§2) and General (start with Windows, language, refresh interval,
+//! keyboard shortcut, updates). Its texts are the `settings.*` strings in the language the
+//! settings pick (else Windows' display language, [`Wording`]); when a commit changes the
+//! language, the window switches to it.
+//!
+//! **Instant apply** (settings-spec §5): every change goes to the window's [`Edits`] at its commit
+//! point and is committed — onto `settings.json` as it is then, under the settings lock
+//! (settings-spec §6) — 250 ms after the last one, at once for account actions, and when the
+//! window closes. After a commit every control shows the file again unless it holds an edit of
+//! its own (reconcile, §5.4). The API key is the exception: it is stored at once when the user
+//! saves it and never kept anywhere else — not in the edits, not in a Slint property, not in
+//! `settings.json`, not in the log — and the tray process is told so it reads the service again.
 //!
 //! It runs in the dialog process ([`crate::dialog`]), not in the tray process. Opening reads
-//! `settings.json` and the meters earlier readings reported (`state.json`); the window edits a
-//! [`Draft`] of the settings. **Apply** takes the settings lock, re-reads `settings.json`, applies
-//! only what the window changed onto it ([`apply_onto`]: the tray may have paused, pinned a meter
-//! or turned the readout off meanwhile), sets autostart, tests a changed hotkey, writes the file
-//! (atomic) and tells the tray process, which re-reads and applies it (settings-spec §6). The API key is the exception: it is stored at once
-//! when the user saves it and never kept anywhere else — not in the draft, not in a Slint
-//! property, not in `settings.json`, not in the log — and the tray process is told so it reads
-//! Meshy again.
+//! `settings.json` and the meters earlier readings reported (`state.json`) ([`Inputs::read`]).
 //!
 //! Threading: the dialog process's main thread.
 
-use std::cell::RefCell;
-use std::collections::BTreeSet;
+use std::cell::{Cell, RefCell};
+use std::collections::{BTreeMap, BTreeSet};
 use std::rc::Rc;
+use std::time::Duration;
 
 use jiff::tz::TimeZone;
 use lastdrop_core::grammar::meters::localized;
 use lastdrop_core::grammar::numbers::percent;
-use lastdrop_core::grammar::strings::{capitalise, text};
-use lastdrop_core::grammar::{Language, LocaleFormat, Msg, Strings, TimeStyle};
+use lastdrop_core::grammar::strings::{capitalise, count, text};
+use lastdrop_core::grammar::{Language, LocaleFormat, Msg, PluralMsg, Strings, TimeStyle};
 use lastdrop_core::model::{AccountKey, MeterKey, MeterNames, ProviderId, SourceKey, catalog};
 use lastdrop_core::secret::SecretString;
-use lastdrop_core::settings::{Hotkey, ProviderEntry, ReadoutContent, Settings, SourceSettings};
+use lastdrop_core::settings::{ProviderEntry, Settings, SourceSettings};
 use lastdrop_providers::io::CredentialName;
 use lastdrop_win::hotkey::HotkeyError;
-use slint::{ComponentHandle, ModelRc, SharedString, VecModel};
+use lastdrop_win::theme::ThemeInfo;
+use slint::{ComponentHandle, Model, ModelRc, SharedString, TimerMode, VecModel};
 
 use crate::dialog::{self, Changes};
 use crate::persist::{self, Paths, SavedState};
-use crate::settings_accounts::{self, AccountsInfo, MeterAccounts, NotAdded, SERVICES};
+use crate::settings_accounts::{self, AccountsInfo, MeterAccounts, NotAdded};
 use crate::settings_edits::{
-    INTERVALS, LEVELS, Shortcut, ShortcutProblem, interval_at, interval_index, language_at,
-    language_index, level_indices, levels_at, pins,
+    Commit, Edit, Edits, Field, INTERVALS, LEVELS, Outside, RealOutside, Shortcut, ShortcutProblem,
+    StartupProblem, interval_index, language_index, level_indices, pins,
 };
-use crate::settings_sync::{SettingsFile, apply_onto};
-use crate::wiring::{self, toggle_in};
-use crate::{AppError, ui};
+use crate::settings_sync::SettingsFile;
+use crate::{AppError, ui, wiring};
 
-/// Where the window opens.
+/// Where the window opens (settings-spec §7).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Focus {
-    /// At the top.
+    /// The page it showed last (Services when it opens).
     None,
-    /// At the readout's pins, highlighted (tray menu "Taskbar readout ▸ Pinned meters…").
+    /// The readout's pins, highlighted (tray menu "Taskbar readout ▸ Pinned meters…", R§10).
     Pins,
-    /// At the accounts (the first run found more folders, accounts-spec §6).
+    /// The accounts (the first run found more folders, accounts-spec §6).
     Accounts,
+}
+
+/// The pages (settings-spec §2), in the navigation pane's order.
+pub const PAGE_SERVICES: i32 = 0;
+/// See [`PAGE_SERVICES`].
+pub const PAGE_DISPLAY: i32 = 1;
+/// See [`PAGE_SERVICES`].
+pub const PAGE_NOTIFICATIONS: i32 = 2;
+/// See [`PAGE_SERVICES`].
+pub const PAGE_GENERAL: i32 = 3;
+
+/// A burst of switches, check boxes and combo boxes commits once, this long after its last change
+/// (settings-spec §5.2).
+pub const COMMIT_DELAY: Duration = Duration::from_millis(250);
+/// An alias box commits after this long without a keystroke (settings-spec §5.2).
+pub const ALIAS_PAUSE: Duration = Duration::from_millis(800);
+
+/// The window's preferred size and its smallest one, logical px (settings-spec §2).
+pub const PREFERRED_SIZE: (f32, f32) = (880.0, 680.0);
+/// See [`PREFERRED_SIZE`].
+pub const MIN_SIZE: (f32, f32) = (680.0, 520.0);
+
+/// The size the window opens at on a work area of `work` (logical px): the preferred size, made
+/// smaller to fit with a 24 px margin, never below the smallest size unless the work area itself
+/// is smaller.
+pub fn opening_size(work: (f32, f32)) -> (f32, f32) {
+    let fit = |preferred: f32, min: f32, work: f32| {
+        let room = work - 48.0;
+        preferred.min(room).max(min).min(work).max(1.0)
+    };
+    (
+        fit(PREFERRED_SIZE.0, MIN_SIZE.0, work.0),
+        fit(PREFERRED_SIZE.1, MIN_SIZE.1, work.1),
+    )
 }
 
 /// What the window's texts depend on besides the settings: the language, Windows' display
@@ -125,17 +160,6 @@ pub fn language_choices(ui_languages: &[String], strings: &dyn Strings) -> Vec<S
         .collect()
 }
 
-/// The settings being edited.
-#[derive(Clone, Debug, PartialEq)]
-pub struct Draft {
-    /// The edited settings.
-    pub settings: Settings,
-    /// The providers listed, in order (row index → provider).
-    pub providers: Vec<ProviderId>,
-    /// The meters listed, in order (row index → meter).
-    pub meters: Vec<MeterKey>,
-}
-
 /// The meters to list for `settings`: every enabled service's catalogue meters plus the meters
 /// its readings reported (Claude's per-model weekly windows), with the names their provider
 /// gives them; none of the `duplicates` (accounts-spec §3: never evaluated, so never shown).
@@ -175,18 +199,6 @@ pub fn listed_meters(
         }
     }
     out
-}
-
-/// The keys of [`listed_meters`] (row index → meter).
-fn listed_keys(
-    settings: &Settings,
-    reported: &[(MeterKey, MeterNames)],
-    duplicates: &BTreeSet<SourceKey>,
-) -> Vec<MeterKey> {
-    listed_meters(settings, reported, duplicates)
-        .into_iter()
-        .map(|(k, _)| k)
-        .collect()
 }
 
 /// The [`listed_meters`] with their labels in the language of `strings` ([`meter_label`]);
@@ -270,7 +282,7 @@ fn pinned_names(key: &MeterKey) -> MeterNames {
 }
 
 /// The services read with an API key stored here (Meshy, OpenCode Go, the described services)
-/// that the settings have, in service order: the rows of the API keys section.
+/// that the settings have, in service order: the rows of the API keys group.
 pub fn key_services(settings: &Settings) -> Vec<ProviderId> {
     ProviderId::every()
         .into_iter()
@@ -294,31 +306,115 @@ fn key_credential(settings: &Settings, provider: ProviderId) -> CredentialName {
     }
 }
 
+/// Each API key service and whether its key is stored (its credential exists; the secret is not
+/// read into the app).
+fn keys_stored(settings: &Settings) -> Vec<(ProviderId, bool)> {
+    key_services(settings)
+        .into_iter()
+        .map(|p| {
+            let target = key_credential(settings, p).target();
+            let stored = lastdrop_win::credentials::last_written(&target)
+                .ok()
+                .flatten()
+                .is_some();
+            (p, stored)
+        })
+        .collect()
+}
+
+/// What the window shows besides its own edits, read when it opens.
+pub struct Inputs {
+    /// `settings.json` as read.
+    pub settings: Settings,
+    /// The meters the readings reported ([`reported_meters`]).
+    pub reported: Vec<(MeterKey, MeterNames)>,
+    /// Who is signed in to each listed folder and the folders found on this PC.
+    pub accounts: AccountsInfo,
+    /// Each API key service and whether its key is stored.
+    pub keys: Vec<(ProviderId, bool)>,
+    /// What the texts are made of.
+    pub wording: Wording,
+    /// Windows' app mode, accent and contrast colours.
+    pub theme: ThemeInfo,
+    /// Lastdrop's folders (the themes folder, Theme Studio).
+    pub paths: Paths,
+}
+
+impl Inputs {
+    /// Reads them on this PC: `settings.json`, `state.json`, who is signed in to the accounts'
+    /// folders, which keys are stored, the wording and Windows' theme.
+    pub fn read(paths: &Paths) -> Inputs {
+        let (settings, outcome) = persist::load_settings(&paths.settings);
+        log::info!("settings: {outcome:?}");
+        let reported = reported_meters(&persist::load_state(&paths.state), &settings);
+        Inputs {
+            reported,
+            accounts: AccountsInfo::read(&settings),
+            keys: keys_stored(&settings),
+            wording: Wording::read(&settings),
+            theme: lastdrop_win::theme::read(),
+            paths: paths.clone(),
+            settings,
+        }
+    }
+}
+
+/// One accounts block's rows, updated in place (settings-spec §5.4).
+struct Block {
+    provider: ProviderId,
+    /// The account rows' sources, in model order.
+    keys: RefCell<Vec<SourceKey>>,
+    accounts: Rc<VecModel<ui::AccountRow>>,
+    found: Rc<VecModel<ui::FoundFolder>>,
+}
+
 /// The open settings window and what it edits.
 struct Session {
     /// The window.
     window: ui::SettingsWindow,
-    /// The draft.
-    draft: RefCell<Draft>,
-    /// The settings the draft started from: as read when the window opened, then as the last
-    /// Apply wrote them. What the draft changed from these is what Apply writes ([`apply_onto`]).
-    base: RefCell<Settings>,
-    /// The meters the readings reported ([`reported_meters`]), read when the window opened.
+    /// The edits: base, pending edits, raw editors.
+    edits: RefCell<Edits>,
+    /// What a commit does outside the window.
+    outside: RefCell<Box<dyn Outside>>,
+    /// The meters the readings reported, read when the window opened.
     reported: Vec<(MeterKey, MeterNames)>,
     /// What the texts are made of: read when the window opened, the language again after each
-    /// Apply.
+    /// commit.
     wording: RefCell<Wording>,
     /// Who is signed in to each listed folder and the folders found on this PC: read when the
     /// window opened, a folder added later when it is added.
     accounts: RefCell<AccountsInfo>,
-    /// The API key rows: each service and whether a key is stored ([`keys_stored`]).
-    keys: RefCell<Vec<(ProviderId, bool)>>,
-    /// `settings.json` and its lock.
-    file: SettingsFile,
+    /// The API key rows: each service, whether a key is stored, and what the last action said.
+    keys: RefCell<Vec<(ProviderId, bool, String)>>,
     /// Lastdrop's folders (the themes folder, Theme Studio).
     paths: Paths,
     /// The ids of the themes the theme list shows, in its order.
     theme_ids: RefCell<Vec<String>>,
+    /// The services listed (row index → service).
+    providers: Vec<ProviderId>,
+    provider_rows: Rc<VecModel<ui::ProviderRow>>,
+    /// The meters listed (row index → meter).
+    meters: RefCell<Vec<MeterKey>>,
+    meter_rows: Rc<VecModel<ui::MeterChoice>>,
+    key_rows: Rc<VecModel<ui::ApiKeyRow>>,
+    /// Claude Code's and Codex's accounts.
+    blocks: Vec<Block>,
+    block_expanded: Rc<VecModel<bool>>,
+    block_summary: Rc<VecModel<SharedString>>,
+    block_status: Rc<VecModel<SharedString>>,
+    /// Alias boxes whose text is set again from the settings at the next sync (their edit
+    /// reached its commit point, so they show what is saved).
+    alias_reset: RefCell<BTreeSet<SourceKey>>,
+    /// The 250 ms commit timer.
+    commit_timer: slint::Timer,
+    /// Each alias box's 800 ms pause.
+    alias_timers: RefCell<BTreeMap<SourceKey, slint::Timer>>,
+    /// A real window: the folder picker, the sign-in console, Credential Manager, Theme Studio
+    /// and the tray process are used (not in tests and previews).
+    native: bool,
+    /// The window is closing but the last commit failed (the InfoBar offers Close without
+    /// saving).
+    closing: Cell<bool>,
 }
 
 thread_local! {
@@ -336,285 +432,235 @@ fn with_session(f: impl FnOnce(&Session)) {
     }
 }
 
-/// Opens the settings window, created on each open and released by [`close`]: reads
-/// `settings.json`, `state.json` and who is signed in to the accounts' folders, fills the window
-/// and brings it to the front. `focus` scrolls to the readout's pins (tray menu "Taskbar readout
-/// ▸ Pinned meters…") or the accounts (first run). When the window is open already it keeps its
-/// edits and only comes to the front (and to the focus).
+/// Opens the settings window, created on each open and released when it closes: reads what it
+/// shows ([`Inputs::read`]), fills the window, sizes it to the monitor's work area and brings it
+/// to the front, then follows `focus` (settings-spec §7). When the window is open already it keeps
+/// its page, scroll positions and edits, comes to the front and only follows `focus`.
 pub fn open(paths: &Paths, focus: Focus) -> Result<(), AppError> {
-    let focus_pins = focus == Focus::Pins;
     let open = SESSION.with(|s| s.borrow().clone());
     if let Some(session) = open {
-        let window = &session.window;
-        if focus_pins {
-            show_pins(window);
-        }
-        window.show()?;
-        scroll_to(window, focus);
-        dialog::bring_to_front(window.as_weak());
+        session.window.show()?;
+        reveal(focus);
+        dialog::bring_to_front(session.window.as_weak());
         return Ok(());
     }
-
-    let (mut settings, outcome) = persist::load_settings(&paths.settings);
-    log::info!("settings: {outcome:?}");
-    let reported = reported_meters(&persist::load_state(&paths.state), &settings);
-    // Taken before the pins' focus turns the readout on: that is the window's change.
-    let base = settings.clone();
-    if focus_pins && !matches!(settings.readout.content, ReadoutContent::Pinned(_)) {
-        settings.readout.enabled = true;
-    }
-    let wording = Wording::read(&base);
-    let accounts = AccountsInfo::read(&settings);
-    let duplicates =
-        settings_accounts::meter_accounts(&settings, &accounts, wording.strings()).duplicates;
-    let draft = draft_with(settings, &reported, &duplicates);
-    let window = wiring::create_window(false, ui::SettingsWindow::new)?;
-    connect(&window);
-    let keys = keys_stored(&draft.settings);
-    fill(&window, &draft, &reported, &keys, &wording, &accounts);
-    window.set_focus_pins(false);
-    if focus_pins {
-        show_pins(&window);
-    }
-    window.set_status_text(SharedString::new());
-    window.set_hotkey_error(SharedString::new());
-    SESSION.with(|s| {
-        *s.borrow_mut() = Some(Rc::new(Session {
-            window: window.clone_strong(),
-            draft: RefCell::new(draft),
-            base: RefCell::new(base),
-            reported,
-            wording: RefCell::new(wording),
-            accounts: RefCell::new(accounts),
-            keys: RefCell::new(keys),
-            file: SettingsFile::new(paths.settings.clone()),
-            paths: paths.clone(),
-            theme_ids: RefCell::new(Vec::new()),
-        }));
-    });
-    with_session(|session| fill_themes(session, None));
+    let inputs = Inputs::read(paths);
+    let outside = RealOutside::new(SettingsFile::new(paths.settings.clone()));
+    let window = start(inputs, Box::new(outside), true)?;
+    let (w, h) = opening_size(work_area());
+    window.window().set_size(slint::LogicalSize::new(w, h));
     if let Err(e) = window.show() {
         release();
         return Err(e.into());
     }
-    scroll_to(&window, focus);
+    reveal(focus);
     dialog::bring_to_front(window.as_weak());
     Ok(())
 }
 
-/// Fills the theme list from the themes folder and selects `select`, else the draft's theme.
-fn fill_themes(session: &Session, select: Option<&str>) {
-    let strings = session.wording.borrow().strings();
-    let entries = crate::themes::list(&session.paths.themes, strings);
-    let current = select
-        .map(str::to_owned)
-        .or_else(|| session.draft.borrow().settings.theme.clone());
-    let current = current.unwrap_or_else(|| lastdrop_core::theme::DEFAULT_ID.to_owned());
-    let index = entries.iter().position(|e| e.id == current).unwrap_or(0);
-    session.window.set_themes(ModelRc::new(VecModel::from(
-        entries
-            .iter()
-            .map(|e| SharedString::from(e.name.as_str()))
-            .collect::<Vec<_>>(),
-    )));
-    session
-        .window
-        .set_theme_index(i32::try_from(index).unwrap_or(0));
-    *session.theme_ids.borrow_mut() = entries.into_iter().map(|e| e.id).collect();
+/// The work area, logical px, of the monitor under the cursor (where the tray menu or the first
+/// run opened the window).
+fn work_area() -> (f32, f32) {
+    use lastdrop_win::flyout_pos::{Anchor, monitor_for};
+    use lastdrop_win::geom::Point;
+    let mut pt = windows::Win32::Foundation::POINT::default();
+    // SAFETY: `pt` is a valid out pointer for the duration of the call.
+    let _ = unsafe { windows::Win32::UI::WindowsAndMessaging::GetCursorPos(&mut pt) };
+    let monitor = monitor_for(Anchor::Point(Point { x: pt.x, y: pt.y }));
+    let scale = monitor.dpi.max(96) as f32 / 96.0;
+    (
+        monitor.work.width() as f32 / scale,
+        monitor.work.height() as f32 / scale,
+    )
 }
 
-/// Theme Studio saved a theme: the list is read again. With `used`, Studio made it the theme of
-/// `settings.json` itself: the window shows it and treats it as already applied, so a later
-/// Apply does not change it back.
-pub fn themes_changed(used: Option<&str>) {
-    with_session(|session| {
-        if let Some(id) = used {
-            let theme = (id != lastdrop_core::theme::DEFAULT_ID).then(|| id.to_owned());
-            session.base.borrow_mut().theme.clone_from(&theme);
-            session.draft.borrow_mut().settings.theme = theme;
-        }
-        let keep = usize::try_from(session.window.get_theme_index())
-            .ok()
-            .and_then(|i| session.theme_ids.borrow().get(i).cloned());
-        fill_themes(session, used.or(keep.as_deref()));
-    });
-}
-
-/// Scrolls the shown window to `focus`.
-fn scroll_to(window: &ui::SettingsWindow, focus: Focus) {
-    match focus {
-        Focus::Pins => window.invoke_show_pins(),
-        Focus::Accounts => window.invoke_show_accounts(),
-        Focus::None => {}
-    }
-}
-
-/// Highlights the readout's pins: the readout on and in pinned mode (Apply saves it so).
-fn show_pins(window: &ui::SettingsWindow) {
-    window.set_focus_pins(true);
-    window.set_readout_enabled(true);
-    window.set_readout_content_index(1);
-}
-
-/// A draft of `settings` with the meters the readings reported, but not the `duplicates`'.
-pub fn draft_with(
-    settings: Settings,
-    reported: &[(MeterKey, MeterNames)],
-    duplicates: &BTreeSet<SourceKey>,
-) -> Draft {
-    let providers = settings
+/// Creates the settings window from `inputs` with `outside` for its commits, fills and wires it
+/// and keeps it as the open window (not shown yet). `native`: a real window (the folder picker,
+/// the sign-in console, Credential Manager, Theme Studio and the tray process are used); tests
+/// and previews pass `false` and an `outside` of their own.
+pub fn start(
+    inputs: Inputs,
+    outside: Box<dyn Outside>,
+    native: bool,
+) -> Result<ui::SettingsWindow, AppError> {
+    release();
+    let Inputs {
+        settings,
+        reported,
+        accounts,
+        keys,
+        wording,
+        theme,
+        paths,
+    } = inputs;
+    let window = wiring::create_window(false, ui::SettingsWindow::new)?;
+    set_colors(&window, &theme);
+    let providers: Vec<ProviderId> = settings
         .providers
         .iter()
         .filter_map(ProviderEntry::known)
         .map(|p| p.id)
         .collect();
-    let meters = listed_keys(&settings, reported, duplicates);
-    Draft {
-        settings,
-        providers,
-        meters,
-    }
-}
-
-/// Each API key service and whether its key is stored (its credential exists; the secret is not
-/// read into the app).
-fn keys_stored(settings: &Settings) -> Vec<(ProviderId, bool)> {
-    key_services(settings)
+    let blocks: Vec<Block> = settings_accounts::shown_services(&settings)
         .into_iter()
-        .map(|p| {
-            let target = key_credential(settings, p).target();
-            let stored = lastdrop_win::credentials::last_written(&target)
-                .ok()
-                .flatten()
-                .is_some();
-            (p, stored)
-        })
-        .collect()
-}
-
-/// Fills every property of the window from the draft, the meters the readings reported, which
-/// API keys are stored, the wording and what the accounts section knows (no I/O;
-/// `--preview-settings` uses it directly).
-pub fn fill(
-    window: &ui::SettingsWindow,
-    draft: &Draft,
-    reported: &[(MeterKey, MeterNames)],
-    keys: &[(ProviderId, bool)],
-    wording: &Wording,
-    accounts: &AccountsInfo,
-) {
-    set_texts(window, draft, reported, keys, wording, accounts);
-    let s = &draft.settings;
-    let rows: Vec<ui::ProviderRow> = s
-        .providers
-        .iter()
-        .filter_map(ProviderEntry::known)
-        .map(|p| ui::ProviderRow {
-            id: p.id.as_str().into(),
-            name: p.id.display_name().into(),
-            enabled: p.enabled,
+        .map(|provider| Block {
+            provider,
+            keys: RefCell::new(Vec::new()),
+            accounts: Rc::new(VecModel::default()),
+            found: Rc::new(VecModel::default()),
         })
         .collect();
-    window.set_providers(ModelRc::new(VecModel::from(rows)));
-    window.set_interval_index(i32::try_from(interval_index(s.refresh.interval)).unwrap_or(3));
-    window.set_readout_enabled(s.readout.enabled);
-    window.set_updates_check(s.updates.check);
-    window.set_readout_every(s.readout.every_taskbar);
-    window.set_readout_content_index(i32::from(matches!(
-        s.readout.content,
-        ReadoutContent::Pinned(_)
-    )));
-    window.set_time_style_index(i32::from(s.readout.time_style == TimeStyle::Relative));
-    let n = &s.notifications;
-    window.set_notify_enabled(n.enabled);
-    let (first, second) = level_indices(&n.levels());
-    window.set_notify_first_index(first);
-    window.set_notify_second_index(second);
-    window.set_notify_used_up(n.used_up);
-    window.set_notify_resets(n.resets);
-    window.set_notify_low_balance(n.low_balance);
-    window.set_start_with_windows(s.start_with_windows);
-    window.set_language_index(language_index(s.language.as_deref()));
-    match &s.hotkey {
-        Some(h) => {
-            window.set_hotkey_enabled(true);
-            window.set_hotkey_ctrl(h.ctrl);
-            window.set_hotkey_alt(h.alt);
-            window.set_hotkey_shift(h.shift);
-            window.set_hotkey_win(h.win);
-            window.set_hotkey_key(h.key.as_str().into());
-        }
-        None => {
-            window.set_hotkey_enabled(false);
-            window.set_hotkey_ctrl(true);
-            window.set_hotkey_alt(true);
-            window.set_hotkey_shift(false);
-            window.set_hotkey_win(false);
-            window.set_hotkey_key("L".into());
-        }
+    let block_rows: Vec<ui::AccountBlock> = blocks
+        .iter()
+        .map(|b| ui::AccountBlock {
+            title: b
+                .provider
+                .client_name()
+                .unwrap_or(b.provider.display_name())
+                .into(),
+            accounts: ModelRc::from(b.accounts.clone()),
+            found: ModelRc::from(b.found.clone()),
+        })
+        .collect();
+    let session = Rc::new(Session {
+        window: window.clone_strong(),
+        edits: RefCell::new(Edits::new(settings)),
+        outside: RefCell::new(outside),
+        reported,
+        wording: RefCell::new(wording),
+        accounts: RefCell::new(accounts),
+        keys: RefCell::new(
+            keys.into_iter()
+                .map(|(p, s)| (p, s, String::new()))
+                .collect(),
+        ),
+        paths,
+        theme_ids: RefCell::new(Vec::new()),
+        providers,
+        provider_rows: Rc::new(VecModel::default()),
+        meters: RefCell::new(Vec::new()),
+        meter_rows: Rc::new(VecModel::default()),
+        key_rows: Rc::new(VecModel::default()),
+        block_expanded: Rc::new(VecModel::from(vec![false; blocks.len()])),
+        block_summary: Rc::new(VecModel::from(vec![SharedString::new(); blocks.len()])),
+        block_status: Rc::new(VecModel::from(vec![SharedString::new(); blocks.len()])),
+        blocks,
+        alias_reset: RefCell::new(BTreeSet::new()),
+        commit_timer: slint::Timer::default(),
+        alias_timers: RefCell::new(BTreeMap::new()),
+        native,
+        closing: Cell::new(false),
+    });
+    window.set_providers(ModelRc::from(session.provider_rows.clone()));
+    window.set_meters(ModelRc::from(session.meter_rows.clone()));
+    window.set_api_keys(ModelRc::from(session.key_rows.clone()));
+    window.set_account_blocks(ModelRc::new(VecModel::from(block_rows)));
+    window.set_block_expanded(ModelRc::from(session.block_expanded.clone()));
+    window.set_block_summary(ModelRc::from(session.block_summary.clone()));
+    window.set_block_status(ModelRc::from(session.block_status.clone()));
+    connect(&window);
+    SESSION.with(|s| *s.borrow_mut() = Some(session.clone()));
+    set_texts(&session);
+    show_draft(&session);
+    Ok(window)
+}
+
+/// Sets the window's colours from Windows' theme (settings-spec §3.3): in a contrast theme, the
+/// contrast colours (light, dark and the accent come from Slint's Fluent palette, which follows
+/// Windows' app mode and accent colour).
+pub fn set_colors(window: &ui::SettingsWindow, theme: &ThemeInfo) {
+    let global = window.global::<ui::SettingsTheme>();
+    let color =
+        |c: lastdrop_win::palette::Argb| slint::Color::from_argb_u8(c.a(), c.r(), c.g(), c.b());
+    global.set_high_contrast(theme.high_contrast.is_some());
+    if let Some(hc) = theme.high_contrast {
+        let w = hc.window;
+        let luma =
+            0.2126 * f32::from(w.r()) + 0.7152 * f32::from(w.g()) + 0.0722 * f32::from(w.b());
+        window.invoke_use_scheme_for_contrast(luma < 128.0);
+        global.set_hc_window(color(hc.window));
+        global.set_hc_window_text(color(hc.window_text));
+        global.set_hc_highlight(color(hc.highlight));
+        global.set_hc_highlight_text(color(hc.highlight_text));
+        global.set_hc_gray_text(color(hc.gray_text));
+        global.set_hc_hotlight(color(hc.hotlight));
     }
 }
 
-/// Sets every text of the window in the language of `wording`: the fixed texts, the choices of
-/// the combo boxes (their selections stay) and the meter rows.
-fn set_texts(
-    window: &ui::SettingsWindow,
-    draft: &Draft,
-    reported: &[(MeterKey, MeterNames)],
-    keys: &[(ProviderId, bool)],
-    wording: &Wording,
-    accounts: &AccountsInfo,
-) {
-    let strings = wording.strings();
-    fill_keys(window, keys, strings);
-    window.set_texts(texts(strings));
-    window.set_interval_choices(string_model(interval_choices(strings)));
-    window.set_level_choices(string_model(level_choices(strings, &wording.locale)));
-    window.set_language_choices(string_model(language_choices(
-        &wording.ui_languages,
-        strings,
-    )));
-    fill_accounts(window, draft, reported, accounts, strings);
+/// Follows a deep link in the open window (settings-spec §7): the page, then what it opens, then
+/// the scroll, the keyboard focus and the highlight. A repeated request keeps every edit.
+pub fn reveal(focus: Focus) {
+    with_session(|session| match focus {
+        Focus::None => {}
+        Focus::Pins => reveal_pins(session),
+        Focus::Accounts => reveal_accounts(session),
+    });
 }
 
-/// Fills the accounts section and the meter rows (whose labels name the accounts) from the draft.
-fn fill_accounts(
-    window: &ui::SettingsWindow,
-    draft: &Draft,
-    reported: &[(MeterKey, MeterNames)],
-    accounts: &AccountsInfo,
-    strings: &dyn Strings,
-) {
-    let blocks = settings_accounts::blocks(&draft.settings, accounts, strings);
-    window.set_account_blocks(ModelRc::new(VecModel::from(blocks)));
-    window.set_hide_personal_info(draft.settings.hide_personal_info);
-    let names = settings_accounts::meter_accounts(&draft.settings, accounts, strings);
-    fill_meters(window, draft, reported, strings, &names);
+/// Tray menu "Taskbar readout ▸ Pinned meters…": the readout on and "Meters I pin" (the choosing
+/// state when no meter is pinned yet) — committed at once, the menu choice is the user's intent —
+/// then the Display page at the readout, the first Pin box focused, the readout's content and the
+/// meters outlined.
+fn reveal_pins(session: &Session) {
+    {
+        let mut edits = session.edits.borrow_mut();
+        if !edits.draft().readout.enabled {
+            edits.set(Edit::ReadoutEnabled(true));
+        }
+        edits.set_readout_mode(true);
+    }
+    if session.edits.borrow().has_pending() {
+        commit_now(session);
+    } else {
+        show_draft(session);
+    }
+    session.window.set_highlight_pins(true);
+    session.window.invoke_reveal_pins();
 }
 
-/// Fills the API key rows: each service's name, the box's placeholder (`Paste your Meshy API
-/// key`, or that a key is stored) and whether a key is stored.
-fn fill_keys(window: &ui::SettingsWindow, keys: &[(ProviderId, bool)], strings: &dyn Strings) {
-    let rows: Vec<ui::ApiKeyRow> = keys
-        .iter()
-        .map(|(provider, stored)| {
-            let placeholder = if *stored {
-                strings.template(Msg::SettingsKeyReplace).to_owned()
-            } else {
-                text(
-                    strings,
-                    Msg::SettingsKeyPaste,
-                    &[("service", provider.display_name())],
-                )
-            };
-            ui::ApiKeyRow {
-                title: provider.display_name().into(),
-                placeholder: placeholder.into(),
-                stored: *stored,
-            }
-        })
-        .collect();
-    window.set_api_keys(ModelRc::new(VecModel::from(rows)));
+/// The first run found more folders (accounts-spec §6): the Services page at the accounts, the
+/// blocks with found folders expanded, the first found folder's Add focused.
+fn reveal_accounts(session: &Session) {
+    let mut first = None;
+    for (b, block) in session.blocks.iter().enumerate() {
+        if block.found.row_count() > 0 {
+            session.block_expanded.set_row_data(b, true);
+            first.get_or_insert(b);
+        }
+    }
+    if let Some(b) = first {
+        session
+            .window
+            .set_reveal_block(i32::try_from(b).unwrap_or(0));
+    }
+    session.window.invoke_reveal_accounts(first.is_some());
+}
+
+/// Theme Studio saved a theme: the list is read again. With `used`, Studio made it the theme of
+/// `settings.json` itself: the window shows it and takes it as written, so no commit changes it
+/// back.
+pub fn themes_changed(used: Option<&str>) {
+    with_session(|session| {
+        if let Some(id) = used {
+            let theme = (id != lastdrop_core::theme::DEFAULT_ID).then(|| id.to_owned());
+            session
+                .edits
+                .borrow_mut()
+                .written_elsewhere(&Edit::Theme(theme));
+        }
+        fill_themes(session);
+        show_draft(session);
+    });
+}
+
+/// Fills the theme list from the themes folder.
+fn fill_themes(session: &Session) {
+    let strings = session.wording.borrow().strings();
+    let entries = crate::themes::list(&session.paths.themes, strings);
+    session.window.set_themes(string_model(
+        entries.iter().map(|e| e.name.clone()).collect(),
+    ));
+    *session.theme_ids.borrow_mut() = entries.into_iter().map(|e| e.id).collect();
 }
 
 /// A Slint model of `items`.
@@ -623,13 +669,33 @@ fn string_model(items: Vec<String>) -> ModelRc<SharedString> {
     ModelRc::new(VecModel::from(items))
 }
 
+/// Sets every fixed text of the window in the language of the session's wording, the choices of
+/// the combo boxes (their selections stay) and the theme list; [`show_draft`] labels the rows.
+fn set_texts(session: &Session) {
+    let window = &session.window;
+    let wording = session.wording.borrow().clone();
+    let strings = wording.strings();
+    window.set_texts(texts(strings));
+    window.set_interval_choices(string_model(interval_choices(strings)));
+    window.set_level_choices(string_model(level_choices(strings, &wording.locale)));
+    window.set_language_choices(string_model(language_choices(
+        &wording.ui_languages,
+        strings,
+    )));
+    fill_themes(session);
+}
+
 /// The window's fixed texts in the language of `strings`.
 pub fn texts(strings: &dyn Strings) -> ui::SettingsTexts {
     let t = |msg: Msg| SharedString::from(strings.template(msg));
     ui::SettingsTexts {
         title: t(Msg::SettingsTitle),
-        heading: t(Msg::SettingsHeading),
-        services: t(Msg::SettingsServices),
+        page_services: t(Msg::SettingsPageServices),
+        page_services_description: t(Msg::SettingsPageServicesDescription),
+        page_display: t(Msg::SettingsPageDisplay),
+        page_display_description: t(Msg::SettingsPageDisplayDescription),
+        page_notifications: t(Msg::SettingsPageNotifications),
+        page_general: t(Msg::SettingsPageGeneral),
         services_hint: t(Msg::SettingsServicesHint),
         accounts: t(Msg::SettingsAccounts),
         accounts_hint: t(Msg::SettingsAccountsHint),
@@ -642,13 +708,16 @@ pub fn texts(strings: &dyn Strings) -> ui::SettingsTexts {
         accounts_new: t(Msg::SettingsAccountsNew),
         accounts_new_name: t(Msg::SettingsAccountsNewName),
         accounts_new_create: t(Msg::SettingsAccountsNewCreate),
+        privacy: t(Msg::SettingsPrivacy),
         privacy_hide: t(Msg::SettingsPrivacyHide),
+        privacy_hide_description: t(Msg::SettingsPrivacyHideDescription),
         key: t(Msg::SettingsKey),
         key_save: t(Msg::SettingsKeySave),
         key_remove: t(Msg::SettingsKeyRemove),
         key_hint: t(Msg::SettingsKeyHint),
         refresh: t(Msg::SettingsRefresh),
         refresh_check: t(Msg::SettingsRefreshCheck),
+        appearance: t(Msg::SettingsAppearance),
         theme: t(Msg::SettingsTheme),
         theme_studio: t(Msg::SettingsThemeStudio),
         theme_hint: t(Msg::SettingsThemeHint),
@@ -656,22 +725,31 @@ pub fn texts(strings: &dyn Strings) -> ui::SettingsTexts {
         updates_check: t(Msg::SettingsUpdatesCheck),
         updates_now: t(Msg::SettingsUpdatesNow),
         updates_hint: t(Msg::SettingsUpdatesHint),
+        version: text(
+            strings,
+            Msg::SettingsVersion,
+            &[("version", env!("CARGO_PKG_VERSION"))],
+        )
+        .into(),
         readout: t(Msg::SettingsReadout),
         readout_show: t(Msg::SettingsReadoutShow),
         readout_every: t(Msg::SettingsReadoutEvery),
         readout_rows: t(Msg::SettingsReadoutRows),
         readout_auto: t(Msg::SettingsReadoutAuto),
         readout_pinned: t(Msg::SettingsReadoutPinned),
+        readout_choosing: t(Msg::SettingsReadoutChoosing),
         readout_times: t(Msg::SettingsReadoutTimes),
         readout_clock: t(Msg::SettingsReadoutClock),
         readout_relative: t(Msg::SettingsReadoutRelative),
+        meters: t(Msg::SettingsMeters),
         meters_hint: t(Msg::SettingsMetersHint),
+        meters_empty: t(Msg::SettingsMetersEmpty),
         meter_show: t(Msg::SettingsMeterShow),
         meter_pin: t(Msg::SettingsMeterPin),
-        notify: t(Msg::SettingsNotify),
         notify_on: t(Msg::SettingsNotifyOn),
         notify_levels: t(Msg::SettingsNotifyLevels),
         notify_and: t(Msg::SettingsNotifyAnd),
+        notify_also: t(Msg::SettingsNotifyAlso),
         notify_used_up: t(Msg::SettingsNotifyUsedUp),
         notify_resets: t(Msg::SettingsNotifyResets),
         notify_low: t(Msg::SettingsNotifyLow),
@@ -685,502 +763,303 @@ pub fn texts(strings: &dyn Strings) -> ui::SettingsTexts {
         shortcut_key: t(Msg::SettingsShortcutKey),
         language: t(Msg::SettingsLanguage),
         language_hint: t(Msg::SettingsLanguageHint),
-        startup: t(Msg::SettingsStartup),
         startup_on: t(Msg::SettingsStartupOn),
-        apply: t(Msg::SettingsApply),
-        close: t(Msg::SettingsClose),
+        retry: t(Msg::SettingsRetry),
+        discard: t(Msg::SettingsDiscard),
+        not_saved_title: t(Msg::SettingsNotSavedTitle),
     }
 }
 
-/// Fills the meter rows of the draft from the reported meters, labelled in the language of
-/// `strings` with the account names of `accounts`.
-fn fill_meters(
-    window: &ui::SettingsWindow,
-    draft: &Draft,
-    reported: &[(MeterKey, MeterNames)],
-    strings: &dyn Strings,
-    accounts: &MeterAccounts,
-) {
-    let pinned = pins(&draft.settings);
-    let choices = meter_choices(&draft.settings, reported, strings, accounts);
-    let rows: Vec<ui::MeterChoice> = choices
-        .iter()
-        .map(|(key, label)| {
-            let hidden = draft
-                .settings
-                .provider(key.provider)
-                .is_some_and(|p| p.hidden_meters.contains(&key.meter));
-            ui::MeterChoice {
-                label: label.as_str().into(),
-                shown: !hidden,
-                pinned: pinned.contains(key),
-            }
-        })
-        .collect();
-    window.set_meters(ModelRc::new(VecModel::from(rows)));
-}
-
-/// Runs `f` on the draft, then refreshes the accounts section and the meter rows.
-fn edit(f: impl FnOnce(&mut Draft)) {
-    with_session(|session| {
-        let strings = session.wording.borrow().strings();
-        let accounts = session.accounts.borrow();
-        let draft = {
-            let mut draft = session.draft.borrow_mut();
-            f(&mut draft);
-            let duplicates =
-                settings_accounts::meter_accounts(&draft.settings, &accounts, strings).duplicates;
-            draft.meters = listed_keys(&draft.settings, &session.reported, &duplicates);
-            draft.clone()
-        };
-        fill_accounts(
-            &session.window,
-            &draft,
-            &session.reported,
-            &accounts,
-            strings,
-        );
-    });
-}
-
-/// Wires the window's callbacks.
-fn connect(window: &ui::SettingsWindow) {
-    window.on_provider_toggled(|index, on| {
-        edit(|draft| {
-            let id = usize::try_from(index)
-                .ok()
-                .and_then(|i| draft.providers.get(i).copied());
-            if let Some(p) = id.and_then(|id| draft.settings.provider_mut(id)) {
-                p.enabled = on;
-            }
-        });
-    });
-    window.on_meter_shown_toggled(|index, shown| {
-        edit(|draft| {
-            let Some(key) = usize::try_from(index)
-                .ok()
-                .and_then(|i| draft.meters.get(i).cloned())
-            else {
-                return;
-            };
-            if let Some(p) = draft.settings.provider_mut(key.provider) {
-                p.hidden_meters.retain(|m| *m != key.meter);
-                if !shown {
-                    p.hidden_meters.push(key.meter.clone());
-                }
-            }
-            if !shown {
-                let mut pinned = pins(&draft.settings);
-                pinned.retain(|k| *k != key);
-                set_pins(&mut draft.settings, pinned);
-            }
-        });
-    });
-    window.on_meter_pinned_toggled(|index, pinned| {
-        edit(|draft| {
-            let Some(key) = usize::try_from(index)
-                .ok()
-                .and_then(|i| draft.meters.get(i).cloned())
-            else {
-                return;
-            };
-            let mut current = pins(&draft.settings);
-            if pinned != current.contains(&key) {
-                toggle_in(&mut current, key);
-            }
-            set_pins(&mut draft.settings, current);
-        });
-    });
-    window.on_account_alias_edited(|block, row, alias| {
-        // Kept in the draft only: refilling the rows while typing would reset the box.
-        with_session(|session| {
-            let mut draft = session.draft.borrow_mut();
-            let account = service_of(block)
-                .and_then(|p| draft.settings.provider_mut(p))
-                .and_then(|p| p.accounts.get_mut(usize::try_from(row).ok()?));
-            if let Some(account) = account {
-                account.alias = lastdrop_core::settings::clean_alias(&alias);
-            }
-        });
-    });
-    window.on_account_removed(|block, row| {
-        let (Some(provider), Ok(row)) = (service_of(block), usize::try_from(row)) else {
-            return;
-        };
-        edit(|draft| {
-            settings_accounts::remove(&mut draft.settings, provider, row);
-        });
-    });
-    window.on_found_added(|block, index| {
-        with_session(|session| add_found(session, block, index));
-    });
-    window.on_add_folder(|block| with_session(|session| pick_and_add(session, block)));
-    window.on_new_account(|block, name| {
-        with_session(|session| new_account(session, block, &name));
-    });
-    window.on_privacy_toggled(|hide| {
-        edit(|draft| draft.settings.hide_personal_info = hide);
-    });
-    window.on_set_api_key(|row, key| with_session(|session| store_key(session, row, &key)));
-    window.on_clear_api_key(|row| with_session(|session| clear_key(session, row)));
-    window.on_apply(|| with_session(apply));
-    window.on_check_updates(|| {
-        dialog::notify(Changes {
-            check_updates: true,
-            ..Changes::default()
-        });
-        with_session(|session| {
-            let strings = session.wording.borrow().strings();
-            session
-                .window
-                .set_updates_status(strings.template(Msg::SettingsUpdatesAsked).into());
-        });
-    });
-    window.on_open_studio(|index| {
-        with_session(|session| {
-            let id = usize::try_from(index)
-                .ok()
-                .and_then(|i| session.theme_ids.borrow().get(i).cloned());
-            if let Err(e) = crate::theme_studio::open(&session.paths, id.as_deref()) {
-                log::error!("theme studio: {e}");
-            }
-        });
-    });
-    window.on_dismiss(close);
-    window.window().on_close_requested(|| {
-        close();
-        slint::CloseRequestResponse::HideWindow
-    });
-}
-
-/// The service of an accounts block.
-fn service_of(block: i32) -> Option<ProviderId> {
-    usize::try_from(block)
-        .ok()
-        .and_then(|b| SERVICES.get(b))
-        .copied()
-}
-
-/// Shows `msg` (with `{client}` the service's client) under the buttons.
-fn account_status(session: &Session, msg: Msg, provider: ProviderId, detail: Option<&str>) {
+/// Shows the draft in every control (settings-spec §5.4): after each edit and after each commit
+/// (then the draft is the file as written, with what the tray changed meanwhile). An editor
+/// holding an edit of its own — an alias box being typed in, the shortcut being composed — is
+/// left alone; keyboard focus is not the criterion.
+fn show_draft(session: &Session) {
+    let window = &session.window;
+    let (draft, shortcut, dirty, problem, mode, choosing) = {
+        let edits = session.edits.borrow();
+        (
+            edits.draft(),
+            edits.shortcut(),
+            edits.shortcut_dirty(),
+            edits.shortcut_problem().cloned(),
+            edits.readout_mode_index(),
+            edits.choosing_pins(),
+        )
+    };
     let strings = session.wording.borrow().strings();
-    let client = provider.client_name().unwrap_or(provider.display_name());
-    let mut values = vec![("client", client)];
-    if let Some(detail) = detail {
-        values.push(("detail", detail));
+    let index = |i: usize| i32::try_from(i).unwrap_or(0);
+    window.set_interval_index(index(interval_index(draft.refresh.interval)));
+    window.set_readout_enabled(draft.readout.enabled);
+    window.set_readout_every(draft.readout.every_taskbar);
+    window.set_readout_content_index(mode);
+    window.set_choosing_pins(choosing);
+    window.set_time_style_index(i32::from(draft.readout.time_style == TimeStyle::Relative));
+    let n = &draft.notifications;
+    window.set_notify_enabled(n.enabled);
+    let (first, second) = level_indices(&n.levels());
+    window.set_notify_first_index(first);
+    window.set_notify_second_index(second);
+    window.set_notify_used_up(n.used_up);
+    window.set_notify_resets(n.resets);
+    window.set_notify_low_balance(n.low_balance);
+    window.set_start_with_windows(draft.start_with_windows);
+    window.set_language_index(language_index(draft.language.as_deref()));
+    window.set_updates_check(draft.updates.check);
+    window.set_hide_personal_info(draft.hide_personal_info);
+    let theme = draft
+        .theme
+        .clone()
+        .unwrap_or_else(|| lastdrop_core::theme::DEFAULT_ID.to_owned());
+    let theme_index = session
+        .theme_ids
+        .borrow()
+        .iter()
+        .position(|id| *id == theme)
+        .unwrap_or(0);
+    window.set_theme_index(index(theme_index));
+    if !dirty {
+        window.set_hotkey_enabled(shortcut.enabled);
+        window.set_hotkey_ctrl(shortcut.ctrl);
+        window.set_hotkey_alt(shortcut.alt);
+        window.set_hotkey_shift(shortcut.shift);
+        window.set_hotkey_win(shortcut.win);
+        window.set_hotkey_key(shortcut.key.as_str().into());
+    }
+    window.set_hotkey_error(
+        problem
+            .as_ref()
+            .map(|p| shortcut_message(p, strings))
+            .unwrap_or_default()
+            .into(),
+    );
+    window.set_hotkey_retry(matches!(problem, Some(ShortcutProblem::Refused(_))));
+
+    for (row, id) in session.providers.iter().enumerate() {
+        let data = ui::ProviderRow {
+            id: id.as_str().into(),
+            name: id.display_name().into(),
+            enabled: draft.provider(*id).is_some_and(|p| p.enabled),
+        };
+        update_row(&session.provider_rows, row, data);
+    }
+    sync_meters(session, &draft, strings);
+    sync_accounts(session, &draft, strings);
+    sync_keys(session, strings);
+}
+
+/// Sets row `row` of `model` to `data` (appended when the model is that short), unless it is
+/// that already.
+fn update_row<T: Clone + PartialEq + 'static>(model: &VecModel<T>, row: usize, data: T) {
+    match model.row_data(row) {
+        Some(current) if current == data => {}
+        Some(_) => model.set_row_data(row, data),
+        None => model.push(data),
+    }
+}
+
+/// The meter rows from the draft: replaced when the meters listed change (a service turned on or
+/// off), else updated in place.
+fn sync_meters(session: &Session, draft: &Settings, strings: &dyn Strings) {
+    let names = {
+        let accounts = session.accounts.borrow();
+        settings_accounts::meter_accounts(draft, &accounts, strings)
+    };
+    let pinned = pins(draft);
+    let rows: Vec<(MeterKey, ui::MeterChoice)> =
+        meter_choices(draft, &session.reported, strings, &names)
+            .into_iter()
+            .map(|(key, label)| {
+                let shown = !draft
+                    .provider(key.provider)
+                    .is_some_and(|p| p.hidden_meters.contains(&key.meter));
+                let row = ui::MeterChoice {
+                    show_label: text(strings, Msg::SettingsMeterShowA11y, &[("meter", &label)])
+                        .into(),
+                    pin_label: text(strings, Msg::SettingsMeterPinA11y, &[("meter", &label)])
+                        .into(),
+                    label: label.into(),
+                    shown,
+                    pinned: pinned.contains(&key),
+                };
+                (key, row)
+            })
+            .collect();
+    let keys: Vec<MeterKey> = rows.iter().map(|(k, _)| k.clone()).collect();
+    let focus_row = rows.iter().position(|(_, r)| r.shown).unwrap_or(0);
+    if *session.meters.borrow() == keys {
+        for (i, (_, row)) in rows.into_iter().enumerate() {
+            update_row(&session.meter_rows, i, row);
+        }
+    } else {
+        session
+            .meter_rows
+            .set_vec(rows.into_iter().map(|(_, r)| r).collect::<Vec<_>>());
+        *session.meters.borrow_mut() = keys;
     }
     session
         .window
-        .set_status_text(text(strings, msg, &values).into());
+        .set_pin_focus_row(i32::try_from(focus_row).unwrap_or(0));
 }
 
-/// Adds `folder` as an account of `provider` (`alias` for a new account), reads who is signed in
-/// there, refreshes the section and says what happened. Returns whether it was added.
-fn add_account(
-    session: &Session,
-    provider: ProviderId,
-    folder: &std::path::Path,
-    alias: Option<&str>,
-) -> bool {
-    let added = {
-        let info = session.accounts.borrow();
-        let mut draft = session.draft.borrow_mut();
-        settings_accounts::add(&mut draft.settings, &info, provider, folder, alias)
-    };
-    match added {
-        Ok(key) => {
-            log::info!("settings window: added {:?} account {}", provider, key.0);
-            {
-                let draft = session.draft.borrow();
-                let mut info = session.accounts.borrow_mut();
-                if let Some(account) = draft
-                    .settings
-                    .provider(provider)
-                    .and_then(|p| p.accounts.iter().find(|a| a.key == key))
-                {
-                    info.learn(
-                        provider,
-                        account,
-                        &lastdrop_providers::real::RealEnv,
-                        &lastdrop_providers::real::RealFs,
-                    );
-                }
+/// The accounts blocks from the draft, in place by source (settings-spec §5.4): rows of removed
+/// accounts go, rows of added ones come, the others change only where they differ. A row whose
+/// alias box holds an edit is left alone until that edit reaches its commit point.
+fn sync_accounts(session: &Session, draft: &Settings, strings: &dyn Strings) {
+    let info = session.accounts.borrow();
+    let edits = session.edits.borrow();
+    let mut reset = session.alias_reset.borrow_mut();
+    for (b, block) in session.blocks.iter().enumerate() {
+        let rows = settings_accounts::account_rows(draft, &info, block.provider, strings);
+        let mut keys = block.keys.borrow_mut();
+        // Removed accounts, from the end so the indices stay right.
+        for i in (0..keys.len()).rev() {
+            if !rows.iter().any(|(k, _)| *k == keys[i]) {
+                keys.remove(i);
+                block.accounts.remove(i);
             }
-            edit(|_| {});
-            account_status(session, Msg::SettingsAccountsAdded, provider, None);
-            true
         }
-        Err(NotAdded::AlreadyUsed) => {
-            account_status(session, Msg::SettingsAccountsAlready, provider, None);
-            false
+        // Added accounts, at their places.
+        for (i, (key, row)) in rows.iter().enumerate() {
+            if !keys.contains(key) {
+                let at = i.min(keys.len());
+                keys.insert(at, key.clone());
+                block.accounts.insert(at, row.clone());
+            }
         }
-        Err(NotAdded::NoService) => false,
-    }
-}
-
-/// **Add** on a found folder (accounts-spec §6).
-fn add_found(session: &Session, block: i32, index: i32) {
-    let Some(provider) = service_of(block) else {
-        return;
-    };
-    let found = {
-        let info = session.accounts.borrow();
-        let draft = session.draft.borrow();
-        settings_accounts::unused(&draft.settings, &info, provider)
-    };
-    if let Some(candidate) = usize::try_from(index).ok().and_then(|i| found.get(i)) {
-        add_account(session, provider, &candidate.folder, None);
-    }
-}
-
-/// **Add folder…**: the folder picker, owned by the window, opening in the profile folder.
-fn pick_and_add(session: &Session, block: i32) {
-    let Some(provider) = service_of(block) else {
-        return;
-    };
-    let strings = session.wording.borrow().strings();
-    let client = provider.client_name().unwrap_or(provider.display_name());
-    let title = text(strings, Msg::SettingsAccountsPicker, &[("client", client)]);
-    let owner = wiring::hwnd_of_window(session.window.window());
-    let home = session.accounts.borrow().home.clone();
-    match lastdrop_win::folder_picker::pick_folder(owner, &title, home.as_deref()) {
-        Ok(Some(folder)) => {
-            add_account(session, provider, &folder, None);
+        for (i, (key, mut row)) in rows.into_iter().enumerate() {
+            if edits.alias_dirty(&key) {
+                continue;
+            }
+            let Some(current) = block.accounts.row_data(i) else {
+                continue;
+            };
+            row.revision = current.revision;
+            if reset.remove(&key) || row.alias != current.alias {
+                row.revision += 1;
+            }
+            if row != current {
+                block.accounts.set_row_data(i, row);
+            }
         }
-        Ok(None) => {}
-        Err(e) => log::warn!("settings window: folder picker: {e}"),
-    }
-}
-
-/// **Create and sign in** (accounts-spec §7): a folder of its own in the profile folder, added
-/// with the name as its alias, and the vendor's sign-in in a terminal with the folder set.
-/// Lastdrop never signs in itself.
-fn new_account(session: &Session, block: i32, name: &str) {
-    let Some(provider) = service_of(block) else {
-        return;
-    };
-    let Some(alias) = lastdrop_core::settings::clean_alias(name) else {
-        return;
-    };
-    let Some(home) = session.accounts.borrow().home.clone() else {
-        return;
-    };
-    let Some(folder) = settings_accounts::new_folder(&home, provider, &alias, &|p| p.exists())
-    else {
-        return;
-    };
-    if let Err(e) = std::fs::create_dir_all(&folder) {
-        log::warn!("settings window: cannot create a {provider:?} folder: {e}");
-        account_status(
-            session,
-            Msg::SettingsAccountsNotCreated,
-            provider,
-            Some(&e.to_string()),
+        let found = settings_accounts::found_rows(draft, &info, block.provider, strings);
+        let current: Vec<ui::FoundFolder> = block.found.iter().collect();
+        if current != found {
+            block.found.set_vec(found);
+        }
+        let summary = count(
+            strings,
+            PluralMsg::SettingsAccountsCount,
+            i64::try_from(keys.len()).unwrap_or(0),
         );
-        return;
-    }
-    if !add_account(session, provider, &folder, Some(&alias)) {
-        // Created just now and still empty: not left behind.
-        let _ = std::fs::remove_dir(&folder);
-        return;
-    }
-    let command = {
-        let draft = session.draft.borrow();
-        let source = draft
-            .settings
-            .provider(provider)
-            .and_then(|p| p.accounts.last())
-            .and_then(|a| {
-                lastdrop_providers::AccountSource::resolve(
-                    provider,
-                    a,
-                    &lastdrop_providers::real::RealEnv,
-                )
-                .ok()
-            });
-        let providers = lastdrop_providers::providers(&draft.settings);
-        source.and_then(|s| {
-            providers
-                .iter()
-                .find(|p| p.id() == provider)
-                .and_then(|p| p.sign_in_command(&s))
-        })
-    };
-    let Some(command) = command else {
-        return;
-    };
-    match lastdrop_win::shell::open_console(
-        &command.program,
-        &command.args,
-        &command.env,
-        command.cwd.as_deref(),
-    ) {
-        Ok(()) => account_status(session, Msg::SettingsAccountsCreated, provider, None),
-        Err(e) => {
-            log::warn!("settings window: cannot open the sign-in console: {e}");
-            account_status(
-                session,
-                Msg::SettingsAccountsNoSignIn,
-                provider,
-                Some(&e.to_string()),
-            );
-        }
+        update_row(&session.block_summary, b, SharedString::from(summary));
     }
 }
 
-/// Closes the settings window (Close button or the title bar's ✕) and releases it, not inside
-/// the window's own callback ([`dialog::release_later`]). Unapplied edits are dropped. The last
-/// window closing ends the dialog process's event loop.
-fn close() {
-    let session = SESSION.with(|s| s.borrow_mut().take());
-    if let Some(session) = session {
-        let _ = session.window.hide();
-        dialog::release_later(session);
-    }
-}
-
-/// Drops the settings window (after the event loop, or when it could not be shown).
-pub fn release() {
-    drop(SESSION.with(|s| s.borrow_mut().take()));
-}
-
-/// Pinned meters, or auto when none is left. Kept while the content mode is auto too, so
-/// switching the combo box to "Meters I pin" finds them.
-fn set_pins(settings: &mut Settings, pins: Vec<MeterKey>) {
-    settings.readout.content = if pins.is_empty() {
-        ReadoutContent::Auto
-    } else {
-        ReadoutContent::Pinned(pins)
-    };
-}
-
-/// The service of API key row `row`.
-fn key_service(session: &Session, row: i32) -> Option<ProviderId> {
+/// The API key rows: each service's name, the box's placeholder (`Paste your Meshy API key`, or
+/// that a key is stored), whether a key is stored and what the last Save or Remove said.
+fn sync_keys(session: &Session, strings: &dyn Strings) {
     let keys = session.keys.borrow();
-    usize::try_from(row)
-        .ok()
-        .and_then(|r| keys.get(r))
-        .map(|(p, _)| *p)
-}
-
-/// Marks `provider`'s key as stored or not and refills the key rows.
-fn set_key_stored(session: &Session, provider: ProviderId, stored: bool) {
-    {
-        let mut keys = session.keys.borrow_mut();
-        for (p, s) in keys.iter_mut() {
-            if *p == provider {
-                *s = stored;
-            }
-        }
-    }
-    let strings = session.wording.borrow().strings();
-    fill_keys(&session.window, &session.keys.borrow(), strings);
-}
-
-/// Stores the API key of row `row` in Credential Manager at once and drops it, then tells the
-/// tray process, which lifts the API-key services' sign-in stop (they have no credential
-/// fingerprint Lastdrop owns, so only this can lift it). Turns the service on in the draft (Apply
-/// saves that).
-fn store_key(session: &Session, row: i32, key: &SharedString) {
-    let Some(provider) = key_service(session, row) else {
-        return;
-    };
-    let secret = SecretString::new(key.trim().to_owned());
-    if secret.is_empty() {
-        return;
-    }
-    let credential = key_credential(&session.draft.borrow().settings, provider);
-    let stored = lastdrop_win::credentials::write(&credential.target(), &secret);
-    drop(secret);
-    let window = &session.window;
-    let strings = session.wording.borrow().strings();
-    match stored {
-        Ok(()) => {
-            log::info!("{provider:?} API key stored");
-            dialog::notify(Changes::key_of(provider));
-            edit(|draft| {
-                if let Some(p) = draft.settings.provider_mut(provider) {
-                    p.enabled = true;
-                }
-            });
-            set_key_stored(session, provider, true);
-            let rows = window.get_providers();
-            let draft = session.draft.borrow().clone();
-            for (i, id) in draft.providers.iter().enumerate() {
-                if let Some(mut row) = slint::Model::row_data(&rows, i) {
-                    row.enabled = draft.settings.provider(*id).is_some_and(|p| p.enabled);
-                    slint::Model::set_row_data(&rows, i, row);
-                }
-            }
-            let status = text(
-                strings,
-                Msg::SettingsKeySaved,
-                &[("service", provider.display_name())],
-            );
-            window.set_status_text(status.into());
-        }
-        Err(e) => {
-            log::warn!("cannot store the {provider:?} key: {e}");
-            let status = text(
-                strings,
-                Msg::SettingsKeyNotSaved,
-                &[("detail", &e.to_string())],
-            );
-            window.set_status_text(status.into());
-        }
-    }
-}
-
-/// Removes the stored API key of row `row` and tells the tray process, which reads the service
-/// again (and so shows that the key is missing).
-fn clear_key(session: &Session, row: i32) {
-    let Some(provider) = key_service(session, row) else {
-        return;
-    };
-    let credential = key_credential(&session.draft.borrow().settings, provider);
-    let window = &session.window;
-    let strings = session.wording.borrow().strings();
-    let status = match lastdrop_win::credentials::delete(&credential.target()) {
-        Ok(()) => {
-            log::info!("{provider:?} API key removed");
-            set_key_stored(session, provider, false);
-            dialog::notify(Changes::key_of(provider));
-            strings.template(Msg::SettingsKeyRemoved).to_owned()
-        }
-        Err(e) => {
-            log::warn!("cannot remove the {provider:?} key: {e}");
+    for (i, (provider, stored, status)) in keys.iter().enumerate() {
+        let placeholder = if *stored {
+            strings.template(Msg::SettingsKeyReplace).to_owned()
+        } else {
             text(
                 strings,
-                Msg::SettingsKeyNotRemoved,
-                &[("detail", &e.to_string())],
+                Msg::SettingsKeyPaste,
+                &[("service", provider.display_name())],
             )
-        }
-    };
-    window.set_status_text(status.into());
-}
-
-/// The status line after Apply saved the settings: what it could not apply, if anything.
-fn saved_status(strings: &dyn Strings, shortcut_kept: bool, startup_kept: bool) -> &str {
-    let msg = match (shortcut_kept, startup_kept) {
-        (false, false) => Msg::SettingsSaved,
-        (true, false) => Msg::SettingsSavedNoShortcut,
-        (false, true) => Msg::SettingsSavedNoStartup,
-        (true, true) => Msg::SettingsSavedNeither,
-    };
-    strings.template(msg)
-}
-
-/// The hotkey the window describes, or why it is not valid.
-fn hotkey_of(window: &ui::SettingsWindow) -> Result<Option<Hotkey>, ShortcutProblem> {
-    Shortcut {
-        enabled: window.get_hotkey_enabled(),
-        ctrl: window.get_hotkey_ctrl(),
-        alt: window.get_hotkey_alt(),
-        shift: window.get_hotkey_shift(),
-        win: window.get_hotkey_win(),
-        key: window.get_hotkey_key().to_string(),
+        };
+        let row = ui::ApiKeyRow {
+            title: provider.display_name().into(),
+            placeholder: placeholder.into(),
+            stored: *stored,
+            status: status.as_str().into(),
+        };
+        update_row(&session.key_rows, i, row);
     }
-    .parse()
+}
+
+/// An edit was made: the window shows the draft and a commit follows [`COMMIT_DELAY`] after the
+/// last edit of a burst.
+fn edited(session: &Session) {
+    show_draft(session);
+    session
+        .commit_timer
+        .start(TimerMode::SingleShot, COMMIT_DELAY, || {
+            with_session(|s| {
+                commit_now(s);
+            });
+        });
+}
+
+/// Commits the pending edits now ([`Edits::commit`]) and shows what came of it: the InfoBar when
+/// the file could not be written, the shortcut's and start with Windows' problems in their cards,
+/// the language when it changed, and the draft in every control.
+fn commit_now(session: &Session) -> Commit {
+    session.commit_timer.stop();
+    let commit = {
+        let mut edits = session.edits.borrow_mut();
+        let mut outside = session.outside.borrow_mut();
+        edits.commit(outside.as_mut())
+    };
+    let window = &session.window;
+    if commit.saved() {
+        switch_language(session);
+    }
+    let strings = session.wording.borrow().strings();
+    match &commit.error {
+        Some(detail) => {
+            let message = text(strings, Msg::SettingsNotSaved, &[("detail", detail)]);
+            window.set_info_text(message.into());
+        }
+        None => {
+            window.set_info_text(SharedString::new());
+            window.set_info_closing(false);
+            session.closing.set(false);
+        }
+    }
+    match &commit.startup {
+        Some(StartupProblem::NotChanged(detail)) => window.set_startup_error(
+            text(
+                strings,
+                Msg::SettingsStartupNotChanged,
+                &[("detail", detail)],
+            )
+            .into(),
+        ),
+        Some(StartupProblem::Stuck { on }) => {
+            let msg = if *on {
+                Msg::SettingsStartupStuckOn
+            } else {
+                Msg::SettingsStartupStuckOff
+            };
+            window.set_startup_error(strings.template(msg).into());
+        }
+        None => {
+            if commit.written.contains(&Field::StartWithWindows) {
+                window.set_startup_error(SharedString::new());
+            }
+        }
+    }
+    show_draft(session);
+    commit
+}
+
+/// Switches the window's texts to the language the draft picks (else Windows' display
+/// language) when it is not the one shown.
+fn switch_language(session: &Session) {
+    let setting = session.edits.borrow().draft().language;
+    {
+        let mut wording = session.wording.borrow_mut();
+        let language = Language::resolve(setting.as_deref(), &wording.ui_languages);
+        if language == wording.language {
+            return;
+        }
+        log::info!("settings window: language {}", language.tag());
+        wording.language = language;
+    }
+    set_texts(session);
 }
 
 /// The line under the shortcut, in the language of `strings`.
@@ -1199,146 +1078,644 @@ fn shortcut_message(problem: &ShortcutProblem, strings: &dyn Strings) -> String 
     }
 }
 
-/// Apply: under the settings lock, what the window changed, onto `settings.json` as it is now
-/// ([`apply_onto`]); autostart when "Start Lastdrop when I sign in" changed; a changed hotkey is
-/// tested by registering it here and unregistering it at once (the tray process registers it for
-/// real); the file is written atomically, the lock released and the tray process told. A changed language switches the
-/// window's texts, and the lines under the shortcut and the buttons come in it.
-fn apply(session: &Session) {
-    let window = &session.window;
-    let mut draft = session.draft.borrow().settings.clone();
-    draft.refresh.interval = interval_at(window.get_interval_index());
-    draft.readout.enabled = window.get_readout_enabled();
-    draft.updates.check = window.get_updates_check();
-    if let Some(id) = usize::try_from(window.get_theme_index())
-        .ok()
-        .and_then(|i| session.theme_ids.borrow().get(i).cloned())
-    {
-        draft.theme = (id != lastdrop_core::theme::DEFAULT_ID).then_some(id);
-    }
-    draft.readout.every_taskbar = window.get_readout_every();
-    if window.get_readout_content_index() == 0 {
-        draft.readout.content = ReadoutContent::Auto;
-    }
-    draft.readout.time_style = if window.get_time_style_index() == 1 {
-        TimeStyle::Relative
-    } else {
-        TimeStyle::Clock
-    };
-    draft.start_with_windows = window.get_start_with_windows();
-    // A language this build has no table for (a newer build's) shows as "Same as Windows" and
-    // stays until the user picks another choice.
-    let language = window.get_language_index();
-    if language != language_index(draft.language.as_deref()) {
-        draft.language = language_at(language);
-    }
-    let n = &mut draft.notifications;
-    n.enabled = window.get_notify_enabled();
-    n.used_up = window.get_notify_used_up();
-    n.resets = window.get_notify_resets();
-    n.low_balance = window.get_notify_low_balance();
-    // Levels the combo boxes cannot show (a hand-edited 83) stay until the user picks others.
-    let picked = (
-        window.get_notify_first_index(),
-        window.get_notify_second_index(),
-    );
-    if picked != level_indices(&n.levels()) {
-        n.levels = levels_at(picked.0, picked.1);
-    }
-
-    let lock = session.file.lock();
-    let disk = session.file.read(&session.base.borrow());
-    let mut settings = apply_onto(&session.base.borrow(), draft, &disk);
-    let mut shortcut = None;
-    match hotkey_of(window) {
-        Ok(hotkey) => settings.hotkey = hotkey,
-        Err(problem) => {
-            settings.hotkey.clone_from(&disk.hotkey);
-            shortcut = Some(problem);
-        }
-    }
-    let mut startup_kept = false;
-
-    if settings.start_with_windows != disk.start_with_windows {
-        let changed = if settings.start_with_windows {
-            std::env::current_exe().and_then(|exe| lastdrop_win::autostart::enable(&exe))
-        } else {
-            lastdrop_win::autostart::disable()
-        };
-        if let Err(e) = changed {
-            log::warn!("autostart: {e}");
-            settings.start_with_windows = disk.start_with_windows;
-            window.set_start_with_windows(disk.start_with_windows);
-            startup_kept = true;
-        }
-    }
-    if settings.hotkey != disk.hotkey
-        && let Some(hotkey) = &settings.hotkey
-    {
-        match lastdrop_win::hotkey::register(hotkey, Box::new(|| {})) {
-            Ok(registration) => registration.unregister(),
-            Err(e) => {
-                log::warn!("hotkey: {e}");
-                settings.hotkey.clone_from(&disk.hotkey);
-                shortcut = Some(ShortcutProblem::Refused(e));
-            }
-        }
-    }
-
-    let saved = persist::save_settings(&session.file.path, &settings);
-    drop(lock);
-    match &saved {
-        Ok(()) => {
-            dialog::notify(Changes {
-                settings: true,
-                ..Changes::default()
-            });
-            session.base.borrow_mut().clone_from(&settings);
-            session.draft.borrow_mut().settings = settings;
-            switch_language(session);
-            // The accounts' names follow the aliases typed since.
-            edit(|_| {});
-        }
-        Err(e) => log::error!("cannot save settings: {e}"),
-    }
-    // In the language the window shows now: the new one when it was saved.
-    let strings = session.wording.borrow().strings();
-    let status = match saved {
-        Ok(()) => saved_status(strings, shortcut.is_some(), startup_kept).to_owned(),
-        Err(e) => text(
-            strings,
-            Msg::SettingsNotSaved,
-            &[("detail", &e.to_string())],
-        ),
-    };
-    let hotkey_error = shortcut
-        .map(|p| shortcut_message(&p, strings))
-        .unwrap_or_default();
-    window.set_hotkey_error(hotkey_error.into());
-    window.set_status_text(status.into());
+/// The source of account row `row` of block `block`.
+fn account_key(session: &Session, block: i32, row: i32) -> Option<SourceKey> {
+    let block = session.blocks.get(usize::try_from(block).ok()?)?;
+    block.keys.borrow().get(usize::try_from(row).ok()?).cloned()
 }
 
-/// Switches the window's texts to the language the draft's settings pick (else Windows'
-/// display language) when it is not the one shown.
-fn switch_language(session: &Session) {
-    let draft = session.draft.borrow();
-    let mut wording = session.wording.borrow_mut();
-    let language = Language::resolve(draft.settings.language.as_deref(), &wording.ui_languages);
-    if language == wording.language {
+/// An alias box's commit point (Enter, focus loss, its pause, its block closing, the page
+/// changing): its edit becomes pending (settings-spec §5.2) and the box shows what is saved.
+fn alias_point(session: &Session, key: &SourceKey) {
+    if let Some(timer) = session.alias_timers.borrow_mut().remove(key) {
+        timer.stop();
+    }
+    if !session.edits.borrow().alias_dirty(key) {
         return;
     }
-    log::info!("settings window: language {}", language.tag());
-    wording.language = language;
-    let accounts = session.accounts.borrow();
+    let changed = session.edits.borrow_mut().alias_done(key);
+    session.alias_reset.borrow_mut().insert(key.clone());
+    if changed {
+        edited(session);
+    } else {
+        show_draft(session);
+    }
+}
+
+/// The commit point of every alias box holding an edit (of `provider`'s, or of all).
+fn alias_points(session: &Session, provider: Option<ProviderId>) {
+    let dirty = session.edits.borrow().dirty_aliases();
+    for key in dirty {
+        if provider.is_none_or(|p| p == key.provider) {
+            alias_point(session, &key);
+        }
+    }
+}
+
+/// Wires the window's callbacks.
+fn connect(window: &ui::SettingsWindow) {
+    window.on_page_changed(|page| {
+        with_session(|session| {
+            alias_points(session, None);
+            if page != PAGE_DISPLAY {
+                session.window.set_highlight_pins(false);
+            }
+        });
+    });
+    window.on_provider_toggled(|row, on| {
+        with_session(|session| {
+            let id = usize::try_from(row)
+                .ok()
+                .and_then(|i| session.providers.get(i).copied());
+            if let Some(id) = id {
+                session
+                    .edits
+                    .borrow_mut()
+                    .set(Edit::ProviderEnabled(id, on));
+                edited(session);
+            }
+        });
+    });
+    window.on_block_toggled(|block, on| {
+        with_session(|session| {
+            let Some(b) = usize::try_from(block)
+                .ok()
+                .filter(|b| *b < session.blocks.len())
+            else {
+                return;
+            };
+            if !on {
+                alias_points(session, Some(session.blocks[b].provider));
+            }
+            session.block_expanded.set_row_data(b, on);
+        });
+    });
+    window.on_account_alias_edited(|block, row, alias| {
+        with_session(|session| {
+            let Some(key) = account_key(session, block, row) else {
+                return;
+            };
+            session
+                .edits
+                .borrow_mut()
+                .alias_typed(key.clone(), alias.as_str());
+            let timer = slint::Timer::default();
+            let at = key.clone();
+            timer.start(TimerMode::SingleShot, ALIAS_PAUSE, move || {
+                let at = at.clone();
+                with_session(move |s| alias_point(s, &at));
+            });
+            session.alias_timers.borrow_mut().insert(key, timer);
+        });
+    });
+    window.on_account_alias_done(|block, row| {
+        with_session(|session| {
+            if let Some(key) = account_key(session, block, row) {
+                alias_point(session, &key);
+            }
+        });
+    });
+    window.on_account_removed(|block, row| {
+        with_session(|session| {
+            let Some(key) = account_key(session, block, row) else {
+                return;
+            };
+            if session.edits.borrow_mut().remove_account(&key) {
+                set_block_status(session, block, String::new());
+                commit_now(session);
+            }
+        });
+    });
+    window.on_found_added(|block, index| {
+        with_session(|session| add_found(session, block, index));
+    });
+    window.on_add_folder(|block| with_session(|session| pick_and_add(session, block)));
+    window.on_new_account(|block, name| {
+        with_session(|session| new_account(session, block, &name));
+    });
+    window.on_privacy_toggled(|hide| edit_now(Edit::HidePersonalInfo(hide)));
+    window.on_set_api_key(|row, key| with_session(|session| store_key(session, row, &key)));
+    window.on_clear_api_key(|row| with_session(|session| clear_key(session, row)));
+    window.on_theme_selected(|index| {
+        with_session(|session| {
+            let id = usize::try_from(index)
+                .ok()
+                .and_then(|i| session.theme_ids.borrow().get(i).cloned());
+            if let Some(id) = id {
+                let theme = (id != lastdrop_core::theme::DEFAULT_ID).then_some(id);
+                session.edits.borrow_mut().set(Edit::Theme(theme));
+                edited(session);
+            }
+        });
+    });
+    window.on_open_studio(|index| {
+        with_session(|session| {
+            if !session.native {
+                return;
+            }
+            let id = usize::try_from(index)
+                .ok()
+                .and_then(|i| session.theme_ids.borrow().get(i).cloned());
+            if let Err(e) = crate::theme_studio::open(&session.paths, id.as_deref()) {
+                log::error!("theme studio: {e}");
+            }
+        });
+    });
+    window.on_time_style_selected(|index| {
+        let style = if index == 1 {
+            TimeStyle::Relative
+        } else {
+            TimeStyle::Clock
+        };
+        edit_now(Edit::TimeStyle(style));
+    });
+    window.on_readout_enabled_toggled(|on| edit_now(Edit::ReadoutEnabled(on)));
+    window.on_readout_every_toggled(|on| edit_now(Edit::ReadoutEvery(on)));
+    window.on_readout_mode_selected(|index| {
+        with_session(|session| {
+            session.edits.borrow_mut().set_readout_mode(index == 1);
+            edited(session);
+        });
+    });
+    window.on_meter_shown_toggled(|row, shown| {
+        with_session(|session| {
+            if let Some(key) = meter_at(session, row) {
+                session.edits.borrow_mut().set_meter_shown(&key, shown);
+                edited(session);
+            }
+        });
+    });
+    window.on_meter_pinned_toggled(|row, on| {
+        with_session(|session| {
+            if let Some(key) = meter_at(session, row) {
+                session.edits.borrow_mut().set_pinned(key, on);
+                edited(session);
+            }
+        });
+    });
+    window.on_notify_enabled_toggled(|on| edit_now(Edit::NotifyEnabled(on)));
+    window.on_levels_selected(|first, second| {
+        with_session(|session| {
+            session.edits.borrow_mut().set_levels(first, second);
+            edited(session);
+        });
+    });
+    window.on_notify_used_up_toggled(|on| edit_now(Edit::NotifyUsedUp(on)));
+    window.on_notify_resets_toggled(|on| edit_now(Edit::NotifyResets(on)));
+    window.on_notify_low_toggled(|on| edit_now(Edit::NotifyLowBalance(on)));
+    window.on_startup_toggled(|on| edit_now(Edit::StartWithWindows(on)));
+    window.on_language_selected(|index| {
+        with_session(|session| {
+            session.edits.borrow_mut().set_language_index(index);
+            edited(session);
+        });
+    });
+    window.on_interval_selected(|index| {
+        with_session(|session| {
+            session.edits.borrow_mut().set_interval_index(index);
+            edited(session);
+        });
+    });
+    window.on_hotkey_edited(|| {
+        with_session(|session| {
+            let w = &session.window;
+            let shown = Shortcut {
+                enabled: w.get_hotkey_enabled(),
+                ctrl: w.get_hotkey_ctrl(),
+                alt: w.get_hotkey_alt(),
+                shift: w.get_hotkey_shift(),
+                win: w.get_hotkey_win(),
+                key: w.get_hotkey_key().to_string(),
+            };
+            session.edits.borrow_mut().shortcut_edited(shown);
+            edited(session);
+        });
+    });
+    window.on_hotkey_retry_clicked(|| {
+        with_session(|session| {
+            session.edits.borrow_mut().shortcut_retry();
+            commit_now(session);
+        });
+    });
+    window.on_updates_toggled(|on| edit_now(Edit::UpdatesCheck(on)));
+    window.on_check_updates(|| {
+        with_session(|session| {
+            if session.native {
+                dialog::notify(Changes {
+                    check_updates: true,
+                    ..Changes::default()
+                });
+            }
+            let strings = session.wording.borrow().strings();
+            session
+                .window
+                .set_updates_status(strings.template(Msg::SettingsUpdatesAsked).into());
+        });
+    });
+    window.on_info_retry(|| {
+        let mut closes = false;
+        with_session(|session| {
+            // The InfoBar of a failed close: closing, once the commit works.
+            let closing = session.closing.get();
+            closes = commit_now(session).error.is_none() && closing;
+        });
+        if closes {
+            close_now();
+        }
+    });
+    window.on_info_discard(|| {
+        log::info!("settings window: closed without saving");
+        close_now();
+    });
+    window.on_dismiss(|| {
+        let mut closes = false;
+        with_session(|session| closes = flush_for_close(session));
+        if closes {
+            close_now();
+        }
+    });
+    window.window().on_close_requested(|| {
+        let mut closes = true;
+        with_session(|session| closes = flush_for_close(session));
+        if closes {
+            close_now();
+            slint::CloseRequestResponse::HideWindow
+        } else {
+            slint::CloseRequestResponse::KeepWindowShown
+        }
+    });
+}
+
+/// Makes `edit` pending in the open window and shows it ([`edited`]).
+fn edit_now(edit: Edit) {
+    with_session(|session| {
+        session.edits.borrow_mut().set(edit);
+        edited(session);
+    });
+}
+
+/// The meter of row `row`.
+fn meter_at(session: &Session, row: i32) -> Option<MeterKey> {
+    usize::try_from(row)
+        .ok()
+        .and_then(|i| session.meters.borrow().get(i).cloned())
+}
+
+/// Shows `status` under the accounts of block `block`.
+fn set_block_status(session: &Session, block: i32, status: String) {
+    if let Some(b) = usize::try_from(block)
+        .ok()
+        .filter(|b| *b < session.blocks.len())
+    {
+        session.block_status.set_row_data(b, status.into());
+    }
+}
+
+/// Shows `msg` (with `{client}` the service's client) under the accounts of block `block`.
+fn account_status(session: &Session, block: i32, msg: Msg, detail: Option<&str>) {
+    let Some(provider) = block_service(session, block) else {
+        return;
+    };
+    let strings = session.wording.borrow().strings();
+    let client = provider.client_name().unwrap_or(provider.display_name());
+    let mut values = vec![("client", client)];
+    if let Some(detail) = detail {
+        values.push(("detail", detail));
+    }
+    set_block_status(session, block, text(strings, msg, &values));
+}
+
+/// The service of block `block`.
+fn block_service(session: &Session, block: i32) -> Option<ProviderId> {
+    usize::try_from(block)
+        .ok()
+        .and_then(|b| session.blocks.get(b))
+        .map(|b| b.provider)
+}
+
+/// Adds `folder` as an account of block `block`'s service (`alias` for a new account) and
+/// commits at once; says "Account added" only when the commit wrote it. Returns whether it was
+/// added and saved.
+fn add_account(
+    session: &Session,
+    block: i32,
+    folder: &std::path::Path,
+    alias: Option<&str>,
+) -> bool {
+    let Some(provider) = block_service(session, block) else {
+        return false;
+    };
+    let added = {
+        let info = session.accounts.borrow();
+        let mut draft = session.edits.borrow().draft();
+        settings_accounts::add(&mut draft, &info, provider, folder, alias).map(|key| {
+            let account = draft
+                .provider(provider)
+                .and_then(|p| p.accounts.iter().find(|a| a.key == key))
+                .cloned();
+            (key, account)
+        })
+    };
+    match added {
+        Ok((key, Some(account))) => {
+            log::info!("settings window: added {provider:?} account {}", key.0);
+            if session.native {
+                session.accounts.borrow_mut().learn(
+                    provider,
+                    &account,
+                    &lastdrop_providers::real::RealEnv,
+                    &lastdrop_providers::real::RealFs,
+                );
+            }
+            let folder_id = settings_accounts::folder_id(folder);
+            session.edits.borrow_mut().set(Edit::AccountAdded(
+                provider,
+                Box::new(account),
+                folder_id,
+            ));
+            let commit = commit_now(session);
+            if commit.saved() {
+                account_status(session, block, Msg::SettingsAccountsAdded, None);
+                true
+            } else {
+                set_block_status(session, block, String::new());
+                false
+            }
+        }
+        Ok((_, None)) | Err(NotAdded::NoService) => false,
+        Err(NotAdded::AlreadyUsed) => {
+            account_status(session, block, Msg::SettingsAccountsAlready, None);
+            false
+        }
+    }
+}
+
+/// **Add** on a found folder (accounts-spec §6).
+fn add_found(session: &Session, block: i32, index: i32) {
+    let Some(provider) = block_service(session, block) else {
+        return;
+    };
+    let found = {
+        let info = session.accounts.borrow();
+        settings_accounts::unused(&session.edits.borrow().draft(), &info, provider)
+    };
+    if let Some(candidate) = usize::try_from(index).ok().and_then(|i| found.get(i)) {
+        add_account(session, block, &candidate.folder, None);
+    }
+}
+
+/// **Add folder…**: the folder picker, owned by the window, opening in the profile folder.
+fn pick_and_add(session: &Session, block: i32) {
+    let Some(provider) = block_service(session, block) else {
+        return;
+    };
+    if !session.native {
+        return;
+    }
+    let strings = session.wording.borrow().strings();
+    let client = provider.client_name().unwrap_or(provider.display_name());
+    let title = text(strings, Msg::SettingsAccountsPicker, &[("client", client)]);
+    let owner = wiring::hwnd_of_window(session.window.window());
+    let home = session.accounts.borrow().home.clone();
+    match lastdrop_win::folder_picker::pick_folder(owner, &title, home.as_deref()) {
+        Ok(Some(folder)) => {
+            add_account(session, block, &folder, None);
+        }
+        Ok(None) => {}
+        Err(e) => log::warn!("settings window: folder picker: {e}"),
+    }
+}
+
+/// **Create and sign in** (accounts-spec §7): a folder of its own in the profile folder, added
+/// with the name as its alias, and the vendor's sign-in in a terminal with the folder set.
+/// Lastdrop never signs in itself.
+fn new_account(session: &Session, block: i32, name: &str) {
+    let Some(provider) = block_service(session, block) else {
+        return;
+    };
+    let Some(alias) = lastdrop_core::settings::clean_alias(name) else {
+        return;
+    };
+    let Some(home) = session.accounts.borrow().home.clone() else {
+        return;
+    };
+    if !session.native {
+        return;
+    }
+    let Some(folder) = settings_accounts::new_folder(&home, provider, &alias, &|p| p.exists())
+    else {
+        return;
+    };
+    if let Err(e) = std::fs::create_dir_all(&folder) {
+        log::warn!("settings window: cannot create a {provider:?} folder: {e}");
+        account_status(
+            session,
+            block,
+            Msg::SettingsAccountsNotCreated,
+            Some(&e.to_string()),
+        );
+        return;
+    }
+    if !add_account(session, block, &folder, Some(&alias)) {
+        // Created just now and still empty: not left behind.
+        let _ = std::fs::remove_dir(&folder);
+        return;
+    }
+    let command = {
+        let draft = session.edits.borrow().draft();
+        let folder_id = settings_accounts::folder_id(&folder);
+        let source = draft
+            .provider(provider)
+            .and_then(|p| {
+                p.accounts.iter().find(|a| {
+                    a.source
+                        .folder()
+                        .is_some_and(|f| settings_accounts::folder_id(f) == folder_id)
+                })
+            })
+            .and_then(|a| {
+                lastdrop_providers::AccountSource::resolve(
+                    provider,
+                    a,
+                    &lastdrop_providers::real::RealEnv,
+                )
+                .ok()
+            });
+        let providers = lastdrop_providers::providers(&draft);
+        source.and_then(|s| {
+            providers
+                .iter()
+                .find(|p| p.id() == provider)
+                .and_then(|p| p.sign_in_command(&s))
+        })
+    };
+    let Some(command) = command else {
+        return;
+    };
+    match lastdrop_win::shell::open_console(
+        &command.program,
+        &command.args,
+        &command.env,
+        command.cwd.as_deref(),
+    ) {
+        Ok(()) => account_status(session, block, Msg::SettingsAccountsCreated, None),
+        Err(e) => {
+            log::warn!("settings window: cannot open the sign-in console: {e}");
+            account_status(
+                session,
+                block,
+                Msg::SettingsAccountsNoSignIn,
+                Some(&e.to_string()),
+            );
+        }
+    }
+}
+
+/// The service of API key row `row`.
+fn key_service(session: &Session, row: i32) -> Option<ProviderId> {
     let keys = session.keys.borrow();
-    set_texts(
-        &session.window,
-        &draft,
-        &session.reported,
-        &keys,
-        &wording,
-        &accounts,
-    );
+    usize::try_from(row)
+        .ok()
+        .and_then(|r| keys.get(r))
+        .map(|(p, _, _)| *p)
+}
+
+/// Marks `provider`'s key as stored or not, with `status` in its row.
+fn set_key_row(session: &Session, provider: ProviderId, stored: bool, status: &str) {
+    for (p, s, line) in session.keys.borrow_mut().iter_mut() {
+        if *p == provider {
+            *s = stored;
+            status.clone_into(line);
+        }
+    }
+}
+
+/// **Save key**: stores the API key of row `row` in Credential Manager at once and drops it, then
+/// tells the tray process, which lifts the service's sign-in stop (they have no credential
+/// fingerprint Lastdrop owns, so only this can lift it). Turns the service on (committed at once).
+fn store_key(session: &Session, row: i32, key: &SharedString) {
+    let Some(provider) = key_service(session, row) else {
+        return;
+    };
+    let secret = SecretString::new(key.trim().to_owned());
+    if secret.is_empty() || !session.native {
+        return;
+    }
+    let credential = key_credential(&session.edits.borrow().draft(), provider);
+    let stored = lastdrop_win::credentials::write(&credential.target(), &secret);
+    drop(secret);
+    let strings = session.wording.borrow().strings();
+    match stored {
+        Ok(()) => {
+            log::info!("{provider:?} API key stored");
+            dialog::notify(Changes::key_of(provider));
+            let status = text(
+                strings,
+                Msg::SettingsKeySaved,
+                &[("service", provider.display_name())],
+            );
+            set_key_row(session, provider, true, &status);
+            session
+                .edits
+                .borrow_mut()
+                .set(Edit::ProviderEnabled(provider, true));
+            commit_now(session);
+        }
+        Err(e) => {
+            log::warn!("cannot store the {provider:?} key: {e}");
+            let status = text(
+                strings,
+                Msg::SettingsKeyNotSaved,
+                &[("detail", &e.to_string())],
+            );
+            let stored = session
+                .keys
+                .borrow()
+                .iter()
+                .any(|(p, s, _)| *p == provider && *s);
+            set_key_row(session, provider, stored, &status);
+            show_draft(session);
+        }
+    }
+}
+
+/// **Remove**: removes the stored API key of row `row` and tells the tray process, which reads
+/// the service again (and so shows that the key is missing).
+fn clear_key(session: &Session, row: i32) {
+    let Some(provider) = key_service(session, row) else {
+        return;
+    };
+    if !session.native {
+        return;
+    }
+    let credential = key_credential(&session.edits.borrow().draft(), provider);
+    let strings = session.wording.borrow().strings();
+    match lastdrop_win::credentials::delete(&credential.target()) {
+        Ok(()) => {
+            log::info!("{provider:?} API key removed");
+            dialog::notify(Changes::key_of(provider));
+            set_key_row(
+                session,
+                provider,
+                false,
+                strings.template(Msg::SettingsKeyRemoved),
+            );
+        }
+        Err(e) => {
+            log::warn!("cannot remove the {provider:?} key: {e}");
+            let status = text(
+                strings,
+                Msg::SettingsKeyNotRemoved,
+                &[("detail", &e.to_string())],
+            );
+            set_key_row(session, provider, true, &status);
+        }
+    }
+    show_draft(session);
+}
+
+/// Closing (✕, Alt+F4, Escape; settings-spec §5.5): every alias box's edit and a shortcut never
+/// tried become pending, and the commit runs now. Returns whether the window may close: not when
+/// the file could not be written (the InfoBar then offers Try again and Close without saving).
+fn flush_for_close(session: &Session) -> bool {
+    for (_, timer) in std::mem::take(&mut *session.alias_timers.borrow_mut()) {
+        timer.stop();
+    }
+    session.edits.borrow_mut().flush_editors();
+    let commit = commit_now(session);
+    if commit.error.is_some() {
+        session.closing.set(true);
+        session.window.set_info_closing(true);
+        return false;
+    }
+    true
+}
+
+/// Closes the settings window and releases it, not inside the window's own callback
+/// ([`dialog::release_later`]). The last window closing ends the dialog process's event loop.
+fn close_now() {
+    let session = SESSION.with(|s| s.borrow_mut().take());
+    if let Some(session) = session {
+        session.commit_timer.stop();
+        let _ = session.window.hide();
+        dialog::release_later(session);
+    }
+}
+
+/// Drops the settings window (after the event loop, or when it could not be shown).
+pub fn release() {
+    drop(SESSION.with(|s| s.borrow_mut().take()));
+}
+
+/// Whether the settings window is open (tests).
+pub fn is_open() -> bool {
+    SESSION.with(|s| s.borrow().is_some())
+}
+
+/// The open window's draft: its settings as last written with the pending edits (tests and
+/// previews).
+pub fn draft() -> Option<Settings> {
+    SESSION.with(|s| s.borrow().as_ref().map(|s| s.edits.borrow().draft()))
 }
 
 #[cfg(test)]
@@ -1349,6 +1726,7 @@ mod tests {
     use lastdrop_core::settings::ProviderSettings;
 
     use crate::persist::SeenMeter;
+    use crate::settings_edits::{content_of, language_at};
 
     #[test]
     fn choices_are_labelled_in_the_language_and_the_regional_format() {
@@ -1384,21 +1762,16 @@ mod tests {
             language_choices(&["sv-SE".to_owned()], &Swedish)[0],
             "Samma som Windows (Svenska)"
         );
-        let tags = Language::ALL.map(|l| Some(l.tag()));
-        for setting in [None].into_iter().chain(tags) {
-            assert_eq!(
-                language_at(language_index(setting)).as_deref(),
-                setting,
-                "{setting:?}"
-            );
-        }
-        assert_eq!(language_index(Some("sv-SE")), language_index(Some("sv")));
-        // A newer build's language shows as "Same as Windows" (`qaa` is for private use, so no
-        // locale file will ever be named after it).
-        assert_eq!(language_index(Some("qaa")), 0);
-        assert_eq!(language_at(-1), None);
         let past_the_end = i32::try_from(Language::ALL.len() + 1).expect("a few languages");
         assert_eq!(language_at(past_the_end), None);
+    }
+
+    #[test]
+    fn the_window_opens_at_its_preferred_size_or_what_fits() {
+        assert_eq!(opening_size((1920.0, 1040.0)), (880.0, 680.0));
+        // 1366 × 768 at 150 %: 910 × 480 logical, less the taskbar.
+        assert_eq!(opening_size((910.0, 480.0)), (862.0, 480.0));
+        assert_eq!(opening_size((700.0, 600.0)), (680.0, 552.0));
     }
 
     #[test]
@@ -1423,10 +1796,6 @@ mod tests {
             ["Claude 5-hour", "Claude weekly", "Claude Fable weekly"]
         );
         assert_eq!(choices[2].0, fable);
-        assert_eq!(
-            listed_keys(&settings, &reported, &BTreeSet::new()),
-            choices.iter().map(|(k, _)| k.clone()).collect::<Vec<_>>()
-        );
 
         // In Swedish the meter comes first, with "limit" in it, and is capitalised.
         let choices = meter_choices(&settings, &reported, &Swedish, &MeterAccounts::default());
@@ -1442,7 +1811,7 @@ mod tests {
     }
 
     #[test]
-    fn shortcut_problems_and_the_status_line_come_in_the_language() {
+    fn shortcut_problems_come_in_the_language() {
         assert_eq!(
             shortcut_message(&ShortcutProblem::Refused(HotkeyError::InUse), &English),
             "The shortcut is already in use."
@@ -1465,15 +1834,6 @@ mod tests {
                 &Swedish
             ),
             shortcut_message(&ShortcutProblem::Invalid, &Swedish)
-        );
-        assert_eq!(saved_status(&English, false, false), "Saved.");
-        assert_eq!(
-            saved_status(&English, true, true),
-            "Saved, except the shortcut and start with Windows."
-        );
-        assert_eq!(
-            saved_status(&Swedish, false, true),
-            "Sparat, utom start med Windows."
         );
     }
 
@@ -1526,10 +1886,7 @@ mod tests {
         let opus = claude(MeterId::weekly_model("opus"));
         let five = claude(MeterId::new(MeterId::FIVE_HOUR));
         let mut settings = Settings::default();
-        set_pins(
-            &mut settings,
-            vec![fable.clone(), opus.clone(), five.clone()],
-        );
+        settings.readout.content = content_of(vec![fable.clone(), opus.clone(), five.clone()]);
         let reported = reported_meters(&saved, &settings);
         let labels: Vec<String> = reported
             .iter()

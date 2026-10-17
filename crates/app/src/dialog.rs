@@ -134,7 +134,8 @@ impl DialogKind {
 /// What the dialog process changed, as the flags of the settings-changed message's `WPARAM`.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Changes {
-    /// `settings.json` was written (Apply): re-read and apply it.
+    /// `settings.json` was written (a settings window commit, Theme Studio's "Save and use"):
+    /// re-read and apply it.
     pub settings: bool,
     /// Meshy's API key was saved or removed: lift Meshy's sign-in stop and read it again.
     pub meshy_key: bool,

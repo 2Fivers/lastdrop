@@ -106,6 +106,9 @@ pub struct Args {
     pub scale: Option<f64>,
     /// `--dark`: the preview in the dark Windows mode.
     pub dark: bool,
+    /// `--contrast`: the settings window's preview in a contrast theme (Windows' "Night sky"
+    /// colours).
+    pub contrast: bool,
     /// `--language <tag>`: the preview's language (`en`, `sv`); default: the settings' and
     /// `--preview-theme-studio <png>`: render Theme Studio (themes-spec §4), starting from
     /// `--theme` (else the settings' theme), and exit.
@@ -170,6 +173,7 @@ impl Args {
                     out.demo_scenario = iter.next().and_then(|v| v.to_str().map(str::to_owned));
                 }
                 Some("--dark") => out.dark = true,
+                Some("--contrast") => out.contrast = true,
                 Some("--language") => {
                     out.language = iter.next().and_then(|v| v.to_str().map(str::to_owned));
                 }

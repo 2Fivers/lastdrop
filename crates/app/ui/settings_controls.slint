@@ -1,0 +1,448 @@
+// The settings window's building blocks (settings-spec §3): semantic colours, the navigation
+// item, cards, grouped cards and their rows, the expander, group headings and the InfoBar. Custom
+// components after WinUI's SettingsCard / SettingsExpander pattern; every text comes from Rust.
+
+import { Palette } from "std-widgets.slint";
+
+// Settings-specific semantic colours (settings-spec §3.3). The settings window follows Windows'
+// app mode (light or dark, Fluent's palette) and, in a contrast theme, Windows' contrast colours,
+// which Rust sets. Never the flyout theme's colours.
+export global SettingsTheme {
+    in property <bool> high-contrast: false;
+    in property <color> hc-window: #000000;
+    in property <color> hc-window-text: #ffffff;
+    in property <color> hc-highlight: #1aebff;
+    in property <color> hc-highlight-text: #000000;
+    in property <color> hc-gray-text: #a6a6a6;
+    in property <color> hc-hotlight: #75e9fc;
+    // Focus rectangles show after keyboard use (as WinUI): set by the window's key handler,
+    // cleared on pointer input.
+    in-out property <bool> keyboard-focus-visible: false;
+
+    out property <bool> dark: Palette.color-scheme == ColorScheme.dark;
+    // SolidBackgroundFillColorBase (Mica's fallback).
+    out property <color> page-fill: high-contrast ? hc-window : dark ? #202020 : #f3f3f3;
+    // CardBackgroundFillColorDefault and CardStrokeColorDefault over the page.
+    out property <color> card-fill: high-contrast ? hc-window : dark ? #2b2b2b : #fbfbfb;
+    out property <color> card-stroke: high-contrast ? hc-window-text : dark ? #1d1d1d : #e5e5e5;
+    out property <color> divider: high-contrast ? hc-window-text : dark ? #ffffff15 : #0000000f;
+    out property <color> text-primary: high-contrast ? hc-window-text : dark ? #ffffff : #000000e4;
+    out property <color> text-secondary: high-contrast ? hc-window-text : dark ? #ffffffc5 : #0000009e;
+    out property <color> text-disabled: high-contrast ? hc-gray-text : dark ? #ffffff5d : #0000005c;
+    out property <color> subtle-hover: high-contrast ? transparent : dark ? #ffffff0f : #00000009;
+    out property <color> subtle-pressed: high-contrast ? transparent : dark ? #ffffff0a : #00000006;
+    // The selected navigation item: a subtle fill (Highlight in contrast) and its text.
+    out property <color> selected-fill: high-contrast ? hc-highlight : dark ? #ffffff0f : #00000009;
+    out property <color> selected-text: high-contrast ? hc-highlight-text : text-primary;
+    // Fluent's accent, which Slint tints with Windows' accent colour: the switches and check
+    // boxes have the same.
+    out property <brush> accent: high-contrast ? hc-highlight : Palette.accent-background;
+    out property <color> critical: high-contrast ? hc-highlight : dark ? #ff99a4 : #c42b1c;
+    // InfoBar error: SystemFillColorCriticalBackground.
+    out property <color> critical-fill: high-contrast ? hc-window : dark ? #442726 : #fde7e9;
+    out property <color> on-accent: high-contrast ? hc-highlight-text : dark ? #000000 : #ffffff;
+    out property <color> focus-outer: high-contrast ? hc-highlight : dark ? #ffffff : #000000e4;
+    out property <color> focus-inner: high-contrast ? hc-window : dark ? #000000b3 : #ffffffb3;
+    out property <string> font-icons: "Segoe Fluent Icons";
+    out property <string> font-display: "Segoe UI Variable Display";
+}
+
+// The keyboard focus rectangle (2 px outer + 1 px inner, radius + 2). Place it as the focused
+// element's last child with `x: -2px; y: -2px; width: parent.width + 4px; height: parent.height +
+// 4px;`, so it lies 2 px outside.
+export component SettingsFocusRect inherits Rectangle {
+    in property <length> radius: 4px;
+    border-width: 2px;
+    border-color: SettingsTheme.focus-outer;
+    border-radius: root.radius + 2px;
+    Rectangle {
+        x: 2px;
+        y: 2px;
+        width: parent.width - 4px;
+        height: parent.height - 4px;
+        border-width: 1px;
+        border-color: SettingsTheme.focus-inner;
+        border-radius: root.radius;
+    }
+}
+
+// One page in the navigation pane (settings-spec §2): 36 px, a 16 px icon and a 14 px label,
+// radius 4. Hover: a subtle fill; selected: a subtle fill and the 3 × 16 px accent pill. The pane
+// (one Tab stop) moves the selection with the arrow keys; `focused` draws the focus rectangle.
+export component NavItem inherits Rectangle {
+    in property <string> icon;
+    in property <string> label;
+    in property <bool> selected;
+    in property <bool> focused;
+    in property <int> index;
+    in property <int> count;
+    callback clicked();
+    height: 36px;
+    border-radius: 4px;
+    background: root.selected ? SettingsTheme.selected-fill : touch.pressed ? SettingsTheme.subtle-pressed : touch.has-hover ? SettingsTheme.subtle-hover : transparent;
+    accessible-role: tab;
+    accessible-label: root.label;
+    accessible-item-selectable: true;
+    accessible-item-selected: root.selected;
+    accessible-item-index: root.index;
+    accessible-item-count: root.count;
+    accessible-action-default => {
+        root.clicked();
+    }
+
+    if root.selected: Rectangle {
+        x: 0px;
+        y: (parent.height - 16px) / 2;
+        width: 3px;
+        height: 16px;
+        border-radius: 1.5px;
+        background: SettingsTheme.accent;
+    }
+    HorizontalLayout {
+        padding-left: 16px;
+        padding-right: 12px;
+        spacing: 16px;
+        Text {
+            text: root.icon;
+            font-family: SettingsTheme.font-icons;
+            font-size: 16px;
+            width: 16px;
+            color: root.selected ? SettingsTheme.selected-text : SettingsTheme.text-primary;
+            vertical-alignment: center;
+            accessible-role: none;
+        }
+        Text {
+            text: root.label;
+            font-size: 14px;
+            color: root.selected ? SettingsTheme.selected-text : SettingsTheme.text-primary;
+            vertical-alignment: center;
+            overflow: elide;
+            horizontal-stretch: 1;
+            accessible-role: none;
+        }
+    }
+    touch := TouchArea {
+        clicked => {
+            root.clicked();
+        }
+    }
+    if root.focused: SettingsFocusRect {
+        x: -2px;
+        y: -2px;
+        width: parent.width + 4px;
+        height: parent.height + 4px;
+        radius: 4px;
+    }
+}
+
+// A group heading on a page: 14 px semibold, 24 px above, 8 px below (the page's spacing gives
+// the rest).
+export component GroupHeading inherits Text {
+    font-size: 14px;
+    font-weight: 600;
+    color: SettingsTheme.text-primary;
+    wrap: word-wrap;
+    accessible-role: text;
+}
+
+// A short secondary text on a page (a group's description, a status line).
+export component PageNote inherits Text {
+    font-size: 12px;
+    color: SettingsTheme.text-secondary;
+    wrap: word-wrap;
+}
+
+// One row of a card (settings-spec §3.1): [20 px icon] header (14 px) and description (12 px,
+// secondary, wraps) · the trailing controls (the children), centred. At least 48 px high, 64 px
+// with a description; text wraps, never clips. `enabled: false` dims the texts of a dependent
+// row (its controls are disabled by the page).
+export component CardRow inherits Rectangle {
+    in property <string> header;
+    in property <string> description;
+    in property <string> icon;
+    in property <bool> enabled: true;
+    // A divider above (every row of a grouped card but the first).
+    in property <bool> divider;
+    // More room on the left: a row inside an expander (settings-spec §3.2).
+    in property <length> indent: 0px;
+    min-height: root.description == "" ? 48px : 64px;
+    accessible-role: groupbox;
+    accessible-label: root.header;
+    accessible-description: root.description;
+
+    if root.divider: Rectangle {
+        y: 0px;
+        height: 1px;
+        background: SettingsTheme.divider;
+    }
+    HorizontalLayout {
+        padding-left: 16px + root.indent;
+        padding-right: 16px;
+        padding-top: 10px;
+        padding-bottom: 10px;
+        spacing: 16px;
+        if root.icon != "": Text {
+            text: root.icon;
+            font-family: SettingsTheme.font-icons;
+            font-size: 20px;
+            width: 20px;
+            color: root.enabled ? SettingsTheme.text-primary : SettingsTheme.text-disabled;
+            vertical-alignment: center;
+            accessible-role: none;
+        }
+        VerticalLayout {
+            alignment: center;
+            horizontal-stretch: 1;
+            spacing: 2px;
+            Text {
+                text: root.header;
+                font-size: 14px;
+                color: root.enabled ? SettingsTheme.text-primary : SettingsTheme.text-disabled;
+                wrap: word-wrap;
+                accessible-role: none;
+            }
+            if root.description != "": Text {
+                text: root.description;
+                font-size: 12px;
+                color: root.enabled ? SettingsTheme.text-secondary : SettingsTheme.text-disabled;
+                wrap: word-wrap;
+                accessible-role: none;
+            }
+        }
+        HorizontalLayout {
+            alignment: end;
+            spacing: 8px;
+            VerticalLayout {
+                alignment: center;
+                HorizontalLayout {
+                    spacing: 8px;
+                    @children
+                }
+            }
+        }
+    }
+}
+
+// A row whose controls sit under its header (controls too wide to share a line with it: a theme
+// list with its button, the shortcut's keys, an API key box). Same look as CardRow.
+export component StackedRow inherits Rectangle {
+    in property <string> header;
+    in property <string> description;
+    in property <bool> enabled: true;
+    in property <bool> divider;
+    in property <length> indent: 0px;
+    accessible-role: groupbox;
+    accessible-label: root.header;
+    accessible-description: root.description;
+
+    if root.divider: Rectangle {
+        y: 0px;
+        height: 1px;
+        background: SettingsTheme.divider;
+    }
+    VerticalLayout {
+        padding-left: 16px + root.indent;
+        padding-right: 16px;
+        padding-top: 12px;
+        padding-bottom: 12px;
+        spacing: 8px;
+        VerticalLayout {
+            spacing: 2px;
+            if root.header != "": Text {
+                text: root.header;
+                font-size: 14px;
+                color: root.enabled ? SettingsTheme.text-primary : SettingsTheme.text-disabled;
+                wrap: word-wrap;
+                accessible-role: none;
+            }
+            if root.description != "": Text {
+                text: root.description;
+                font-size: 12px;
+                color: root.enabled ? SettingsTheme.text-secondary : SettingsTheme.text-disabled;
+                wrap: word-wrap;
+                accessible-role: none;
+            }
+        }
+        @children
+    }
+}
+
+// A card (settings-spec §3.1): radius 4, the card fill and a 1 px stroke around its rows (the
+// children: one CardRow, or several rows separated by dividers — a grouped card). `highlighted`
+// draws an accent outline (a deep link's target, settings-spec §7).
+export component SettingsCard inherits Rectangle {
+    in property <bool> highlighted;
+    background: SettingsTheme.card-fill;
+    border-radius: 4px;
+    border-width: root.highlighted ? 2px : 1px;
+    border-color: root.highlighted ? SettingsTheme.accent : SettingsTheme.card-stroke;
+    clip: true;
+    VerticalLayout {
+        @children
+    }
+}
+
+// The header of a settings expander (settings-spec §3.2): a card row whose expansion is its own
+// control — the chevron button (expanded state for screen readers; Enter or Space) or a click on
+// the row. The expanded content follows in the same card, instantiated only while expanded (the
+// page writes `if expanded`), so collapsed content is in neither the Tab order nor the
+// accessibility tree.
+export component ExpanderHeader inherits Rectangle {
+    in property <string> header;
+    in property <string> description;
+    in property <string> icon;
+    in property <bool> expanded;
+    // The chevron's accessible name ("Claude Code accounts").
+    in property <string> toggle-label: root.header;
+    callback toggled(bool);
+    min-height: root.description == "" ? 48px : 64px;
+    background: touch.pressed ? SettingsTheme.subtle-pressed : touch.has-hover ? SettingsTheme.subtle-hover : transparent;
+
+    touch := TouchArea {
+        clicked => {
+            root.toggled(!root.expanded);
+        }
+    }
+    HorizontalLayout {
+        padding-left: 16px;
+        padding-right: 8px;
+        padding-top: 10px;
+        padding-bottom: 10px;
+        spacing: 16px;
+        if root.icon != "": Text {
+            text: root.icon;
+            font-family: SettingsTheme.font-icons;
+            font-size: 20px;
+            width: 20px;
+            color: SettingsTheme.text-primary;
+            vertical-alignment: center;
+            accessible-role: none;
+        }
+        VerticalLayout {
+            alignment: center;
+            horizontal-stretch: 1;
+            spacing: 2px;
+            Text {
+                text: root.header;
+                font-size: 14px;
+                color: SettingsTheme.text-primary;
+                wrap: word-wrap;
+            }
+            if root.description != "": Text {
+                text: root.description;
+                font-size: 12px;
+                color: SettingsTheme.text-secondary;
+                wrap: word-wrap;
+            }
+        }
+        VerticalLayout {
+            alignment: center;
+            chevron := Rectangle {
+            width: 32px;
+            height: 32px;
+            border-radius: 4px;
+            background: chevron-touch.pressed ? SettingsTheme.subtle-pressed : chevron-touch.has-hover ? SettingsTheme.subtle-hover : transparent;
+            accessible-role: button;
+            accessible-label: root.toggle-label;
+            accessible-expandable: true;
+            accessible-expanded: root.expanded;
+            accessible-action-default => {
+                root.toggled(!root.expanded);
+            }
+            accessible-action-expand => {
+                root.toggled(true);
+            }
+            Text {
+                // ChevronDown / ChevronUp.
+                text: root.expanded ? "\u{E70E}" : "\u{E70D}";
+                font-family: SettingsTheme.font-icons;
+                font-size: 12px;
+                color: SettingsTheme.text-primary;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+                accessible-role: none;
+            }
+            chevron-touch := TouchArea {
+                clicked => {
+                    root.toggled(!root.expanded);
+                }
+            }
+            chevron-focus := FocusScope {
+                focus-on-click: false;
+                key-pressed(event) => {
+                    if (event.text == Key.Return || event.text == " ") {
+                        root.toggled(!root.expanded);
+                        return accept;
+                    }
+                    reject
+                }
+            }
+            if chevron-focus.has-focus && SettingsTheme.keyboard-focus-visible: SettingsFocusRect {
+                x: -2px;
+                y: -2px;
+                width: parent.width + 4px;
+                height: parent.height + 4px;
+                radius: 4px;
+            }
+            }
+        }
+    }
+}
+
+// A message bar at the top of the content pane (settings-spec §2): an error not tied to one
+// visible control ("Couldn't save the settings: …"); its actions are the children. A live
+// region, so a screen reader says it when it appears.
+export component InfoBar inherits Rectangle {
+    in property <string> title;
+    in property <string> message;
+    in property <bool> has-actions;
+    background: SettingsTheme.critical-fill;
+    border-radius: 4px;
+    border-width: 1px;
+    border-color: SettingsTheme.high-contrast ? SettingsTheme.hc-window-text : SettingsTheme.card-stroke;
+    accessible-role: groupbox;
+    accessible-label: root.title;
+    accessible-description: root.message;
+    accessible-live-region: assertive;
+
+    HorizontalLayout {
+        padding: 12px;
+        spacing: 12px;
+        Rectangle {
+            width: 16px;
+            accessible-role: none;
+            // StatusCircle filled, with the critical mark (as the flyout's glyphs).
+            Text {
+                y: 2px;
+                height: 16px;
+                text: "\u{F136}";
+                font-family: SettingsTheme.font-icons;
+                font-size: 16px;
+                color: SettingsTheme.critical;
+            }
+            Text {
+                y: 2px;
+                height: 16px;
+                text: "\u{F13C}";
+                font-family: SettingsTheme.font-icons;
+                font-size: 16px;
+                color: SettingsTheme.on-accent;
+            }
+        }
+        VerticalLayout {
+            horizontal-stretch: 1;
+            spacing: root.has-actions ? 8px : 0px;
+            Text {
+                text: root.message;
+                font-size: 14px;
+                color: SettingsTheme.text-primary;
+                wrap: word-wrap;
+            }
+            HorizontalLayout {
+                alignment: start;
+                spacing: 8px;
+                @children
+            }
+        }
+    }
+}

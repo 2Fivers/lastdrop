@@ -1,5 +1,5 @@
 //! The settings window's **Accounts** section (accounts-spec §6–§7): what it lists and the edits
-//! it makes to the draft. Pure functions over [`AccountsInfo`] — who is signed in to each listed
+//! it makes to the settings. Pure functions over [`AccountsInfo`] — who is signed in to each listed
 //! folder and the folders found on this PC — which [`AccountsInfo::read`] gathers when the window
 //! opens (the dialog process may wait on the disk, ARCHITECTURE "Processes").
 //!
@@ -16,7 +16,6 @@ use lastdrop_core::settings::{AccountSettings, ReadoutContent, Settings, SourceS
 use lastdrop_providers::discover::{self, Candidate};
 use lastdrop_providers::io::{Env, Fs};
 use lastdrop_providers::{AccountSource, identity};
-use slint::{ModelRc, SharedString, VecModel};
 
 use crate::ui;
 
@@ -279,51 +278,71 @@ pub fn unused(settings: &Settings, info: &AccountsInfo, provider: ProviderId) ->
         .collect()
 }
 
-/// The section's blocks for the window: one per service the settings have.
-pub fn blocks(
-    settings: &Settings,
-    info: &AccountsInfo,
-    strings: &dyn Strings,
-) -> Vec<ui::AccountBlock> {
+/// The services of the accounts section the settings have, in [`SERVICES`] order: one block each.
+pub fn shown_services(settings: &Settings) -> Vec<ProviderId> {
     SERVICES
         .iter()
-        .filter(|p| settings.provider(**p).is_some())
-        .map(|&provider| {
-            let accounts = accounts_of(settings, provider);
-            let rows: Vec<ui::AccountRow> = accounts
-                .iter()
-                .enumerate()
-                .map(|(i, account)| ui::AccountRow {
-                    name: name_of(settings, info, provider, i, strings).into(),
-                    folder: info
-                        .folder_of(provider, account)
-                        .map(|f| f.display().to_string())
-                        .unwrap_or_default()
-                        .into(),
-                    status: status_of(settings, info, provider, i, strings).into(),
-                    alias: account.alias.clone().unwrap_or_default().into(),
-                    removable: accounts.len() > 1,
-                })
-                .collect();
-            let found: Vec<ui::FoundFolder> = unused(settings, info, provider)
-                .iter()
-                .map(|c| ui::FoundFolder {
-                    folder: c.folder.display().to_string().into(),
-                    status: identity_line(
-                        info.identity(&c.folder),
-                        settings.hide_personal_info,
-                        strings,
-                    )
+        .copied()
+        .filter(|p| settings.provider(*p).is_some())
+        .collect()
+}
+
+/// The window's rows for `provider`'s accounts, in settings order, each keyed by its source (the
+/// window updates its rows in place by that key, settings-spec §5.4). `revision` is the window's.
+pub fn account_rows(
+    settings: &Settings,
+    info: &AccountsInfo,
+    provider: ProviderId,
+    strings: &dyn Strings,
+) -> Vec<(SourceKey, ui::AccountRow)> {
+    let accounts = accounts_of(settings, provider);
+    accounts
+        .iter()
+        .enumerate()
+        .map(|(i, account)| {
+            let name = name_of(settings, info, provider, i, strings);
+            let key = SourceKey {
+                provider,
+                account: account.key.clone(),
+            };
+            let row = ui::AccountRow {
+                alias_label: text(strings, Msg::SettingsAccountsAliasA11y, &[("name", &name)])
                     .into(),
-                })
-                .collect();
-            ui::AccountBlock {
-                title: SharedString::from(
-                    provider.client_name().unwrap_or(provider.display_name()),
-                ),
-                accounts: ModelRc::new(VecModel::from(rows)),
-                found: ModelRc::new(VecModel::from(found)),
-            }
+                remove_label: text(strings, Msg::SettingsAccountsRemoveA11y, &[("name", &name)])
+                    .into(),
+                name: name.into(),
+                folder: info
+                    .folder_of(provider, account)
+                    .map(|f| f.display().to_string())
+                    .unwrap_or_default()
+                    .into(),
+                status: status_of(settings, info, provider, i, strings).into(),
+                alias: account.alias.clone().unwrap_or_default().into(),
+                removable: accounts.len() > 1,
+                revision: 0,
+            };
+            (key, row)
+        })
+        .collect()
+}
+
+/// The window's rows for `provider`'s folders found on this PC that are not accounts yet.
+pub fn found_rows(
+    settings: &Settings,
+    info: &AccountsInfo,
+    provider: ProviderId,
+    strings: &dyn Strings,
+) -> Vec<ui::FoundFolder> {
+    unused(settings, info, provider)
+        .iter()
+        .map(|c| ui::FoundFolder {
+            folder: c.folder.display().to_string().into(),
+            status: identity_line(
+                info.identity(&c.folder),
+                settings.hide_personal_info,
+                strings,
+            )
+            .into(),
         })
         .collect()
 }

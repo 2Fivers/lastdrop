@@ -1372,9 +1372,9 @@ pub fn on_settings_changed(app: &App, changes: Changes) {
 }
 
 /// The barrier queued for the dialog's write was reached and read the file: apply it, with this
-/// process's changes since the barrier rebased onto it ([`TraySync::reload`]), as Apply did in
-/// this process: hotkey re-registered when it changed, providers and sources rebuilt, readout on
-/// or off, models rebuilt, refreshes re-planned. A missing or broken file is ignored; a barrier a
+/// process's changes since the barrier rebased onto it ([`TraySync::reload`]): hotkey
+/// re-registered when it changed, providers and sources rebuilt, readout on or off, models
+/// rebuilt, refreshes re-planned. A missing or broken file is ignored; a barrier a
 /// later one superseded does nothing (the later one's read follows).
 fn on_settings_written(app: &App, token: u64, read: crate::settings_sync::BarrierRead) {
     let current = app.state.borrow().settings.clone();
