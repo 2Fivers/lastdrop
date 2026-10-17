@@ -1,8 +1,8 @@
-# yaml-language-server: $schema=https://aka.ms/winget-manifest.version.1.6.0.schema.json
+# yaml-language-server: $schema=https://aka.ms/winget-manifest.version.1.12.0.schema.json
 # winget version manifest. tools\release\winget.ps1 fills in {{VERSION}} and writes the three
 # manifests to dist\winget (updates-spec §5).
 PackageIdentifier: 2Fivers.Lastdrop
 PackageVersion: {{VERSION}}
 DefaultLocale: en-US
 ManifestType: version
-ManifestVersion: 1.6.0
+ManifestVersion: 1.12.0

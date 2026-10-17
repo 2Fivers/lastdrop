@@ -1,4 +1,4 @@
-# yaml-language-server: $schema=https://aka.ms/winget-manifest.defaultLocale.1.6.0.schema.json
+# yaml-language-server: $schema=https://aka.ms/winget-manifest.defaultLocale.1.12.0.schema.json
 PackageIdentifier: 2Fivers.Lastdrop
 PackageVersion: {{VERSION}}
 PackageLocale: en-US
@@ -27,4 +27,4 @@ Tags:
   - taskbar
 ReleaseNotesUrl: https://github.com/2Fivers/lastdrop/releases/tag/v{{VERSION}}
 ManifestType: defaultLocale
-ManifestVersion: 1.6.0
+ManifestVersion: 1.12.0
