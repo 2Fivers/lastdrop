@@ -524,7 +524,7 @@ lowercase_names = true
 "settings.privacy.hide.description" = "Visa Konto 1, Konto 2 i stället"
 "settings.custom" = "Fler tjänster"
 "settings.custom.add" = "Lägg till en egen tjänst"
-"settings.custom.add.description" = "Tjänster med ett enkelt API för användning kan beskrivas i en JSON-fil, som läses när Lastdrop startar."
+"settings.custom.add.description" = "Tjänster som visar användning via ett enkelt API kan beskrivas i en JSON-fil, som läses när Lastdrop startar."
 "settings.custom.open" = "Öppna mappen"
 "settings.custom.open.a11y" = "Öppna mappen för egna tjänster"
 
