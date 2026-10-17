@@ -1,8 +1,9 @@
-//! The settings window's pages, instant apply and deep links (settings-spec §5, §7), driven
-//! through Slint's headless software platform with the demo's settings and invented accounts: no
-//! OS window, no files, no registry, no Credential Manager — commits go to an in-memory
-//! `settings.json` (`MemoryOutside`), and the platform's clock is the test's, so the 250 ms and
-//! 800 ms timers fire when the test says.
+//! The settings window's pages, instant apply, service expanders and deep links (settings-spec
+//! §4, §5, §7), driven through Slint's headless software platform with the demo's settings,
+//! invented accounts and the described services Lastdrop ships: no OS window, no files, no
+//! registry, no Credential Manager — commits and API keys go to an in-memory `settings.json` and
+//! key store (`MemoryOutside`), and the platform's clock is the test's, so the 250 ms and 800 ms
+//! timers fire when the test says.
 //!
 //! One test function: Slint's platform is set once per process and its components are not
 //! `Send`, so everything runs on one thread here.
@@ -13,14 +14,15 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use lastdrop_app::demo::Demo;
+use lastdrop_app::settings_accounts::folder_id;
 use lastdrop_app::settings_edits::MemoryOutside;
-use lastdrop_app::settings_window::{self as sw, Focus};
-use lastdrop_app::{preview, ui};
-use lastdrop_core::model::ProviderId;
-use lastdrop_core::settings::{ReadoutContent, RefreshInterval};
-use slint::ComponentHandle;
+use lastdrop_app::settings_window::{self as sw, Focus, Inputs};
+use lastdrop_app::{custom_services, preview, ui};
+use lastdrop_core::model::{AccountKey, ProviderId};
+use lastdrop_core::settings::{AccountSettings, ReadoutContent, RefreshInterval, SourceSettings};
 use slint::platform::software_renderer::{MinimalSoftwareWindow, RepaintBufferType};
 use slint::platform::{Key, Platform, WindowAdapter, WindowEvent};
+use slint::{ComponentHandle, Model};
 
 /// The platform's clock, ms since the test started.
 static NOW_MS: AtomicU64 = AtomicU64::new(0);
@@ -74,9 +76,25 @@ fn ctrl(window: &ui::SettingsWindow, key: Key) {
     });
 }
 
+/// Types `text`, one key at a time.
+fn type_text(window: &ui::SettingsWindow, text: &str) {
+    for c in text.chars() {
+        press(window, c.to_string());
+    }
+}
+
+/// The English demo's settings window inputs.
+fn demo_inputs() -> Inputs {
+    preview::demo_settings_inputs(&Demo::new(false), false)
+}
+
 /// The settings window for the English demo, committing to `outside`, at its preferred size.
 fn open(outside: &Rc<RefCell<MemoryOutside>>) -> ui::SettingsWindow {
-    let inputs = preview::demo_settings_inputs(&Demo::new(false), false);
+    open_with(outside, demo_inputs())
+}
+
+/// The settings window for `inputs`, committing to `outside`, at its preferred size.
+fn open_with(outside: &Rc<RefCell<MemoryOutside>>, inputs: Inputs) -> ui::SettingsWindow {
     outside.borrow_mut().disk = inputs.settings.clone();
     let window = sw::start(inputs, Box::new(outside.clone()), false).expect("window");
     window.show().expect("show");
@@ -90,9 +108,34 @@ fn open(outside: &Rc<RefCell<MemoryOutside>>) -> ui::SettingsWindow {
     window
 }
 
+/// The service list's rows.
+fn services(window: &ui::SettingsWindow) -> Vec<ui::ProviderRow> {
+    window.get_providers().iter().collect()
+}
+
+/// The row of the service `id` in the service list.
+fn service_row(window: &ui::SettingsWindow, id: &str) -> i32 {
+    let row = services(window)
+        .iter()
+        .position(|r| r.id == id)
+        .expect("listed");
+    i32::try_from(row).expect("a few rows")
+}
+
+/// The account rows of accounts block `block`.
+fn accounts(window: &ui::SettingsWindow, block: usize) -> Vec<ui::AccountRow> {
+    let blocks = window.get_account_blocks();
+    blocks
+        .row_data(block)
+        .map(|b| b.accounts.iter().collect())
+        .unwrap_or_default()
+}
+
 #[test]
 fn settings_pages_instant_apply_and_deep_links() {
     slint::platform::set_platform(Box::new(Headless)).expect("platform");
+    // The described services Lastdrop ships, listed after the built-in ones (turned off).
+    custom_services::load_bundled();
     let outside = Rc::new(RefCell::new(MemoryOutside::default()));
     let window = open(&outside);
     assert_eq!(window.get_page(), sw::PAGE_SERVICES, "Services first");
@@ -164,10 +207,13 @@ fn settings_pages_instant_apply_and_deep_links() {
     assert!(!window.get_notify_enabled());
 
     // ---- An alias being typed is not committed by an account action, and commits after its
-    // pause.
+    // pause. Claude's row expands to its accounts.
     window.invoke_select_page(sw::PAGE_SERVICES);
-    window.invoke_block_toggled(0, true);
+    let claude = service_row(&window, "claude");
+    window.invoke_service_toggled(claude, true);
     frame(&window);
+    assert!(services(&window)[0].expanded);
+    assert_eq!(services(&window)[0].kind, ui::ServiceKind::Accounts);
     window.invoke_account_alias_edited(0, 0, "Home".into());
     wait(&window, 300);
     let claude_aliases = |out: &MemoryOutside| -> Vec<Option<String>> {
@@ -189,24 +235,129 @@ fn settings_pages_instant_apply_and_deep_links() {
         Some("Home")
     );
 
-    // ---- Deep link to the accounts: Services, the block with found folders expanded, its first
-    // found folder's Add focused; Space adds it, committed at once.
-    window.invoke_block_toggled(0, false);
+    // ---- A described service read with an API key expands to its key row (settings-spec §4):
+    // from the pane, Tab to its chevron, Space opens it, Tab reaches the key box; Enter saves
+    // the key (Credential Manager here is `MemoryOutside`'s) and turns the service on; Remove
+    // takes it back. The rows are all closed, so each has its switch and, when it has
+    // something to manage, its chevron.
+    window.invoke_service_toggled(claude, false);
+    window.invoke_select_page(sw::PAGE_GENERAL);
+    frame(&window);
+    let deepseek = service_row(&window, "deepseek");
+    let at = usize::try_from(deepseek).expect("a row");
+    {
+        let row = &services(&window)[at];
+        assert_eq!(row.kind, ui::ServiceKind::Key);
+        assert_eq!(
+            row.description,
+            "Described in a JSON file · Needs an API key"
+        );
+        assert_eq!(row.toggle_label, "DeepSeek API key");
+        assert!(!row.enabled && !row.expanded);
+    }
+    ctrl(&window, Key::Tab);
+    assert_eq!(
+        window.get_page(),
+        sw::PAGE_SERVICES,
+        "the pane has the focus"
+    );
+    let stops: usize = services(&window)[..at]
+        .iter()
+        .map(|r| {
+            if r.kind == ui::ServiceKind::None {
+                1
+            } else {
+                2
+            }
+        })
+        .sum();
+    for _ in 0..stops + 2 {
+        press(&window, Key::Tab);
+    }
+    press(&window, " ");
+    assert!(
+        services(&window)[at].expanded,
+        "Space on its chevron opens it"
+    );
+    press(&window, Key::Tab);
+    let writes = outside.borrow().writes;
+    type_text(&window, "sk-invented-key");
+    press(&window, Key::Return);
+    let target = "Lastdrop:deepseek:default:api_key";
+    assert!(outside.borrow().keys.contains(target), "stored");
+    assert_eq!(outside.borrow().writes, writes + 1, "turned on at once");
+    assert!(
+        outside
+            .borrow()
+            .disk
+            .provider(ProviderId::from_id("deepseek").expect("loaded"))
+            .is_some_and(|p| p.enabled)
+    );
+    let row = &services(&window)[at];
+    assert!(row.enabled);
+    assert_eq!(row.description, "Described in a JSON file · API key stored");
+    let key_row = usize::try_from(row.key_row).expect("a key row");
+    let key = window.get_api_keys().row_data(key_row).expect("key row");
+    assert!(key.stored);
+    assert_eq!(key.status, "Key saved. Lastdrop reads DeepSeek with it.");
+    assert_eq!(key.save_label, "Save the DeepSeek API key");
+    assert_eq!(key.remove_label, "Remove the DeepSeek API key");
+    // Save key is off with the box cleared, so Tab reaches Remove; Remove goes with the key and
+    // the focus goes back to the box: typing there saves again.
+    press(&window, Key::Tab);
+    press(&window, " ");
+    assert!(outside.borrow().keys.is_empty(), "removed");
+    let key = window.get_api_keys().row_data(key_row).expect("key row");
+    assert!(!key.stored);
+    assert_eq!(key.status, "Key removed.");
+    type_text(&window, "sk-another-key");
+    press(&window, Key::Return);
+    assert!(outside.borrow().keys.contains(target), "stored again");
+    // The expander stays open on another page and back.
+    window.invoke_select_page(sw::PAGE_DISPLAY);
+    window.invoke_select_page(sw::PAGE_SERVICES);
+    frame(&window);
+    assert!(services(&window)[at].expanded);
+
+    // ---- Deep link to the accounts: Services, the service with found folders expanded, its
+    // first found folder's Add focused; Space adds it, committed at once.
+    window.invoke_service_toggled(claude, false);
+    frame(&window);
+    assert!(!services(&window)[0].expanded);
     window.invoke_select_page(sw::PAGE_GENERAL);
     sw::reveal(Focus::Accounts);
     frame(&window);
     assert_eq!(window.get_page(), sw::PAGE_SERVICES);
+    let rows = services(&window);
+    assert!(rows[0].expanded, "Claude has a found folder");
+    assert!(!rows[1].expanded, "Codex has none");
     let writes = outside.borrow().writes;
     press(&window, " ");
     assert_eq!(outside.borrow().writes, writes + 1, "added at once");
     assert_eq!(claude_aliases(&outside.borrow()).len(), 3);
-    let status: Vec<slint::SharedString> = slint::Model::iter(&window.get_block_status()).collect();
+    let status: Vec<slint::SharedString> = window.get_block_status().iter().collect();
     assert_eq!(status[0], "Account added.");
+    // Its row went with the focus; the focus goes on to Add folder… (no other found folder).
+    assert_eq!(window.get_focus_target(), "add-folder");
 
-    // Removing it commits at once too.
+    // Removing it commits at once too; the focus goes to the next account (there is none: Add
+    // folder…).
     window.invoke_account_removed(0, 2);
     frame(&window);
     assert_eq!(claude_aliases(&outside.borrow()).len(), 2);
+    assert_eq!(window.get_focus_target(), "add-folder");
+    window.invoke_account_removed(0, 0);
+    frame(&window);
+    assert_eq!(
+        window.get_focus_target(),
+        format!("account:{}", accounts(&window, 0)[0].id),
+        "the account after it"
+    );
+    assert_eq!(claude_aliases(&outside.borrow()), [Some("Work".to_owned())]);
+    assert_eq!(
+        services(&window)[0].description,
+        "Claude Code's sign-in on this PC · 1 account"
+    );
 
     // ---- Deep link to the pins: Display, the readout on and "Meters I pin" (choosing: no pin
     // yet, still automatic), outlined, the first Pin box focused; Space pins it.
@@ -270,4 +421,46 @@ fn settings_pages_instant_apply_and_deep_links() {
     window.invoke_info_discard();
     assert!(!sw::is_open());
     assert!(outside.borrow().disk.readout.enabled, "not saved");
+
+    // ---- Every configured folder has its row, a duplicate too (accounts-spec §3, §7): a third
+    // Claude folder signed in to the same account as the default one says so and its meters
+    // are left out of the meter list.
+    let mut inputs = demo_inputs();
+    let home = std::path::PathBuf::from(r"C:\Users\tester");
+    let copy = home.join(".claude-copy");
+    let same = inputs.accounts.identity(&home.join(".claude")).clone();
+    inputs.accounts.identities.insert(folder_id(&copy), same);
+    if let Some(p) = inputs.settings.provider_mut(ProviderId::Claude) {
+        let taken: Vec<AccountKey> = p.accounts.iter().map(|a| a.key.clone()).collect();
+        p.accounts.push(AccountSettings::for_folder(
+            SourceSettings::ClaudeConfigDir { path: copy },
+            Some("Copy"),
+            &taken,
+        ));
+    }
+    let window = open_with(&outside, inputs);
+    window.invoke_service_toggled(service_row(&window, "claude"), true);
+    frame(&window);
+    let rows = accounts(&window, 0);
+    let names: Vec<&str> = rows.iter().map(|r| r.name.as_str()).collect();
+    assert_eq!(names, ["tester@example.invalid", "Work", "Copy"]);
+    assert_eq!(
+        rows[2].status,
+        "Same account as tester@example.invalid, shown once"
+    );
+    assert!(rows[2].folder.ends_with(".claude-copy"));
+    assert!(rows[2].removable);
+    assert_eq!(
+        services(&window)[0].description,
+        "Claude Code's sign-in on this PC · 3 accounts"
+    );
+    let meters: Vec<String> = window
+        .get_meters()
+        .iter()
+        .map(|m| m.label.to_string())
+        .collect();
+    assert!(meters.iter().any(|m| m.contains("Work")), "{meters:?}");
+    assert!(!meters.iter().any(|m| m.contains("Copy")), "{meters:?}");
+    window.invoke_dismiss();
+    assert!(!sw::is_open());
 }

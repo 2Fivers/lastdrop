@@ -1,6 +1,7 @@
 //! The settings window (settings-spec): a navigation pane and four pages of settings cards —
-//! Services (services on or off, Claude Code's and Codex's accounts, [`crate::settings_accounts`],
-//! accounts-spec §7; API keys; privacy), Display (theme, times, the taskbar readout and its pins,
+//! Services (the services on or off, each expanding to what it has to manage: Claude Code's and
+//! Codex's accounts, [`crate::settings_accounts`], accounts-spec §7, or an API key; privacy; the
+//! folder of described services), Display (theme, times, the taskbar readout and its pins,
 //! the meters), Notifications (N§2) and General (start with Windows, language, refresh interval,
 //! keyboard shortcut, updates). Its texts are the `settings.*` strings in the language the
 //! settings pick (else Windows' display language, [`Wording`]); when a commit changes the
@@ -283,12 +284,69 @@ fn pinned_names(key: &MeterKey) -> MeterNames {
 }
 
 /// The services read with an API key stored here (Meshy, OpenCode Go, the described services)
-/// that the settings have, in service order: the rows of the API keys group.
+/// that the settings have, in service order: the services whose expander holds an API key.
 pub fn key_services(settings: &Settings) -> Vec<ProviderId> {
     ProviderId::every()
         .into_iter()
         .filter(|p| p.uses_api_key() && settings.provider(*p).is_some())
         .collect()
+}
+
+/// What `provider`'s row in the service list expands to (settings-spec §4), from its
+/// capabilities: its accounts when its accounts are folders ([`settings_accounts::has_folders`]:
+/// Claude, Codex), its API key when it is read with a key stored here ([`key_services`]), else
+/// nothing.
+pub fn service_kind(provider: ProviderId, settings: &Settings) -> ui::ServiceKind {
+    if settings_accounts::has_folders(provider) {
+        ui::ServiceKind::Accounts
+    } else if provider.uses_api_key() && settings.provider(provider).is_some() {
+        ui::ServiceKind::Key
+    } else {
+        ui::ServiceKind::None
+    }
+}
+
+/// The line under `provider` in the service list (settings-spec §4): how it is read, with the
+/// number of its accounts (`Claude Code's sign-in on this PC · 2 accounts`), or the state of its
+/// API key (`key_stored`: one is stored here).
+pub fn service_description(
+    provider: ProviderId,
+    settings: &Settings,
+    key_stored: bool,
+    strings: &dyn Strings,
+) -> String {
+    let t = |msg: Msg| strings.template(msg).to_owned();
+    let key = || {
+        t(if key_stored {
+            Msg::SettingsServiceKeyStored
+        } else {
+            Msg::SettingsServiceKeyNeeded
+        })
+    };
+    let accounts = || {
+        let n = settings.provider(provider).map_or(0, |p| p.accounts.len());
+        count(
+            strings,
+            PluralMsg::SettingsAccountsCount,
+            i64::try_from(n).unwrap_or(0),
+        )
+    };
+    match provider {
+        ProviderId::Claude => format!("{} · {}", t(Msg::SettingsServiceClaude), accounts()),
+        ProviderId::Codex => format!("{} · {}", t(Msg::SettingsServiceCodex), accounts()),
+        ProviderId::Copilot => t(Msg::SettingsServiceCopilot),
+        ProviderId::Cursor => t(Msg::SettingsServiceCursor),
+        ProviderId::Grok => t(Msg::SettingsServiceGrok),
+        ProviderId::Antigravity => t(Msg::SettingsServiceAntigravity),
+        ProviderId::Meshy => key(),
+        // Without a key here it uses the one OpenCode keeps: no key is not "needs a key".
+        ProviderId::OpenCodeGo => t(if key_stored {
+            Msg::SettingsServiceOpenCodeOwn
+        } else {
+            Msg::SettingsServiceOpenCodeShared
+        }),
+        ProviderId::Custom(_) => format!("{} · {}", t(Msg::SettingsServiceCustom), key()),
+    }
 }
 
 /// The credential name of `provider`'s API key for its first account.
@@ -307,8 +365,8 @@ fn key_credential(settings: &Settings, provider: ProviderId) -> CredentialName {
     }
 }
 
-/// Each API key service and whether its key is stored (its credential exists; the secret is not
-/// read into the app).
+/// Each API key service ([`key_services`]) and whether its key is stored (its credential exists;
+/// the secret is not read into the app).
 fn keys_stored(settings: &Settings) -> Vec<(ProviderId, bool)> {
     key_services(settings)
         .into_iter()
@@ -331,7 +389,8 @@ pub struct Inputs {
     pub reported: Vec<(MeterKey, MeterNames)>,
     /// Who is signed in to each listed folder and the folders found on this PC.
     pub accounts: AccountsInfo,
-    /// Each API key service and whether its key is stored.
+    /// Whether the key of each API key service ([`key_services`]) is stored; a service not
+    /// listed has none.
     pub keys: Vec<(ProviderId, bool)>,
     /// What the texts are made of.
     pub wording: Wording,
@@ -387,21 +446,21 @@ struct Session {
     accounts: RefCell<AccountsInfo>,
     /// The API key rows: each service, whether a key is stored, and what the last action said.
     keys: RefCell<Vec<(ProviderId, bool, String)>>,
-    /// Lastdrop's folders (the themes folder, Theme Studio).
+    /// Lastdrop's folders (the themes folder, Theme Studio, the described services' folder).
     paths: Paths,
     /// The ids of the themes the theme list shows, in its order.
     theme_ids: RefCell<Vec<String>>,
     /// The services listed (row index → service).
     providers: Vec<ProviderId>,
     provider_rows: Rc<VecModel<ui::ProviderRow>>,
+    /// The services whose expander is open: kept while the window is open, whatever the page.
+    expanded: RefCell<BTreeSet<ProviderId>>,
     /// The meters listed (row index → meter).
     meters: RefCell<Vec<MeterKey>>,
     meter_rows: Rc<VecModel<ui::MeterChoice>>,
     key_rows: Rc<VecModel<ui::ApiKeyRow>>,
     /// Claude Code's and Codex's accounts.
     blocks: Vec<Block>,
-    block_expanded: Rc<VecModel<bool>>,
-    block_summary: Rc<VecModel<SharedString>>,
     block_status: Rc<VecModel<SharedString>>,
     /// Alias boxes whose text is set again from the settings at the next sync (their edit
     /// reached its commit point, so they show what is saved).
@@ -410,8 +469,8 @@ struct Session {
     commit_timer: slint::Timer,
     /// Each alias box's 800 ms pause.
     alias_timers: RefCell<BTreeMap<SourceKey, slint::Timer>>,
-    /// A real window: the folder picker, the sign-in console, Theme Studio and the tray process
-    /// are used (not in tests and previews; Credential Manager is `outside`'s).
+    /// A real window: the folder picker, the sign-in console, Theme Studio, File Explorer and the
+    /// tray process are used (not in tests and previews; Credential Manager is `outside`'s).
     native: bool,
     /// The window is closing but the last commit failed (the InfoBar offers Close without
     /// saving).
@@ -511,16 +570,11 @@ pub fn start(
             found: Rc::new(VecModel::default()),
         })
         .collect();
-    let block_rows: Vec<ui::AccountBlock> = blocks
-        .iter()
-        .map(|b| ui::AccountBlock {
-            title: b
-                .provider
-                .client_name()
-                .unwrap_or(b.provider.display_name())
-                .into(),
-            accounts: ModelRc::from(b.accounts.clone()),
-            found: ModelRc::from(b.found.clone()),
+    let key_rows: Vec<(ProviderId, bool, String)> = key_services(&settings)
+        .into_iter()
+        .map(|p| {
+            let stored = keys.iter().any(|(k, s)| *k == p && *s);
+            (p, stored, String::new())
         })
         .collect();
     let session = Rc::new(Session {
@@ -530,20 +584,15 @@ pub fn start(
         reported,
         wording: RefCell::new(wording),
         accounts: RefCell::new(accounts),
-        keys: RefCell::new(
-            keys.into_iter()
-                .map(|(p, s)| (p, s, String::new()))
-                .collect(),
-        ),
+        keys: RefCell::new(key_rows),
         paths,
         theme_ids: RefCell::new(Vec::new()),
         providers,
         provider_rows: Rc::new(VecModel::default()),
+        expanded: RefCell::new(BTreeSet::new()),
         meters: RefCell::new(Vec::new()),
         meter_rows: Rc::new(VecModel::default()),
         key_rows: Rc::new(VecModel::default()),
-        block_expanded: Rc::new(VecModel::from(vec![false; blocks.len()])),
-        block_summary: Rc::new(VecModel::from(vec![SharedString::new(); blocks.len()])),
         block_status: Rc::new(VecModel::from(vec![SharedString::new(); blocks.len()])),
         blocks,
         alias_reset: RefCell::new(BTreeSet::new()),
@@ -555,15 +604,32 @@ pub fn start(
     window.set_providers(ModelRc::from(session.provider_rows.clone()));
     window.set_meters(ModelRc::from(session.meter_rows.clone()));
     window.set_api_keys(ModelRc::from(session.key_rows.clone()));
-    window.set_account_blocks(ModelRc::new(VecModel::from(block_rows)));
-    window.set_block_expanded(ModelRc::from(session.block_expanded.clone()));
-    window.set_block_summary(ModelRc::from(session.block_summary.clone()));
     window.set_block_status(ModelRc::from(session.block_status.clone()));
     connect(&window);
     SESSION.with(|s| *s.borrow_mut() = Some(session.clone()));
     set_texts(&session);
     show_draft(&session);
     Ok(window)
+}
+
+/// The accounts blocks for the window in the language of `strings`: each block's rows (updated
+/// in place) and the line under a new account's name box. Set again when the language changes.
+fn block_rows(session: &Session, strings: &dyn Strings) -> Vec<ui::AccountBlock> {
+    session
+        .blocks
+        .iter()
+        .map(|b| {
+            let client = b
+                .provider
+                .client_name()
+                .unwrap_or(b.provider.display_name());
+            ui::AccountBlock {
+                accounts: ModelRc::from(b.accounts.clone()),
+                found: ModelRc::from(b.found.clone()),
+                new_note: text(strings, Msg::SettingsAccountsNewNote, &[("client", client)]).into(),
+            }
+        })
+        .collect()
 }
 
 /// Sets the window's colours from Windows' theme (settings-spec §3.3): in a contrast theme, the
@@ -619,16 +685,18 @@ fn reveal_pins(session: &Session) {
     session.window.invoke_reveal_pins();
 }
 
-/// The first run found more folders (accounts-spec §6): the Services page at the accounts, the
-/// blocks with found folders expanded, the first found folder's Add focused.
+/// The first run found more folders (accounts-spec §6): the Services page, the services with found
+/// folders expanded, the first of them scrolled to the top and its first found folder's Add
+/// focused.
 fn reveal_accounts(session: &Session) {
     let mut first = None;
     for (b, block) in session.blocks.iter().enumerate() {
         if block.found.row_count() > 0 {
-            session.block_expanded.set_row_data(b, true);
+            session.expanded.borrow_mut().insert(block.provider);
             first.get_or_insert(b);
         }
     }
+    show_draft(session);
     if let Some(b) = first {
         session
             .window
@@ -683,6 +751,8 @@ fn set_texts(session: &Session) {
         &wording.ui_languages,
         strings,
     )));
+    // The same account and found-folder models: their repeaters keep their rows.
+    window.set_account_blocks(ModelRc::new(VecModel::from(block_rows(session, strings))));
     fill_themes(session);
 }
 
@@ -697,9 +767,6 @@ pub fn texts(strings: &dyn Strings) -> ui::SettingsTexts {
         page_display_description: t(Msg::SettingsPageDisplayDescription),
         page_notifications: t(Msg::SettingsPageNotifications),
         page_general: t(Msg::SettingsPageGeneral),
-        services_hint: t(Msg::SettingsServicesHint),
-        accounts: t(Msg::SettingsAccounts),
-        accounts_hint: t(Msg::SettingsAccountsHint),
         accounts_alias: t(Msg::SettingsAccountsAlias),
         accounts_alias_none: t(Msg::SettingsAccountsAliasNone),
         accounts_remove: t(Msg::SettingsAccountsRemove),
@@ -707,15 +774,21 @@ pub fn texts(strings: &dyn Strings) -> ui::SettingsTexts {
         accounts_add: t(Msg::SettingsAccountsAdd),
         accounts_add_folder: t(Msg::SettingsAccountsAddFolder),
         accounts_new: t(Msg::SettingsAccountsNew),
+        accounts_new_open: t(Msg::SettingsAccountsNewOpen),
         accounts_new_name: t(Msg::SettingsAccountsNewName),
         accounts_new_create: t(Msg::SettingsAccountsNewCreate),
+        accounts_new_cancel: t(Msg::SettingsAccountsNewCancel),
         privacy: t(Msg::SettingsPrivacy),
         privacy_hide: t(Msg::SettingsPrivacyHide),
         privacy_hide_description: t(Msg::SettingsPrivacyHideDescription),
-        key: t(Msg::SettingsKey),
+        custom: t(Msg::SettingsCustom),
+        custom_add: t(Msg::SettingsCustomAdd),
+        custom_add_description: t(Msg::SettingsCustomAddDescription),
+        custom_open: t(Msg::SettingsCustomOpen),
+        custom_open_label: t(Msg::SettingsCustomOpenA11y),
+        key_label: t(Msg::SettingsKeyLabel),
         key_save: t(Msg::SettingsKeySave),
         key_remove: t(Msg::SettingsKeyRemove),
-        key_hint: t(Msg::SettingsKeyHint),
         refresh: t(Msg::SettingsRefresh),
         refresh_check: t(Msg::SettingsRefreshCheck),
         appearance: t(Msg::SettingsAppearance),
@@ -836,17 +909,51 @@ fn show_draft(session: &Session) {
     );
     window.set_hotkey_retry(matches!(problem, Some(ShortcutProblem::Refused(_))));
 
-    for (row, id) in session.providers.iter().enumerate() {
-        let data = ui::ProviderRow {
-            id: id.as_str().into(),
-            name: id.display_name().into(),
-            enabled: draft.provider(*id).is_some_and(|p| p.enabled),
-        };
-        update_row(&session.provider_rows, row, data);
-    }
     sync_meters(session, &draft, strings);
     sync_accounts(session, &draft, strings);
     sync_keys(session, strings);
+    sync_services(session, &draft, strings);
+}
+
+/// The service rows from the draft (settings-spec §4), in place: each service's glyph, name,
+/// line, switch, what its expander holds ([`service_kind`]) and whether it is open.
+fn sync_services(session: &Session, draft: &Settings, strings: &dyn Strings) {
+    let keys = session.keys.borrow();
+    let expanded = session.expanded.borrow();
+    let index = |i: Option<usize>| i.and_then(|i| i32::try_from(i).ok()).unwrap_or(-1);
+    for (row, id) in session.providers.iter().enumerate() {
+        let block = session.blocks.iter().position(|b| b.provider == *id);
+        let key_row = keys.iter().position(|(p, _, _)| p == id);
+        let stored = key_row.is_some_and(|k| keys[k].1);
+        let kind = match service_kind(*id, draft) {
+            ui::ServiceKind::Accounts if block.is_some() => ui::ServiceKind::Accounts,
+            ui::ServiceKind::Key if key_row.is_some() => ui::ServiceKind::Key,
+            _ => ui::ServiceKind::None,
+        };
+        let name = id.display_name();
+        let toggle_label = match kind {
+            ui::ServiceKind::Accounts => text(
+                strings,
+                Msg::SettingsServiceAccountsA11y,
+                &[("service", name)],
+            ),
+            ui::ServiceKind::Key => text(strings, Msg::SettingsKeyA11y, &[("service", name)]),
+            ui::ServiceKind::None => String::new(),
+        };
+        let data = ui::ProviderRow {
+            id: id.as_str().into(),
+            name: name.into(),
+            enabled: draft.provider(*id).is_some_and(|p| p.enabled),
+            glyph: wiring::glyph_data(&id.glyph()),
+            description: service_description(*id, draft, stored, strings).into(),
+            expanded: kind != ui::ServiceKind::None && expanded.contains(id),
+            kind,
+            block: index(block),
+            key_row: index(key_row),
+            toggle_label: toggle_label.into(),
+        };
+        update_row(&session.provider_rows, row, data);
+    }
 }
 
 /// Sets row `row` of `model` to `data` (appended when the model is that short), unless it is
@@ -910,7 +1017,7 @@ fn sync_accounts(session: &Session, draft: &Settings, strings: &dyn Strings) {
     let info = session.accounts.borrow();
     let edits = session.edits.borrow();
     let mut reset = session.alias_reset.borrow_mut();
-    for (b, block) in session.blocks.iter().enumerate() {
+    for block in &session.blocks {
         let rows = settings_accounts::account_rows(draft, &info, block.provider, strings);
         let mut keys = block.keys.borrow_mut();
         // Removed accounts, from the end so the indices stay right.
@@ -948,34 +1055,34 @@ fn sync_accounts(session: &Session, draft: &Settings, strings: &dyn Strings) {
         if current != found {
             block.found.set_vec(found);
         }
-        let summary = count(
-            strings,
-            PluralMsg::SettingsAccountsCount,
-            i64::try_from(keys.len()).unwrap_or(0),
-        );
-        update_row(&session.block_summary, b, SharedString::from(summary));
     }
 }
 
-/// The API key rows: each service's name, the box's placeholder (`Paste your Meshy API key`, or
-/// that a key is stored), whether a key is stored and what the last Save or Remove said.
+/// The API key rows: the box's placeholder (`Paste your Meshy API key`, or that a key is stored),
+/// whether a key is stored, what the last Save or Remove said, the note under it and the
+/// accessible names naming the service (`Save the Meshy API key`).
 fn sync_keys(session: &Session, strings: &dyn Strings) {
     let keys = session.keys.borrow();
     for (i, (provider, stored, status)) in keys.iter().enumerate() {
+        let service = [("service", provider.display_name())];
         let placeholder = if *stored {
             strings.template(Msg::SettingsKeyReplace).to_owned()
         } else {
-            text(
-                strings,
-                Msg::SettingsKeyPaste,
-                &[("service", provider.display_name())],
-            )
+            text(strings, Msg::SettingsKeyPaste, &service)
         };
+        let mut note = strings.template(Msg::SettingsKeyHint).to_owned();
+        if *provider == ProviderId::OpenCodeGo {
+            note.push(' ');
+            note.push_str(strings.template(Msg::SettingsKeyOpenCode));
+        }
         let row = ui::ApiKeyRow {
-            title: provider.display_name().into(),
             placeholder: placeholder.into(),
             stored: *stored,
             status: status.as_str().into(),
+            note: note.into(),
+            box_label: text(strings, Msg::SettingsKeyA11y, &service).into(),
+            save_label: text(strings, Msg::SettingsKeySaveA11y, &service).into(),
+            remove_label: text(strings, Msg::SettingsKeyRemoveA11y, &service).into(),
         };
         update_row(&session.key_rows, i, row);
     }
@@ -1137,18 +1244,28 @@ fn connect(window: &ui::SettingsWindow) {
             }
         });
     });
-    window.on_block_toggled(|block, on| {
+    window.on_service_toggled(|row, open| {
         with_session(|session| {
-            let Some(b) = usize::try_from(block)
+            let Some(id) = usize::try_from(row)
                 .ok()
-                .filter(|b| *b < session.blocks.len())
+                .and_then(|i| session.providers.get(i).copied())
             else {
                 return;
             };
-            if !on {
-                alias_points(session, Some(session.blocks[b].provider));
+            if !open {
+                // Closing the accounts is their alias boxes' commit point; a new account's name
+                // box closes with them.
+                alias_points(session, Some(id));
+                let block = session.blocks.iter().position(|b| b.provider == id);
+                let shown = usize::try_from(session.window.get_new_account_block()).ok();
+                if block.is_some() && block == shown {
+                    session.window.set_new_account_block(-1);
+                }
+                session.expanded.borrow_mut().remove(&id);
+            } else {
+                session.expanded.borrow_mut().insert(id);
             }
-            session.block_expanded.set_row_data(b, on);
+            show_draft(session);
         });
     });
     window.on_account_alias_edited(|block, row, alias| {
@@ -1181,9 +1298,16 @@ fn connect(window: &ui::SettingsWindow) {
             let Some(key) = account_key(session, block, row) else {
                 return;
             };
+            // The focus goes to the next account, else to Add folder… (settings-spec §8).
+            let next = account_key(session, block, row.saturating_add(1));
             if session.edits.borrow_mut().remove_account(&key) {
                 set_block_status(session, block, String::new());
                 commit_now(session);
+                let target = next.map_or_else(
+                    || "add-folder".to_owned(),
+                    |k| format!("account:{}", k.account.0),
+                );
+                focus_in_block(session, block, &target);
             }
         });
     });
@@ -1197,6 +1321,7 @@ fn connect(window: &ui::SettingsWindow) {
     window.on_privacy_toggled(|hide| edit_now(Edit::HidePersonalInfo(hide)));
     window.on_set_api_key(|row, key| with_session(|session| store_key(session, row, &key)));
     window.on_clear_api_key(|row| with_session(|session| clear_key(session, row)));
+    window.on_open_providers_folder(|| with_session(open_providers_folder));
     window.on_theme_selected(|index| {
         with_session(|session| {
             let id = usize::try_from(index)
@@ -1456,7 +1581,8 @@ fn add_account(
     }
 }
 
-/// **Add** on a found folder (accounts-spec §6).
+/// **Add** on a found folder (accounts-spec §6). Its row goes; the focus goes to the next found
+/// folder's Add, else to Add folder… (settings-spec §8).
 fn add_found(session: &Session, block: i32, index: i32) {
     let Some(provider) = block_service(session, block) else {
         return;
@@ -1465,9 +1591,26 @@ fn add_found(session: &Session, block: i32, index: i32) {
         let info = session.accounts.borrow();
         settings_accounts::unused(&session.edits.borrow().draft(), &info, provider)
     };
-    if let Some(candidate) = usize::try_from(index).ok().and_then(|i| found.get(i)) {
-        add_account(session, block, &candidate.folder, None);
+    let Some(i) = usize::try_from(index).ok().filter(|i| *i < found.len()) else {
+        return;
+    };
+    if add_account(session, block, &found[i].folder, None) {
+        let target = found.get(i + 1).map_or_else(
+            || "add-folder".to_owned(),
+            |c| format!("found:{}", c.folder.display()),
+        );
+        focus_in_block(session, block, &target);
     }
+}
+
+/// Moves the keyboard focus within the accounts of block `block` to `target` (the window's
+/// `focus-target`: `account:<key>`, `found:<folder>` or `add-folder`), after the row holding it
+/// went.
+fn focus_in_block(session: &Session, block: i32, target: &str) {
+    let window = &session.window;
+    window.set_focus_block(block);
+    window.set_focus_target(target.into());
+    window.set_focus_request(window.get_focus_request().wrapping_add(1));
 }
 
 /// **Add folder…**: the folder picker, owned by the window, opening in the profile folder.
@@ -1684,6 +1827,22 @@ fn clear_key(session: &Session, row: i32) {
     show_draft(session);
 }
 
+/// **Open folder** ("Add your own service", custom-services-spec §3): the folder of described
+/// services in File Explorer, made first when it is missing.
+fn open_providers_folder(session: &Session) {
+    if !session.native {
+        return;
+    }
+    let dir = &session.paths.providers;
+    if let Err(e) = std::fs::create_dir_all(dir) {
+        log::warn!("settings window: no providers folder: {e}");
+        return;
+    }
+    if let Err(e) = lastdrop_win::shell::open_folder(dir) {
+        log::warn!("settings window: providers folder not opened: {e}");
+    }
+}
+
 /// Closing (✕, Alt+F4, Escape; settings-spec §5.5): every alias box's edit and a shortcut never
 /// tried become pending, and the commit runs now. Returns whether the window may close: not when
 /// the file could not be written (the InfoBar then offers Try again and Close without saving).
@@ -1870,6 +2029,75 @@ mod tests {
         assert_eq!(
             key_credential(&settings, ProviderId::OpenCodeGo).target(),
             "Lastdrop:opencode_go:default:studio"
+        );
+    }
+
+    #[test]
+    fn services_say_how_they_are_read_and_expand_to_what_they_manage() {
+        let mut settings = Settings::default();
+        let line = |s: &Settings, p, stored| service_description(p, s, stored, &English);
+        assert_eq!(
+            line(&settings, ProviderId::Claude, false),
+            "Claude Code's sign-in on this PC · 1 account"
+        );
+        assert_eq!(
+            line(&settings, ProviderId::Copilot, false),
+            "The GitHub CLI's sign-in (gh auth login)"
+        );
+        assert_eq!(
+            line(&settings, ProviderId::Antigravity, false),
+            "Read through its CLI (agy)"
+        );
+        assert_eq!(
+            line(&settings, ProviderId::Meshy, false),
+            "Needs an API key"
+        );
+        assert_eq!(line(&settings, ProviderId::Meshy, true), "API key stored");
+        // Without a key here OpenCode Go uses OpenCode's own: it does not need one.
+        assert_eq!(
+            line(&settings, ProviderId::OpenCodeGo, false),
+            "Uses the key OpenCode keeps"
+        );
+        assert_eq!(
+            line(&settings, ProviderId::OpenCodeGo, true),
+            "Uses your API key"
+        );
+        if let Some(p) = settings.provider_mut(ProviderId::Codex) {
+            let taken: Vec<AccountKey> = p.accounts.iter().map(|a| a.key.clone()).collect();
+            p.accounts
+                .push(lastdrop_core::settings::AccountSettings::for_folder(
+                    SourceSettings::CodexHome {
+                        path: r"C:\Users\tester\.codex-work".into(),
+                    },
+                    None,
+                    &taken,
+                ));
+        }
+        assert_eq!(
+            service_description(ProviderId::Codex, &settings, false, &Swedish),
+            "Inloggningen i Codex på den här datorn · 2 konton"
+        );
+
+        let kind = |p| service_kind(p, &settings);
+        assert_eq!(kind(ProviderId::Claude), ui::ServiceKind::Accounts);
+        assert_eq!(kind(ProviderId::Codex), ui::ServiceKind::Accounts);
+        assert_eq!(kind(ProviderId::Meshy), ui::ServiceKind::Key);
+        assert_eq!(kind(ProviderId::OpenCodeGo), ui::ServiceKind::Key);
+        for p in [
+            ProviderId::Copilot,
+            ProviderId::Cursor,
+            ProviderId::Antigravity,
+            ProviderId::Grok,
+        ] {
+            assert_eq!(kind(p), ui::ServiceKind::None, "{p:?}");
+        }
+        // A key service the settings lack has no key row to expand to.
+        settings
+            .providers
+            .retain(|e| e.id() != Some(ProviderId::Meshy));
+        assert_eq!(
+            service_kind(ProviderId::Meshy, &settings),
+            ui::ServiceKind::None
         );
     }
 
