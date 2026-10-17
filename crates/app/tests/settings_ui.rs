@@ -695,6 +695,53 @@ fn pin_slots() {
     wait(&window, 300);
     assert!(window.get_choosing_pins());
     assert_eq!(saved_pins(&outside), []);
+
+    // Each arrow key in a list is a pick; browsing the first slot loses nothing on the way. Its
+    // pin is not available (Codex is off) and the second is Meshy's credits.
+    pick(&window, 0, codex_five);
+    pick(&window, 1, "Meshy · Credits");
+    window.invoke_provider_toggled(service_row(&window, "codex"), false);
+    wait(&window, 300);
+    let meshy = (
+        ProviderId::Meshy,
+        "default".to_owned(),
+        "credits".to_owned(),
+    );
+    assert_eq!(saved_pins(&outside), [codex("five_hour"), meshy.clone()]);
+    let unavailable = "Codex · 5-hour limit (not available)";
+    assert_eq!(slot_shows(&window, 0), unavailable);
+    // The deep link focuses the first slot; Down to the last choice, Meshy's credits, empties
+    // the second; Up brings it back.
+    sw::reveal(Focus::Pins);
+    frame(&window);
+    let last = slot_choices(&window, 0).len() - 1;
+    for _ in 1..last {
+        press(&window, Key::DownArrow);
+    }
+    assert_eq!(slot_shows(&window, 0), "Meshy · Credits");
+    assert_eq!(
+        saved_pins(&outside),
+        [codex("five_hour"), meshy.clone()],
+        "a burst of picks commits once, after the last"
+    );
+    wait(&window, 300);
+    assert_eq!(saved_pins(&outside), std::slice::from_ref(&meshy));
+    press(&window, Key::UpArrow);
+    wait(&window, 300);
+    assert_eq!(saved_pins(&outside)[1], meshy, "the second is back");
+    // The pin that is not available stays listed while the slot has the focus: Up to it.
+    assert!(slot_choices(&window, 0).iter().any(|c| c == unavailable));
+    while slot_shows(&window, 0) != unavailable {
+        press(&window, Key::UpArrow);
+    }
+    wait(&window, 300);
+    assert_eq!(saved_pins(&outside), [codex("five_hour"), meshy.clone()]);
+    // Another meter, then the focus leaves: the pin that is not available leaves the list.
+    press(&window, Key::DownArrow);
+    press(&window, Key::Tab);
+    wait(&window, 300);
+    assert!(!slot_choices(&window, 0).iter().any(|c| c == unavailable));
+    assert_eq!(saved_pins(&outside).len(), 2);
     window.invoke_dismiss();
     assert!(!sw::is_open());
 }

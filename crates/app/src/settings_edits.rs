@@ -686,6 +686,16 @@ impl Outside for std::rc::Rc<std::cell::RefCell<MemoryOutside>> {
     }
 }
 
+/// A list that picks the taskbar's content (settings-spec §4): "Taskbar content" or a pin slot
+/// (0 the first, 1 the second).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PinList {
+    /// "Taskbar content": auto or "Meters I choose".
+    Content,
+    /// A pin slot.
+    Slot(usize),
+}
+
 /// The window's edits: the base, the pending edits and the raw editors (see the module docs).
 #[derive(Clone, Debug)]
 pub struct Edits {
@@ -696,6 +706,10 @@ pub struct Edits {
     shortcut: ShortcutEditor,
     /// "Meters I choose" is chosen but no meter yet (settings-spec §4): the saved mode stays auto.
     choosing_pins: bool,
+    /// The list of the taskbar's content that has the keyboard focus, with the pins as they were
+    /// when it got it: its picks go against those, so browsing it with the arrow keys (each one
+    /// a pick) loses nothing on the way.
+    browsing: Option<(PinList, Vec<MeterKey>)>,
 }
 
 impl Edits {
@@ -715,6 +729,7 @@ impl Edits {
                 dirty: false,
             },
             choosing_pins: false,
+            browsing: None,
         }
     }
 
@@ -814,10 +829,17 @@ impl Edits {
 
     /// "The most constrained meters" (`pinned` false) or "Meters I choose". Pinned without a pin
     /// yet is the choosing state: nothing changes until a meter is picked.
+    /// Picking "Meters I choose" again while browsing the list brings back the pins it had when
+    /// it got the focus.
     pub fn set_readout_mode(&mut self, pinned: bool) {
         if pinned {
-            if pins(&self.draft()).is_empty() {
-                self.choosing_pins = true;
+            if !pins(&self.draft()).is_empty() {
+                return;
+            }
+            let before = self.browsed(PinList::Content).unwrap_or_default();
+            self.choosing_pins = before.is_empty();
+            if !before.is_empty() {
+                self.set(Edit::Pins(content_of(before)));
             }
         } else {
             self.choosing_pins = false;
@@ -837,15 +859,49 @@ impl Edits {
         self.choosing_pins && pins(&self.draft()).is_empty()
     }
 
+    /// `list` got (`focused`) or lost the keyboard focus (settings-spec §4). Each arrow key in a
+    /// list is a pick, so while it has the focus its picks go against the pins as they were when
+    /// it got it: passing over the second slot's meter in the first does not lose the second,
+    /// passing over auto does not lose the pins, and a pin not available now stays listed
+    /// ([`Edits::listed_pin`]) until the focus leaves.
+    pub fn pin_list_focused(&mut self, list: PinList, focused: bool) {
+        if focused {
+            self.browsing = Some((list, pins(&self.draft())));
+        } else if self.browsed(list).is_some() {
+            self.browsing = None;
+        }
+    }
+
+    /// The pins as they were when `list` got the keyboard focus, while it has it.
+    fn browsed(&self, list: PinList) -> Option<Vec<MeterKey>> {
+        self.browsing
+            .as_ref()
+            .filter(|(l, _)| *l == list)
+            .map(|(_, p)| p.clone())
+    }
+
+    /// The pin slot `slot`'s list keeps, available or not: while the slot has the focus the one
+    /// it had when it got it, else the one it has.
+    pub fn listed_pin(&self, slot: usize) -> Option<MeterKey> {
+        match self.browsed(PinList::Slot(slot)) {
+            Some(before) => before.get(slot).cloned(),
+            None => pins(&self.draft()).get(slot).cloned(),
+        }
+    }
+
     /// Pin slot `slot` (0 "First meter", 1 "Second meter") picked `key` (`None`: empty it)
     /// (settings-spec §4; R§4.3: at most two, in the user's order). A meter is never in both
     /// slots: picking the second slot's meter in the first empties the second. Emptying the
     /// first slot promotes the second; emptying both is the choosing state (saved: auto). A slot
-    /// the first is empty for takes the first's place.
+    /// the first is empty for takes the first's place. While the slot has the focus, the pick
+    /// goes against the pins as they were when it got it ([`Edits::pin_list_focused`]).
     pub fn set_pin_slot(&mut self, slot: usize, key: Option<MeterKey>) {
         let current = pins(&self.draft());
-        let first = current.first().cloned();
-        let second = current.get(1).cloned();
+        let before = self
+            .browsed(PinList::Slot(slot))
+            .unwrap_or_else(|| current.clone());
+        let first = before.first().cloned();
+        let second = before.get(1).cloned();
         let pinned: Vec<MeterKey> = match (slot, key) {
             (0, Some(key)) => std::iter::once(key.clone())
                 .chain(second.filter(|s| *s != key))
@@ -1103,6 +1159,11 @@ impl Edits {
                 }
                 report.written = std::mem::take(&mut self.pending).into_keys().collect();
                 self.base = merged;
+                // A meter pinned meanwhile (by the tray) ends the choosing state: auto later
+                // is auto again, not choosing.
+                if !pins(&self.base).is_empty() {
+                    self.choosing_pins = false;
+                }
             }
             Err(detail) => {
                 log::error!("cannot save settings: {detail}");
@@ -1760,10 +1821,66 @@ mod tests {
         edits.commit(&mut out);
         assert_eq!(pins(&edits.draft()), std::slice::from_ref(&weekly));
         assert!(!edits.choosing_pins());
+        // The tray going back to auto then is auto, not choosing.
+        out.disk.readout.content = ReadoutContent::Auto;
+        edits.set(Edit::ReadoutEvery(false));
+        edits.commit(&mut out);
+        assert_eq!(edits.readout_mode_index(), 0);
+        assert!(!edits.choosing_pins());
+        edits.set_readout_mode(true);
+        edits.set_pin_slot(0, Some(weekly.clone()));
         // Back to auto.
         edits.set_readout_mode(false);
         assert_eq!(edits.readout_mode_index(), 0);
         assert!(!edits.choosing_pins());
+    }
+
+    #[test]
+    fn browsing_a_list_with_the_focus_loses_no_pin_on_the_way() {
+        let mut edits = Edits::new(with_work());
+        let five = meter(ProviderId::Claude, "default", MeterId::FIVE_HOUR);
+        let weekly = meter(ProviderId::Claude, "default", MeterId::WEEKLY);
+        let codex = meter(ProviderId::Codex, "default", MeterId::FIVE_HOUR);
+        edits.set_readout_mode(true);
+        edits.set_pin_slot(0, Some(five.clone()));
+        edits.set_pin_slot(1, Some(codex.clone()));
+        // Arrowing through the first slot passes the second's meter: the second comes back.
+        edits.pin_list_focused(PinList::Slot(0), true);
+        edits.set_pin_slot(0, Some(codex.clone()));
+        assert_eq!(pins(&edits.draft()), std::slice::from_ref(&codex));
+        edits.set_pin_slot(0, Some(weekly.clone()));
+        assert_eq!(pins(&edits.draft()), [weekly.clone(), codex.clone()]);
+        // The pin it had stays listed while it has the focus, then the one it has.
+        assert_eq!(edits.listed_pin(0), Some(five.clone()));
+        edits.pin_list_focused(PinList::Slot(0), false);
+        assert_eq!(edits.listed_pin(0), Some(weekly.clone()));
+        // Without the focus a pick goes against the pins as they are.
+        edits.set_pin_slot(0, Some(codex.clone()));
+        edits.set_pin_slot(0, Some(five.clone()));
+        assert_eq!(pins(&edits.draft()), std::slice::from_ref(&five));
+
+        // Arrowing past auto in "Taskbar content" and back keeps the pins.
+        edits.set_pin_slot(1, Some(codex.clone()));
+        edits.pin_list_focused(PinList::Content, true);
+        edits.set_readout_mode(false);
+        assert_eq!(edits.draft().readout.content, ReadoutContent::Auto);
+        edits.set_readout_mode(true);
+        assert_eq!(pins(&edits.draft()), [five.clone(), codex]);
+        assert!(!edits.choosing_pins());
+        // Auto chosen and the focus gone: "Meters I choose" again is choosing.
+        edits.set_readout_mode(false);
+        edits.pin_list_focused(PinList::Content, false);
+        edits.set_readout_mode(true);
+        assert!(edits.choosing_pins());
+        // Another list losing the focus does not end the browsing of the one that has it.
+        edits.set_pin_slot(0, Some(five));
+        edits.pin_list_focused(PinList::Slot(0), true);
+        edits.pin_list_focused(PinList::Content, false);
+        edits.set_pin_slot(0, None);
+        assert_eq!(
+            edits.listed_pin(0),
+            Some(meter(ProviderId::Claude, "default", MeterId::FIVE_HOUR))
+        );
     }
 
     #[test]

@@ -45,8 +45,8 @@ use crate::dialog::{self, Changes};
 use crate::persist::{self, Paths, SavedState};
 use crate::settings_accounts::{self, AccountsInfo, MeterAccounts, NotAdded};
 use crate::settings_edits::{
-    Commit, Edit, Edits, Field, INTERVALS, LEVELS, Outside, RealOutside, Shortcut, ShortcutProblem,
-    StartupProblem, interval_index, language_index, level_indices, pins,
+    Commit, Edit, Edits, Field, INTERVALS, LEVELS, Outside, PinList, RealOutside, Shortcut,
+    ShortcutProblem, StartupProblem, interval_index, language_index, level_indices, pins,
 };
 use crate::settings_sync::SettingsFile;
 use crate::{AppError, ui, wiring};
@@ -1119,8 +1119,9 @@ fn sync_meter_cards(
 
 /// The two pin slots (settings-spec §4): each lists "None" and the shown meters of `listed` with
 /// their account ([`pin_label`]), the second slot not the first's meter. A saved pin that is not
-/// listed now (its service is off) is kept and listed as "… (not available)". A slot's list is
-/// set again only when it changed; its choice always.
+/// listed now (its service is off) is kept and listed as "… (not available)", also while its
+/// slot, having the focus, shows another choice ([`Edits::listed_pin`]). A slot's list is set
+/// again only when it changed; its choice always.
 fn sync_pins(
     session: &Session,
     draft: &Settings,
@@ -1129,6 +1130,10 @@ fn sync_pins(
     strings: &dyn Strings,
 ) {
     let pinned = pins(draft);
+    let kept = {
+        let edits = session.edits.borrow();
+        [edits.listed_pin(0), edits.listed_pin(1)]
+    };
     let label = |m: &ListedMeter| {
         let account = accounts.names.get(&m.key.source()).map(String::as_str);
         pin_label(m, account, strings)
@@ -1138,8 +1143,11 @@ fn sync_pins(
     let mut choices: [PinChoices; 2] = [Vec::new(), Vec::new()];
     for (slot, list) in choices.iter_mut().enumerate() {
         list.push((None, none.clone()));
-        if let Some(key) = pinned.get(slot)
-            && !offered.iter().any(|m| m.key == *key)
+        let mut unavailable: Vec<&MeterKey> = kept[slot].iter().chain(pinned.get(slot)).collect();
+        unavailable.dedup();
+        for key in unavailable
+            .into_iter()
+            .filter(|key| !offered.iter().any(|m| m.key == **key))
         {
             let meter = session
                 .reported
@@ -1147,12 +1155,12 @@ fn sync_pins(
                 .find(|m| m.key == *key)
                 .cloned()
                 .unwrap_or_else(|| ListedMeter::of(key));
-            let unavailable = text(
+            let choice = text(
                 strings,
                 Msg::SettingsPinsUnavailable,
                 &[("meter", &label(&meter))],
             );
-            list.push((Some(key.clone()), unavailable));
+            list.push((Some(key.clone()), choice));
         }
         for m in &offered {
             if slot == 1 && pinned.first() == Some(&m.key) {
@@ -1578,6 +1586,19 @@ fn connect(window: &ui::SettingsWindow) {
             session.pin_note.borrow_mut().take();
             session.edits.borrow_mut().set_readout_mode(index == 1);
             edited(session);
+        });
+    });
+    window.on_pin_list_focused(|list, focused| {
+        with_session(|session| {
+            let list = match usize::try_from(list) {
+                Ok(slot) if slot < 2 => PinList::Slot(slot),
+                _ => PinList::Content,
+            };
+            session.edits.borrow_mut().pin_list_focused(list, focused);
+            if !focused {
+                // A pin no longer pinned leaves the slot's list.
+                show_draft(session);
+            }
         });
     });
     window.on_pin_slot_selected(|slot, index| {

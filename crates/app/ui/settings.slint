@@ -220,8 +220,14 @@ component PinSlotRow inherits Rectangle {
     in property <[string]> choices;
     in-out property <int> current-index;
     callback selected(int);
+    // The list got or lost the keyboard focus (its open popup counts as the list).
+    callback focus-changed(bool);
     public function focus-list() {
         list.focus();
+    }
+    property <bool> list-focused: list.has-focus;
+    changed list-focused => {
+        root.focus-changed(self.list-focused);
     }
     property <length> inner: self.width - 32px - root.indent;
     property <length> list-width: root.narrow ? min(self.inner, 360px) : min(340px, self.inner - 16px - 140px);
@@ -459,6 +465,9 @@ export component SettingsWindow inherits Window {
     callback readout-mode-selected(int);
     // A pin slot (0 first, 1 second) picked a choice (an index into its list).
     callback pin-slot-selected(int, int);
+    // A list of the taskbar's content (-1 "Taskbar content", 0 and 1 the pin slots) got or lost
+    // the keyboard focus: while it has it, Rust measures its picks against the pins it had then.
+    callback pin-list-focused(int, bool);
     // A meter type (card, row) of the Meters list shown or hidden.
     callback meter-shown-toggled(int, int, bool);
     callback notify-enabled-toggled(bool);
@@ -1230,6 +1239,10 @@ export component SettingsWindow inherits Window {
                                                 selected => {
                                                     root.readout-mode-selected(self.current-index);
                                                 }
+                                                property <bool> focused: self.has-focus;
+                                                changed focused => {
+                                                    root.pin-list-focused(-1, self.focused);
+                                                }
                                             }
                                         }
                                     }
@@ -1243,6 +1256,9 @@ export component SettingsWindow inherits Window {
                                             current-index <=> root.pin-first-index;
                                             selected(index) => {
                                                 root.pin-slot-selected(0, index);
+                                            }
+                                            focus-changed(focused) => {
+                                                root.pin-list-focused(0, focused);
                                             }
                                             // The deep link focuses the first slot, also when
                                             // it came with the link's "Meters I choose".
@@ -1269,6 +1285,9 @@ export component SettingsWindow inherits Window {
                                             current-index <=> root.pin-second-index;
                                             selected(index) => {
                                                 root.pin-slot-selected(1, index);
+                                            }
+                                            focus-changed(focused) => {
+                                                root.pin-list-focused(1, focused);
                                             }
                                         }
                                         if root.choosing-pins || root.pin-note != "": VerticalLayout {

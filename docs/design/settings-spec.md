@@ -184,23 +184,26 @@ page, scroll positions, open expanders and edits; a deep link overrides (§7).
   Meters I choose / sv De mest belastade mätarna (auto) / Mätare jag väljer). With "Meters I
   choose" the same card holds the two **pin slots** under it, **First meter** and **Second
   meter (optional)** (sv Första mätaren, Andra mätaren (valfri)), dimmed while the readout is
-  off, the second also while the first is empty. Each lists **None** and the meters of the
-  Meters list that are shown (the duplicates' left out) by service, account (when its service
-  shows several, accounts-spec §7) and meter: "Claude · Work · Weekly limit", "Codex · 5-hour
-  limit", "Meshy · Credits". Rust keeps each choice's meter (`MeterKey`): what is saved is the
-  meter, never a place in the list. At most two, in the user's order (R§4.3); the rules are
-  `Edits::set_pin_slot`'s:
+  off, the second also while the first is empty. A slot's list sits beside its header (up to
+  340 px) or under it in a narrow column (up to 360 px), placed by hand like the theme card's
+  controls. Each lists **None** and the meters of the Meters list that are shown (the
+  duplicates' left out) by service, account (when its service shows several, accounts-spec §7)
+  and meter: "Claude · Work · Weekly limit", "Codex · 5-hour limit", "Meshy · Credits". Rust
+  keeps each choice's meter (`MeterKey`): what is saved is the meter, never a place in the list.
+  At most two, in the user's order (R§4.3); the rules are `Edits::set_pin_slot`'s:
   - **Choosing state**: "Meters I choose" with no pin saved shows the slots with None in the
     first and "The taskbar stays automatic until you choose a meter." under them; nothing is
     saved (no pins = auto). It stays through commits, reconciling and the deep link (§7) until
-    a meter is chosen (one the tray pinned meanwhile too) or auto is picked again.
+    a meter is chosen (one the tray pinned meanwhile too: the tray going back to auto later is
+    auto) or auto is picked again.
   - **No duplicates**: the second slot does not list the first's meter; picking the second's
     meter in the first empties the second.
   - **Promotion**: emptying the first slot (None, hiding its meter, removing its account) moves
     the second up; emptying both is the choosing state again.
   - **Unavailable pins**: a saved pin whose meter is not listed now — its service is off, its
     account a duplicate — stays saved and shows in its slot as "Codex · 5-hour limit (not
-    available)" until the user picks another; an unrelated pick keeps it. A pin without a reading
+    available)" until the user picks another (it leaves the list when the slot loses the
+    focus); an unrelated pick keeps it. A pin without a reading
     yet is listed as usual (the catalogue's names, or the remembered ones). Removing an account is
     not such a reason: its pins go with it (accounts-spec §7), also when its adding was still
     pending.
@@ -208,6 +211,12 @@ page, scroll positions, open expanders and edits; a deep link overrides (§7).
     service, and the card says so under the slots ("Claude weekly limit is hidden, so it was taken
     off the taskbar.") until the next pin change, the next choice of content or until the meter
     is shown again.
+  - **Browsing**: an arrow key or the wheel on a list is a pick, made at once (instant apply).
+    While a list of the taskbar's content (its content, a slot) has the keyboard focus, its
+    picks go against the pins as they were when it got the focus (`Edits::pin_list_focused`):
+    passing over the second slot's meter in the first does not lose the second, passing over
+    auto and back does not lose the pins, and a pin that is not available stays listed. A
+    burst of picks commits once, 250 ms after the last (§5.2).
 - **Meters**: "Meters you turn off are hidden in the flyout and the taskbar." A card per service
   that is on: its glyph and name (the card's accessible name), then a check box per meter
   **type** — every meter id the service's shown accounts list, once — with its short name:
@@ -347,7 +356,9 @@ persist apart; reconciling shows the file's values but leaves a dirty alias edit
 write keeps the edits pending; start with Windows is undone when the write fails, and an undo that
 fails leaves the switch at the registry's state; the pin slots choose, never hold a meter twice,
 promote the second, return to choosing when both are empty and stop choosing when the tray
-pinned a meter; hiding a meter unpins it for every account (and says whether it did); removing an
+pinned a meter (auto from the tray afterwards is auto); browsing a list with the focus loses no
+pin on the way (the second slot, the pins past auto) and keeps the slot's pin listed until the
+focus leaves; hiding a meter unpins it for every account (and says whether it did); removing an
 account takes its pins, also one whose adding was still pending.
 
 ## 6. Settings write coordination
@@ -479,7 +490,9 @@ writer's change.
   promoting the second; a pin whose service is turned off kept as "(not available)", through an
   unrelated pick, and available again when it is back on; hiding a pinned meter promoting the
   second with the note, which goes when it is shown again; removing an account clearing its pin
-  and promoting the second; the last pin removed choosing again. The **Meters list**: one row per
+  and promoting the second; the last pin removed choosing again; with the first slot's pin not
+  available, Down from the deep link's focus to the last choice (the second's meter) and Up again
+  keeping the second, the pin listed until the focus leaves. The **Meters list**: one row per
   type though Claude has two accounts, the short names and accessible names, hiding a type
   saved once for the service and gone from the slots for every account; with every service off
   the empty state, whose link Tab reaches from the pane and Space follows to Services.
