@@ -2144,6 +2144,20 @@ pub fn show_hover_card(app: &App, anchor: HoverAnchor, rect: Rect) {
     }
 }
 
+/// The hover card's content height (logical px) for the properties it holds now, with its `if`
+/// and `for` elements created for them first.
+///
+/// As for the flyout ([`instantiate_flyout_items`]): Slint creates and removes those elements
+/// when it renders the window or handles input, and the card is measured before Slint draws it.
+/// Without the pointer-exit, a sentence hidden or an "Also tracked" block dropped to fit (R§8.1)
+/// still counted in the height, and the card could stay taller than the space.
+pub fn hover_card_content_height(window: &ui::HoverCard) -> f32 {
+    window
+        .window()
+        .dispatch_event(slint::platform::WindowEvent::PointerExited);
+    window.get_content_height()
+}
+
 /// Sets the hover card's content, fits it into the space above (below) the taskbar by dropping
 /// "Also tracked" lines from the bottom, then the sentence (R§8.1), and places it.
 fn place_hover_card(app: &App, model: &HoverCardModel, anchor: Rect) {
@@ -2170,7 +2184,7 @@ fn place_hover_card(app: &App, model: &HoverCardModel, anchor: Rect) {
     let mut visible = window.get_also_visible();
     let also = model.also.as_ref().map(|a| (a.lines.len(), a.more_count));
     loop {
-        if window.get_content_height() <= space {
+        if hover_card_content_height(window) <= space {
             break;
         }
         if visible > 0 {
@@ -2194,7 +2208,7 @@ fn place_hover_card(app: &App, model: &HoverCardModel, anchor: Rect) {
             break;
         }
     }
-    let height = window.get_content_height();
+    let height = hover_card_content_height(window);
     window.set_card_height(height);
     let size = Size {
         width: device(f64::from(CARD_W), scale),
