@@ -25,6 +25,8 @@
 //!   [`settings_accounts`]: its Accounts section (accounts-spec §6–§7).
 //! - [`writer`]: the file writer thread (history appends and compaction, settings and state
 //!   saves, in queue order).
+//! - [`settings_sync`]: the read-merge-write of `settings.json` under the settings lock, shared
+//!   by the tray process, the settings window and Theme Studio (settings-spec §6).
 //!
 //! Threads of the tray process (ARCHITECTURE "Threads"): **main** owns the Slint event loop, the
 //! flyout and the hover card, the tray icon and [`state::AppState`], and never blocks on I/O; the **readout** and **occupancy**
@@ -56,6 +58,7 @@ pub mod preview;
 pub mod scheduler;
 pub mod secondary;
 pub mod settings_accounts;
+pub mod settings_sync;
 pub mod settings_window;
 pub mod state;
 pub mod theme_studio;

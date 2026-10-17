@@ -9,10 +9,10 @@
 //!
 //! It runs in the dialog process ([`crate::dialog`]), not in the tray process. Opening reads
 //! `settings.json` and the meters earlier readings reported (`state.json`); the window edits a
-//! [`Draft`] of the settings. **Apply** re-reads `settings.json`, applies only what the window
-//! changed onto it ([`apply_onto`]: the tray may have paused, pinned a meter or turned the readout
-//! off meanwhile), sets autostart, tests a changed hotkey, writes the file (atomic) and tells the
-//! tray process, which re-reads and applies it. The API key is the exception: it is stored at once
+//! [`Draft`] of the settings. **Apply** takes the settings lock, re-reads `settings.json`, applies
+//! only what the window changed onto it ([`apply_onto`]: the tray may have paused, pinned a meter
+//! or turned the readout off meanwhile), sets autostart, tests a changed hotkey, writes the file
+//! (atomic) and tells the tray process, which re-reads and applies it (settings-spec §6). The API key is the exception: it is stored at once
 //! when the user saves it and never kept anywhere else — not in the draft, not in a Slint
 //! property, not in `settings.json`, not in the log — and the tray process is told so it reads
 //! Meshy again.
@@ -21,7 +21,6 @@
 
 use std::cell::RefCell;
 use std::collections::BTreeSet;
-use std::path::PathBuf;
 use std::rc::Rc;
 
 use jiff::tz::TimeZone;
@@ -36,12 +35,12 @@ use lastdrop_core::settings::{
 };
 use lastdrop_providers::io::CredentialName;
 use lastdrop_win::hotkey::HotkeyError;
-use serde_json::Value;
 use slint::{ComponentHandle, ModelRc, SharedString, VecModel};
 
 use crate::dialog::{self, Changes};
-use crate::persist::{self, LoadOutcome, Paths, SavedState};
+use crate::persist::{self, Paths, SavedState};
 use crate::settings_accounts::{self, AccountsInfo, MeterAccounts, NotAdded, SERVICES};
+use crate::settings_sync::{SettingsFile, apply_onto};
 use crate::wiring::{self, toggle_in};
 use crate::{AppError, ui};
 
@@ -418,8 +417,8 @@ struct Session {
     accounts: RefCell<AccountsInfo>,
     /// The API key rows: each service and whether a key is stored ([`keys_stored`]).
     keys: RefCell<Vec<(ProviderId, bool)>>,
-    /// `settings.json`.
-    settings_path: PathBuf,
+    /// `settings.json` and its lock.
+    file: SettingsFile,
     /// Lastdrop's folders (the themes folder, Theme Studio).
     paths: Paths,
     /// The ids of the themes the theme list shows, in its order.
@@ -492,7 +491,7 @@ pub fn open(paths: &Paths, focus: Focus) -> Result<(), AppError> {
             wording: RefCell::new(wording),
             accounts: RefCell::new(accounts),
             keys: RefCell::new(keys),
-            settings_path: paths.settings.clone(),
+            file: SettingsFile::new(paths.settings.clone()),
             paths: paths.clone(),
             theme_ids: RefCell::new(Vec::new()),
         }));
@@ -1328,60 +1327,10 @@ fn hotkey_of(window: &ui::SettingsWindow) -> Result<Option<Hotkey>, ShortcutProb
     Ok(Some(hotkey))
 }
 
-/// The settings Apply writes, a three-way merge: `settings.json` as it is now (`disk`) with what
-/// the window changed (`draft` against `base`, the settings the draft started from) applied onto
-/// it. The tray process may have changed the file while the window was open (pause and resume, a
-/// pinned meter, readout auto or off); those changes survive unless the window changed the same
-/// setting, in which case the window wins. The window never edits the pause, so the pause is
-/// always the file's.
-///
-/// The merge works on the JSON form ([`merge_changes`]); should the merged JSON not read back
-/// as settings (it always should), the draft is written with the file's pause.
-pub fn apply_onto(base: &Settings, draft: Settings, disk: &Settings) -> Settings {
-    let merged = (|| {
-        let base = serde_json::to_value(base).ok()?;
-        let changed = serde_json::to_value(&draft).ok()?;
-        let mut merged = serde_json::to_value(disk).ok()?;
-        merge_changes(&base, &changed, &mut merged);
-        serde_json::from_value::<Settings>(merged).ok()
-    })();
-    merged.unwrap_or_else(|| {
-        log::warn!("settings: cannot merge the window's changes; writing the window's settings");
-        Settings {
-            pause: disk.pause,
-            ..draft
-        }
-    })
-}
-
-/// Applies onto `target` what `changed` changed from `base`, recursively: an unchanged value keeps
-/// `target`'s, a changed one replaces it. Objects are merged key by key only when `base`,
-/// `changed` and `target` have the same keys, so a struct's fields merge one by one while an
-/// enum that changed its variant (or a section with a newer build's extra field) is replaced
-/// whole and the result always reads back. Arrays and scalars are single values.
-fn merge_changes(base: &Value, changed: &Value, target: &mut Value) {
-    if base == changed {
-        return;
-    }
-    if let (Value::Object(b), Value::Object(c), Value::Object(t)) = (base, changed, &mut *target)
-        && b.len() == c.len()
-        && c.len() == t.len()
-        && c.keys().all(|k| b.contains_key(k) && t.contains_key(k))
-    {
-        for (key, value) in c {
-            if let (Some(base_value), Some(target_value)) = (b.get(key), t.get_mut(key)) {
-                merge_changes(base_value, value, target_value);
-            }
-        }
-        return;
-    }
-    target.clone_from(changed);
-}
-
-/// Apply: what the window changed, onto `settings.json` as it is now ([`apply_onto`]);
-/// autostart when "Start Lastdrop when I sign in" changed; a changed hotkey is tested by
-/// registering it here and unregistering it at once (the tray process registers it for real);
-/// the file is written atomically and the tray process is told. A changed language switches the
+/// Apply: under the settings lock, what the window changed, onto `settings.json` as it is now
+/// ([`apply_onto`]); autostart when "Start Lastdrop when I sign in" changed; a changed hotkey is
+/// tested by registering it here and unregistering it at once (the tray process registers it for
+/// real); the file is written atomically, the lock released and the tray process told. A changed language switches the
 /// window's texts, and the lines under the shortcut and the buttons come in it.
 fn apply(session: &Session) {
     let window = &session.window;
@@ -1425,10 +1374,8 @@ fn apply(session: &Session) {
         n.levels = levels_at(picked.0, picked.1);
     }
 
-    let (disk, outcome) = persist::load_settings(&session.settings_path);
-    if !matches!(outcome, LoadOutcome::Loaded) {
-        log::info!("settings before Apply: {outcome:?}");
-    }
+    let lock = session.file.lock();
+    let disk = session.file.read(&session.base.borrow());
     let mut settings = apply_onto(&session.base.borrow(), draft, &disk);
     let mut shortcut = None;
     match hotkey_of(window) {
@@ -1466,7 +1413,8 @@ fn apply(session: &Session) {
         }
     }
 
-    let saved = persist::save_settings(&session.settings_path, &settings);
+    let saved = persist::save_settings(&session.file.path, &settings);
+    drop(lock);
     match &saved {
         Ok(()) => {
             dialog::notify(Changes {
@@ -1524,7 +1472,7 @@ mod tests {
     use super::*;
     use lastdrop_core::grammar::{English, LocaleFormat, Swedish};
     use lastdrop_core::model::MeterId;
-    use lastdrop_core::settings::{Pause, ProviderSettings};
+    use lastdrop_core::settings::ProviderSettings;
 
     use crate::persist::SeenMeter;
 
@@ -1750,159 +1698,5 @@ mod tests {
             "Opus-veckogränsen för Claude"
         );
         assert!(reported_meters(&SavedState::default(), &Settings::default()).is_empty());
-    }
-
-    /// A window that changed the interval, turned the readout off, set a hotkey and autostart
-    /// and pinned a meter.
-    fn window_edits(base: &Settings) -> Settings {
-        let mut draft = base.clone();
-        draft.start_with_windows = true;
-        draft.refresh.interval = RefreshInterval::Minutes(15);
-        draft.readout.enabled = false;
-        draft.hotkey = Some(Hotkey {
-            ctrl: true,
-            alt: true,
-            shift: false,
-            win: false,
-            key: "L".to_owned(),
-        });
-        set_pins(&mut draft, vec![claude(MeterId::new(MeterId::WEEKLY))]);
-        draft
-    }
-
-    #[test]
-    fn apply_writes_the_windows_changes_onto_the_file_as_it_is_now() {
-        let base = Settings::default();
-        let draft = window_edits(&base);
-        assert_eq!(
-            apply_onto(&base, draft.clone(), &base),
-            draft,
-            "an unchanged file gets the draft"
-        );
-
-        // Meanwhile the tray paused, and a field the window never shows changed.
-        let mut disk = base.clone();
-        disk.pause = Some(Pause { until: None });
-        disk.theme_follows_system = false;
-        assert_eq!(
-            apply_onto(&base, draft.clone(), &disk),
-            Settings {
-                pause: disk.pause,
-                theme_follows_system: false,
-                ..draft
-            }
-        );
-    }
-
-    #[test]
-    fn apply_keeps_the_pause_on_disk() {
-        // Paused when the window opened, resumed from the tray meanwhile: not paused again.
-        let paused = Settings {
-            pause: Some(Pause { until: None }),
-            ..Settings::default()
-        };
-        let resumed = Settings::default();
-        assert_eq!(
-            apply_onto(&paused, window_edits(&paused), &resumed).pause,
-            None
-        );
-        // Paused from the tray meanwhile: stays paused.
-        assert_eq!(
-            apply_onto(&resumed, window_edits(&resumed), &paused).pause,
-            paused.pause
-        );
-    }
-
-    #[test]
-    fn a_meter_pinned_from_the_tray_survives_an_interval_changed_in_the_window() {
-        let base = Settings::default();
-        let mut draft = base.clone();
-        draft.refresh.interval = RefreshInterval::Minutes(15);
-        let five = claude(MeterId::new(MeterId::FIVE_HOUR));
-        let mut disk = base.clone();
-        set_pins(&mut disk, vec![five.clone()]);
-
-        let applied = apply_onto(&base, draft, &disk);
-        assert_eq!(applied.refresh.interval, RefreshInterval::Minutes(15));
-        assert_eq!(applied.readout.content, ReadoutContent::Pinned(vec![five]));
-
-        // The readout turned off from the tray survives too.
-        let mut disk = base.clone();
-        disk.readout.enabled = false;
-        let mut draft = base.clone();
-        draft.readout.time_style = TimeStyle::Relative;
-        let applied = apply_onto(&base, draft, &disk);
-        assert!(!applied.readout.enabled);
-        assert_eq!(applied.readout.time_style, TimeStyle::Relative);
-    }
-
-    #[test]
-    fn the_window_wins_when_both_changed_the_same_setting() {
-        let weekly = claude(MeterId::new(MeterId::WEEKLY));
-        let five = claude(MeterId::new(MeterId::FIVE_HOUR));
-        let mut base = Settings::default();
-        set_pins(&mut base, vec![weekly.clone()]);
-
-        // The window pinned a second meter; the tray switched the readout to auto.
-        let mut draft = base.clone();
-        set_pins(&mut draft, vec![weekly.clone(), five.clone()]);
-        let mut disk = base.clone();
-        disk.readout.content = ReadoutContent::Auto;
-        assert_eq!(
-            apply_onto(&base, draft, &disk).readout.content,
-            ReadoutContent::Pinned(vec![weekly.clone(), five.clone()])
-        );
-
-        // The window switched to auto; the tray pinned another meter.
-        let mut draft = base.clone();
-        draft.readout.content = ReadoutContent::Auto;
-        let mut disk = base.clone();
-        set_pins(&mut disk, vec![weekly, five]);
-        assert_eq!(
-            apply_onto(&base, draft, &disk).readout.content,
-            ReadoutContent::Auto
-        );
-
-        // Both changed the interval.
-        let mut draft = base.clone();
-        draft.refresh.interval = RefreshInterval::Manual;
-        let mut disk = base.clone();
-        disk.refresh.interval = RefreshInterval::Minutes(30);
-        assert_eq!(
-            apply_onto(&base, draft, &disk).refresh.interval,
-            RefreshInterval::Manual
-        );
-    }
-
-    #[test]
-    fn objects_merge_key_by_key_only_when_their_keys_match() {
-        let base = serde_json::json!({
-            "a": {"x": 1, "y": 1},
-            "e": {"mode": "auto"},
-            "n": [1],
-            "s": 1
-        });
-        let changed = serde_json::json!({
-            "a": {"x": 2, "y": 1},
-            "e": {"mode": "pinned", "meters": [1]},
-            "n": [1],
-            "s": 1
-        });
-        let mut target = serde_json::json!({
-            "a": {"x": 1, "y": 3},
-            "e": {"mode": "other", "k": 0},
-            "n": [2],
-            "s": 3
-        });
-        merge_changes(&base, &changed, &mut target);
-        assert_eq!(
-            target,
-            serde_json::json!({
-                "a": {"x": 2, "y": 3},
-                "e": {"mode": "pinned", "meters": [1]},
-                "n": [2],
-                "s": 3
-            })
-        );
     }
 }

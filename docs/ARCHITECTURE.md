@@ -107,13 +107,19 @@ Single instance and messages, all per session ("Single instance" below):
 - The dialog process has its own mutex (`Local\Lastdrop.Dialog`). A second launch posts the
   dialog it wants (the message's `WPARAM`) to the running dialog process, which opens it or brings
   it to the front, and exits.
-- After Apply the dialog process writes `settings.json` itself (atomic) and posts
-  `Lastdrop.SettingsChanged` to the tray process. The tray process re-reads the file and applies
-  it (hotkey, services, readout, refresh plan); a missing or broken file is ignored. It does not
-  write the file again. It keeps its own pause: the tray menu owns the pause. Apply re-reads the
-  file and writes only what the window changed since it opened (or since the last Apply) onto it,
-  so what the tray changed meanwhile (pause, pinned meters, readout auto or off) survives; when
-  both changed the same setting, the window wins.
+- Three writers change `settings.json`: the tray process (pause, pinned meters, readout auto or
+  off), the settings window and Theme Studio. Each write is one read-merge-write under the
+  `Local\Lastdrop.Settings` mutex: the writer re-reads the file and applies only its own change
+  onto it, so no writer replaces a change it never read; when two changed the same setting, the
+  later write wins ([settings-spec](design/settings-spec.md) §6). The tray queues its changes for
+  its writer thread as the settings they started from and the new ones, rebased when the job
+  runs.
+- After a write the dialog process posts `Lastdrop.SettingsChanged` to the tray process. The
+  tray process queues a barrier behind its own earlier writes; when the writer thread reaches it,
+  it reads the file and posts it back, and the tray applies it (hotkey, services, readout, refresh
+  plan) with its own changes since the barrier rebased onto it. Nothing waits for the writer; a
+  missing or broken file is ignored. It does not write the file again, and it keeps its own
+  pause: the tray menu owns the pause.
 - Saving or removing the Meshy key happens in the dialog process (Credential Manager); the same
   message, with another flag, makes the tray process lift Meshy's sign-in stop and read again.
 - Autostart is set by the dialog process. A changed hotkey is tested there (registered and
@@ -129,7 +135,7 @@ The dialog process logs to `settings.log`, the tray process to `lastdrop.log`.
 | **readout** (one per taskbar with "every taskbar" on, [every-taskbar-spec](design/every-taskbar-spec.md); only the primary one forwards system broadcasts) | the taskbar readout: a hidden top-level window that receives `TaskbarCreated`, the layered readout window (a topmost `WS_POPUP` over the taskbar, never parented into it; readout-spec §6.1), the WinEvent hooks on the taskbar, its own message loop and drawing | I/O, waiting on locks held by other threads, synchronous cross-process calls while holding a lock |
 | **occupancy** | a UI Automation client (MTA) that measures where the taskbar's app buttons are, with connection and transaction timeouts; COM and UI Automation are set up on the first measurement, so a readout that is off never loads them | anything else |
 | **refresh workers** | provider fetches (files, HTTP, `codex app-server`), one job per credential source at a time | touching UI objects |
-| **writer** | every file write after start-up, one job at a time in the order the main thread queued them: history appends and the daily compaction, settings and state saves (atomic replace); the log has a writer thread of its own | anything but writing files |
+| **writer** | every file write after start-up, one job at a time in the order the main thread queued them: history appends and the daily compaction, settings saves (rebased onto the file under the settings lock) and state saves (atomic replace), and the barrier that re-reads `settings.json` after a dialog's write; the log has a writer thread of its own | anything but reading and writing files |
 
 Why a separate readout thread: the readout follows Explorer's taskbar (WinEvent hooks, geometry
 reads, re-raising itself when the taskbar comes to the top of the topmost band) and must react
@@ -306,8 +312,9 @@ Rules for every provider:
   (rotated, local only; `lastdrop.log` for the tray process, `settings.log` for the dialog
   process). Start-up reads them on the main thread before the event loop; every later write is
   queued for the writer thread, so the UI thread never waits on the disk. The one later read is
-  `settings.json` when the dialog process says it changed (a few kilobytes). The dialog process
-  writes `settings.json` itself; it never writes the state file or history.
+  `settings.json` when the dialog process says it changed (a few kilobytes, read on the writer
+  thread at the barrier). The dialog process writes `settings.json` itself, under the settings
+  lock; it never writes the state file or history.
 - **No telemetry.** The only network traffic is to the services whose usage is being read, and
   the daily update check to GitHub (`lastdrop_providers::release`), which sends nothing about the
   user and can be turned off ([updates-spec](design/updates-spec.md)).

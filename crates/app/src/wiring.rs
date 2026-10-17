@@ -91,8 +91,9 @@ use windows::Win32::UI::WindowsAndMessaging::{
 
 use crate::dialog::{self, Changes, DialogKind};
 use crate::history::HistoryStore;
-use crate::persist::{LoadOutcome, Paths};
+use crate::persist::Paths;
 use crate::scheduler::{IdentityRead, Job, JobResult, Scheduler, WorkerIo};
+use crate::settings_sync::{SettingsFile, TraySync};
 use crate::state::AppState;
 use crate::writer::Writer;
 use crate::{AppError, Args, bench, persist, ui};
@@ -216,6 +217,11 @@ pub fn run(startup: Startup) -> Result<(), AppError> {
     let history = HistoryStore::open(&paths.history, now, writer.handle())?;
     let readout_enabled = settings.readout.enabled && !args.no_readout;
     let hotkey_setting = settings.hotkey.clone();
+    let settings_sync = TraySync::new(
+        SettingsFile::new(paths.settings.clone()),
+        writer.handle(),
+        &settings,
+    );
     let mut state = AppState::new(settings, history, theme, locale, ui_languages);
     state.restore_saved(&persist::load_state(&paths.state), now);
     log::info!("strings: {}", state.strings.language());
@@ -318,6 +324,7 @@ pub fn run(startup: Startup) -> Result<(), AppError> {
         args: args.clone(),
         paths,
         writer,
+        settings_sync,
         rt: Runtime {
             bench: bench.clone(),
             theme_data: RefCell::new(theme_data),
@@ -762,6 +769,8 @@ pub struct App {
     pub paths: Paths,
     /// The file writer thread: history, settings and state writes, in queue order.
     pub writer: Writer,
+    /// This process's side of the settings write coordination (settings-spec §6).
+    pub settings_sync: TraySync,
     /// Runtime bookkeeping.
     pub rt: Runtime,
 }
@@ -1286,17 +1295,11 @@ fn resume(app: &App) {
     replan(app);
 }
 
-/// Saves the current settings: encoded here, written atomically by the writer thread in queue
-/// order (a later save replaces an earlier one; failures are logged there).
+/// Saves what this process changed in its settings since its last save: the writer thread
+/// applies it onto `settings.json` as it is when the job runs, under the settings lock
+/// (settings-spec §6; failures are logged there).
 pub fn save_settings(app: &App) {
-    let bytes = persist::settings_bytes(&app.state.borrow().settings);
-    match bytes {
-        Ok(bytes) => app
-            .writer
-            .handle()
-            .replace(app.paths.settings.clone(), bytes, "settings"),
-        Err(e) => log::error!("cannot encode settings: {e}"),
-    }
+    app.settings_sync.save(&app.state.borrow().settings);
 }
 
 /// Registers the global hotkey (R§10); a failure is logged (the dialog process tested the
@@ -1338,10 +1341,9 @@ pub fn open_dialog(app: &App, kind: DialogKind) {
 }
 
 /// The dialog process changed something (already deferred to the event loop):
-/// - `settings`: re-read `settings.json` ([`reloaded_settings`]; a missing or broken file is
-///   ignored) and apply it as Apply did in this process: hotkey re-registered when it changed,
-///   providers and sources rebuilt, readout on or off, models rebuilt, refreshes re-planned. The
-///   file is not saved again here (it is the dialog's write, and saving would race it).
+/// - `settings`: re-read `settings.json` once every writer job queued so far is done — a barrier
+///   job, whose read comes back to [`on_settings_written`]; nothing here waits for the writer
+///   (settings-spec §6). The file is not saved again here (it is the dialog's write).
 /// - an API key (Meshy, OpenCode Go, a described service): lift that service's sign-in stop
 ///   ([`crate::state::lift_sign_in_stop`]) and re-plan; the other's back-off stays.
 pub fn on_settings_changed(app: &App, changes: Changes) {
@@ -1356,12 +1358,11 @@ pub fn on_settings_changed(app: &App, changes: Changes) {
     }
     if changes.settings {
         let current = app.state.borrow().settings.clone();
-        match reloaded_settings(&current, persist::read_settings(&app.paths.settings)) {
-            Some(settings) => apply_reloaded(app, &current, settings),
-            None => {
-                log::warn!("settings.json is missing or unreadable; keeping the current settings");
-            }
-        }
+        app.settings_sync.barrier(&current, |token, read| {
+            let _ = slint::invoke_from_event_loop(move || {
+                with_app(|app| on_settings_written(app, token, read));
+            });
+        });
     }
     for provider in changes.keys() {
         crate::state::lift_sign_in_stop(&mut app.state.borrow_mut().sources, provider);
@@ -1370,21 +1371,19 @@ pub fn on_settings_changed(app: &App, changes: Changes) {
     replan(app);
 }
 
-/// The settings to apply after the dialog process wrote `settings.json`: the file's, with this
-/// process's pause (the tray menu owns it, and a pause queued for the writer thread may not be in
-/// the file yet). `None` when the file is missing or cannot be read or understood: a broken file
-/// never replaces the running settings with defaults (the next start sets it aside).
-pub fn reloaded_settings(
-    current: &Settings,
-    read: std::io::Result<(Settings, LoadOutcome)>,
-) -> Option<Settings> {
-    match read {
-        Ok((settings, LoadOutcome::Loaded | LoadOutcome::Migrated { .. })) => Some(Settings {
-            pause: current.pause,
-            ..settings
-        }),
-        Ok((_, LoadOutcome::Missing | LoadOutcome::Corrupt { .. })) | Err(_) => None,
-    }
+/// The barrier queued for the dialog's write was reached and read the file: apply it, with this
+/// process's changes since the barrier rebased onto it ([`TraySync::reload`]), as Apply did in
+/// this process: hotkey re-registered when it changed, providers and sources rebuilt, readout on
+/// or off, models rebuilt, refreshes re-planned. A missing or broken file is ignored; a barrier a
+/// later one superseded does nothing (the later one's read follows).
+fn on_settings_written(app: &App, token: u64, read: crate::settings_sync::BarrierRead) {
+    let current = app.state.borrow().settings.clone();
+    let Some(settings) = app.settings_sync.reload(token, &current, read) else {
+        return;
+    };
+    apply_reloaded(app, &current, settings);
+    rebuild(app, Timestamp::now());
+    replan(app);
 }
 
 /// Applies settings the dialog process saved: hotkey (when it changed), state, readout.
@@ -2782,71 +2781,6 @@ mod tests {
             _ => false,
         });
         assert!(off_checked);
-    }
-
-    #[test]
-    fn a_reload_ignores_a_missing_or_broken_file_and_keeps_the_pause() {
-        let current = Settings {
-            pause: Some(Pause { until: None }),
-            ..Settings::default()
-        };
-        let mut saved = Settings {
-            start_with_windows: true,
-            ..Settings::default()
-        };
-        saved.readout.enabled = false;
-
-        let loaded = reloaded_settings(&current, Ok((saved.clone(), LoadOutcome::Loaded)))
-            .expect("a clean load applies");
-        assert_eq!(
-            loaded,
-            Settings {
-                pause: current.pause,
-                ..saved.clone()
-            }
-        );
-        assert!(
-            reloaded_settings(
-                &current,
-                Ok((saved.clone(), LoadOutcome::Migrated { from: 0 }))
-            )
-            .is_some()
-        );
-        assert_eq!(
-            reloaded_settings(&current, Ok((Settings::default(), LoadOutcome::Missing))),
-            None,
-            "no file: keep the current settings"
-        );
-        assert_eq!(
-            reloaded_settings(
-                &current,
-                Err(std::io::Error::new(
-                    std::io::ErrorKind::InvalidData,
-                    "not json"
-                ))
-            ),
-            None,
-            "a broken file never brings the defaults"
-        );
-        assert_eq!(
-            reloaded_settings(
-                &current,
-                Ok((
-                    Settings::default(),
-                    LoadOutcome::Corrupt {
-                        backup: std::path::PathBuf::from("settings.json.bad-1")
-                    }
-                ))
-            ),
-            None
-        );
-        assert_eq!(
-            reloaded_settings(
-                &current,
-                Err(std::io::Error::from(std::io::ErrorKind::PermissionDenied))
-            ),
-            None
-        );
     }
 
     #[test]

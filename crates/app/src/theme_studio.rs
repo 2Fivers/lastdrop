@@ -1,7 +1,8 @@
 //! Theme Studio (docs/design/themes-spec.md §4) in the dialog process: a draft theme, edited in
 //! the window, drawn on demo flyout cards with the draft's colours and layout, saved as a JSON
 //! file in `%APPDATA%\Lastdrop\themes`, and, with "Save and use", made the theme of the settings
-//! (the tray process is told, as after Apply in Settings).
+//! (one read-merge-write under the settings lock, settings-spec §6; the tray process is told, as
+//! after a change in Settings).
 //!
 //! Threading: main thread only; the theme files are a few kilobytes.
 
@@ -12,12 +13,14 @@ use std::rc::Rc;
 use lastdrop_core::color::ColorRole;
 use lastdrop_core::grammar::strings::text;
 use lastdrop_core::grammar::{Msg, Strings};
+use lastdrop_core::settings::Settings;
 use lastdrop_core::theme::{BarStyle, Density, THEMABLE, Theme, ThemeColor, ThemeMode, WidgetId};
 use lastdrop_win::theme::ThemeInfo;
 use slint::{ComponentHandle, ModelRc, SharedString, VecModel};
 
 use crate::dialog::{self, Changes};
 use crate::persist::{self, Paths};
+use crate::settings_sync::SettingsFile;
 use crate::settings_window::Wording;
 use crate::themes::{self, ThemeEntry};
 use crate::{AppError, demo, ui, wiring};
@@ -373,17 +376,24 @@ impl Session {
     }
 }
 
-/// Makes `id` the theme of `settings.json` (read, changed, written atomically) and tells the
-/// tray process, as Apply in Settings does.
+/// Makes `id` the theme of `settings.json` ([`write_theme`]) and tells the tray process, as a
+/// change in Settings does.
 fn use_theme(paths: &Paths, id: &str) -> std::io::Result<()> {
-    let (mut settings, _) = persist::load_settings(&paths.settings);
-    settings.theme = (id != lastdrop_core::theme::DEFAULT_ID).then(|| id.to_owned());
-    persist::save_settings(&paths.settings, &settings)?;
+    write_theme(&SettingsFile::new(paths.settings.clone()), id)?;
     dialog::notify(Changes {
         settings: true,
         ..Changes::default()
     });
     Ok(())
+}
+
+/// Makes `id` the theme of `file`: one read-merge-write under the settings lock (settings-spec
+/// §6), so only the theme changes and what another writer wrote stays. Returns what was written.
+fn write_theme(file: &SettingsFile, id: &str) -> std::io::Result<Settings> {
+    file.update(&Settings::default(), |mut settings| {
+        settings.theme = (id != lastdrop_core::theme::DEFAULT_ID).then(|| id.to_owned());
+        settings
+    })
 }
 
 /// Opens Theme Studio starting from the theme `start` (else the settings' theme), or brings the
@@ -529,6 +539,56 @@ mod tests {
     use lastdrop_core::theme::{Widget, id_for};
 
     use super::*;
+
+    #[test]
+    fn using_a_theme_waits_for_the_settings_lock_and_keeps_what_was_written_meanwhile() {
+        use std::sync::mpsc;
+        use std::time::Duration;
+
+        use lastdrop_win::named_lock::NamedLock;
+
+        let dir = std::env::temp_dir().join(format!(
+            "lastdrop-studio-test-{}-{}",
+            std::process::id(),
+            jiff::Timestamp::now().as_nanosecond()
+        ));
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        let file = SettingsFile::with_lock(
+            dir.join("settings.json"),
+            &format!(r"Local\Lastdrop.Test.Studio.{}", std::process::id()),
+        );
+        persist::save_settings(&file.path, &Settings::default()).expect("seed");
+
+        // Another writer holds the lock for its read-merge-write.
+        let (locked_tx, locked) = mpsc::channel();
+        let (release, until) = mpsc::channel::<()>();
+        let other = file.clone();
+        let holder = std::thread::spawn(move || {
+            let lock = NamedLock::acquire(&other.lock, Duration::from_secs(5)).expect("lock");
+            locked_tx.send(()).expect("locked");
+            let _ = until.recv();
+            let (mut settings, _) = persist::load_settings(&other.path);
+            settings.readout.enabled = false;
+            persist::save_settings(&other.path, &settings).expect("write");
+            drop(lock);
+        });
+        locked.recv().expect("locked");
+        let studio_file = file.clone();
+        let studio = std::thread::spawn(move || write_theme(&studio_file, "ember"));
+        std::thread::sleep(Duration::from_millis(100));
+        assert_eq!(
+            persist::load_settings(&file.path).0.theme,
+            None,
+            "Theme Studio waits for the lock"
+        );
+        release.send(()).expect("release");
+        holder.join().expect("holder");
+        let written = studio.join().expect("studio").expect("written");
+        assert_eq!(written.theme.as_deref(), Some("ember"));
+        assert!(!written.readout.enabled, "the other writer's change stays");
+        assert_eq!(persist::load_settings(&file.path).0, written);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     #[test]
     fn header_widgets_move_among_themselves() {
