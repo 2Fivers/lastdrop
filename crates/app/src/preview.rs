@@ -53,7 +53,8 @@ const SETTINGS_SIZES: [(f32, f32); 2] = [
 ];
 /// The about window's preferred width.
 const ABOUT_PREVIEW_W: f32 = 420.0;
-/// The usage history window's preview size: its preferred width, tall enough for the page.
+/// The usage history window's preview size: its preferred width, and at most this tall (it is as
+/// tall as its page).
 const HISTORY_PREVIEW_W: f32 = 640.0;
 /// Theme Studio's preview size, logical px.
 const STUDIO_PREVIEW_W: f32 = 880.0;
@@ -240,7 +241,7 @@ fn render_live_history(language: Option<Language>, scale: f64, out: &Path) -> Re
         scale,
         HISTORY_PREVIEW_W,
         HISTORY_PREVIEW_H,
-        &|| HISTORY_PREVIEW_H,
+        &|| window.get_content_height(),
         &|_| {},
         out,
     )?;
@@ -547,10 +548,14 @@ fn demo_sources(world: &demo::Demo) -> Vec<crate::history_window::Source> {
         .collect()
 }
 
-/// Renders the usage history window with the demo's first service over the last 30 days.
+/// Renders the usage history window with the demo's first service over the last 30 days, in the
+/// demo's colour mode.
 fn render_history(world: &demo::Demo, scale: f64, out: &Path) -> Result<(), AppError> {
     use crate::history_window::{build, fill_choices, fill_model};
     let window = ui::HistoryWindow::new()?;
+    if world.theme.apps_dark {
+        window.invoke_use_dark_scheme();
+    }
     let strings = world.language.strings();
     let sources = demo_sources(world);
     fill_choices(&window, &sources, strings);
@@ -587,7 +592,7 @@ fn render_history(world: &demo::Demo, scale: f64, out: &Path) -> Result<(), AppE
         scale,
         HISTORY_PREVIEW_W,
         HISTORY_PREVIEW_H,
-        &|| HISTORY_PREVIEW_H,
+        &|| window.get_content_height(),
         &|_| {},
         out,
     )?;
