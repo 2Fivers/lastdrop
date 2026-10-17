@@ -21,9 +21,9 @@ current pace will last until the next reset.
 
 ## Status
 
-In development; the first release (v0.1) is being prepared. Built in Rust with Slint's software renderer, the stack
-the spike picked by measuring idle memory and flyout latency
-([ADR 0001](docs/adr/0001-rust-and-slint-software-renderer.md)).
+Early version: [v0.1.0](https://github.com/2Fivers/lastdrop/releases/latest) is the first public
+release. Built in Rust with Slint's software renderer, the stack the spike picked by measuring
+idle memory and flyout latency ([ADR 0001](docs/adr/0001-rust-and-slint-software-renderer.md)).
 
 The first useful build is done: tray icon, taskbar readout, flyout, hover card, settings and
 autostart, reading Claude, Codex, GitHub Copilot, Cursor, Google Antigravity, OpenCode Go, Grok and
@@ -36,12 +36,16 @@ limit over the last 7, 30 or 90 days, the use per day and the hours of the week 
 
 ## Install
 
-Once the first release is out:
+- **winget:** `winget install lastdrop` (the package is `2Fivers.Lastdrop`; it is on its way
+  into winget).
+- **By hand:** download `Lastdrop-Setup.exe` from the
+  [latest release](https://github.com/2Fivers/lastdrop/releases/latest) and run it. It installs
+  for the current Windows user, no administrator rights needed, and updates itself from the same
+  releases. Uninstall it from Settings ▸ Apps ▸ Installed apps.
 
-- **winget:** `winget install 2Fivers.Lastdrop`
-- **By hand:** download `Lastdrop-Setup.exe` from [Releases](https://github.com/2Fivers/lastdrop/releases)
-  and run it. It installs for the current Windows user, no administrator rights needed, and
-  updates itself from the same releases. Uninstall it from Settings ▸ Apps ▸ Installed apps.
+The installer is not code-signed yet, so Windows SmartScreen warns the first time: choose
+*More info ▸ Run anyway*. To check that GitHub built it from this repository:
+`gh attestation verify Lastdrop-Setup.exe --repo 2Fivers/lastdrop`.
 
 ## Plan
 
