@@ -8,7 +8,8 @@
 //! `--uninstall --quiet`: no questions, no message boxes, only the exit code and the log.
 //!
 //! Every step that touches the running app asks it to quit first (the settings-changed message
-//! with [`Changes::quit`]) and waits for its mutex to go.
+//! with [`Changes::quit`]) and waits for its mutex to go and for every process that runs the
+//! installed `lastdrop.exe` to end ([`quit_running_app`]).
 //!
 //! Threading: the installer's own process, main thread; no Slint, only message boxes.
 
@@ -29,10 +30,10 @@ pub const EXE_NAME: &str = "lastdrop.exe";
 /// The file stem a release's installer has (`Lastdrop-Setup.exe`), compared case-insensitively.
 pub const SETUP_STEM: &str = "lastdrop-setup";
 
-/// How long the installer waits for a running Lastdrop to quit.
+/// How long the installer waits for a running Lastdrop to quit, its process included.
 const QUIT_WAIT: Duration = Duration::from_secs(15);
 
-/// How often it asks again while it waits ([`quit_running_app`]).
+/// How often it asks again while it waits ([`mutex_gone`]).
 const QUIT_RESEND: Duration = Duration::from_secs(1);
 
 /// How long it retries replacing a file another process still holds (an anti-virus scan).
@@ -86,13 +87,22 @@ fn strings() -> &'static dyn Strings {
     .strings()
 }
 
-/// Asks a running Lastdrop to quit and waits for it; `false` when it is still running.
+/// Asks a running Lastdrop to quit and waits, at most [`QUIT_WAIT`] in all, for its mutex to go
+/// and then for every process that runs `exe` (the program about to be replaced or removed) to
+/// end; `false` when one is still running.
+fn quit_running_app(exe: &Path) -> bool {
+    let deadline = Instant::now() + QUIT_WAIT;
+    mutex_gone(deadline) && processes_ended(exe, deadline)
+}
+
+/// Asks a running Lastdrop to quit until its mutex is gone, at most until `deadline`; `false`
+/// when it is still there.
 ///
 /// It asks again every [`QUIT_RESEND`] until the app is gone: a Lastdrop that has just started
 /// holds its mutex before its settings-changed listener exists, and a quit posted in between is
 /// lost (no listener to post to). That happens when an install is followed at once by an
 /// uninstall, as winget's validation and the release workflow's install test do.
-fn quit_running_app() -> bool {
+fn mutex_gone(deadline: Instant) -> bool {
     if !single_instance::app_running() {
         return true;
     }
@@ -101,9 +111,8 @@ fn quit_running_app() -> bool {
         ..Changes::default()
     }
     .to_wparam();
-    let start = Instant::now();
     let mut asked: Option<Instant> = None;
-    while start.elapsed() < QUIT_WAIT {
+    while Instant::now() < deadline {
         if !single_instance::app_running() {
             return true;
         }
@@ -118,6 +127,41 @@ fn quit_running_app() -> bool {
         std::thread::sleep(Duration::from_millis(200));
     }
     false
+}
+
+/// Waits, at most until `deadline`, for every process but this one that runs `exe` to end;
+/// `false` when one still runs.
+///
+/// The app closes its mutex at the end of its shutdown, but its process ends a moment later (the
+/// log flushed, the threads and DLLs torn down), and until then `exe` cannot be replaced nor its
+/// folder removed. A settings, usage history or about window started from `exe` (the dialog
+/// process) has a mutex of its own and is not asked to quit, so it keeps the installer waiting
+/// until the user closes it. When the processes cannot be listed, the mutex is all it waits for.
+fn processes_ended(exe: &Path, deadline: Instant) -> bool {
+    let running = match win_install::processes_running(exe) {
+        Ok(running) => running,
+        Err(e) => {
+            log::warn!(
+                "install: cannot list the processes running {}: {e}",
+                exe.display()
+            );
+            return true;
+        }
+    };
+    running.iter().all(|process| {
+        let pid = process.pid();
+        match process.wait(deadline.saturating_duration_since(Instant::now())) {
+            Ok(true) => true,
+            Ok(false) => {
+                log::warn!("install: process {pid} still runs {}", exe.display());
+                false
+            }
+            Err(e) => {
+                log::warn!("install: cannot wait for process {pid}: {e}");
+                false
+            }
+        }
+    })
 }
 
 /// Copies `from` over `to`, retrying while another process holds `to`.
@@ -157,7 +201,7 @@ fn install(quietly: bool) -> Result<PathBuf, String> {
     let dir = install_dir().ok_or_else(|| "%LOCALAPPDATA% is not set".to_owned())?;
     let me = std::env::current_exe().map_err(|e| e.to_string())?;
     let target = dir.join(EXE_NAME);
-    if !quit_running_app() {
+    if !quit_running_app(&target) {
         return Err(strings.template(Msg::InstallStillRunning).to_owned());
     }
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
@@ -209,10 +253,10 @@ fn run_key_set() -> bool {
 /// and logs stay.
 fn uninstall() -> Result<(), String> {
     let strings = strings();
-    if !quit_running_app() {
+    let dir = install_dir().ok_or_else(|| "%LOCALAPPDATA% is not set".to_owned())?;
+    if !quit_running_app(&dir.join(EXE_NAME)) {
         return Err(strings.template(Msg::InstallStillRunning).to_owned());
     }
-    let dir = install_dir().ok_or_else(|| "%LOCALAPPDATA% is not set".to_owned())?;
     if lastdrop_win::autostart::is_enabled(&dir.join(EXE_NAME)).unwrap_or(false) {
         let _ = lastdrop_win::autostart::disable();
     }
@@ -348,5 +392,22 @@ mod tests {
             r"C:\Users\x\AppData\Local\Programs\Lastdrop\lastdrop.exe"
         )));
         assert!(!is_setup(Path::new("Setup.exe")));
+    }
+
+    #[test]
+    fn the_installer_never_waits_for_itself() {
+        // The uninstaller runs from the program it removes: it would wait for itself until the
+        // deadline and then fail.
+        let me = std::env::current_exe().expect("the test program");
+        assert!(processes_ended(
+            &me,
+            Instant::now() + Duration::from_secs(5)
+        ));
+        // Nothing runs a program that is not there.
+        let missing = std::env::temp_dir().join(format!(
+            "lastdrop-no-such-program-{}.exe",
+            std::process::id()
+        ));
+        assert!(processes_ended(&missing, Instant::now()));
     }
 }
