@@ -18,15 +18,15 @@ sign-in and never changes anything in the folder.
 
 ## Adding an account
 
-Open **Settings ▸ Accounts**. Claude Code and Codex each have a card listing their accounts. Open a
-card to see:
+Open **Settings ▸ Services**. The rows of Claude and Codex say how many accounts they have; open
+one with the arrow at the end of its row to see its accounts, then:
 
 - **Found on this PC**: folders Lastdrop found in your user folder that are not accounts yet, each
   with **Add**. It looks for `.claude-*` and `.claude_*` folders that hold Claude Code data, and
   `.codex-*` and `.codex_*` folders that hold Codex data.
 - **Add folder…**: pick any folder yourself. A folder that is already an account is not added
   twice.
-- **New account**: type a name, such as `Work`, and choose **Create and sign in**. Lastdrop
+- **New account…**: type a name, such as `Work`, and choose **Create and sign in**. Lastdrop
   creates `%USERPROFILE%\.claude-work` (or `.codex-work`), adds it with the name as its alias, and
   opens a terminal with Claude Code's or Codex's own sign-in for that folder. Sign in there.
 
@@ -37,7 +37,7 @@ settings by itself. Only the default folders are read until you add the others.
 
 ## What the settings show for each account
 
-Each account row has its name, its folder, and one of these:
+Each account row has its name, one of these, and its folder:
 
 - *Signed in as* and the e-mail address.
 - *Signed in*, when e-mail addresses are hidden or the folder does not name one.

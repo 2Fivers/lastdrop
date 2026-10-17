@@ -44,8 +44,8 @@ other services on in **Settings ▸ Services**; [What Lastdrop reads](what-lastd
 what each one needs.
 
 If Claude Code or Codex has more than one config folder on your PC, the first time you start
-Lastdrop yourself it also opens the settings at **Accounts**, so you can choose which of them to
-read. See [Accounts](accounts.md).
+Lastdrop yourself it also opens its accounts in **Settings ▸ Services**, so you can choose which
+of them to read. See [Accounts](accounts.md).
 
 Lastdrop never signs in to a service for you. If a service is not signed in, sign in with its own
 app or command-line tool, and Lastdrop picks it up.

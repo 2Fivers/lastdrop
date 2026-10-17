@@ -29,8 +29,9 @@ Put the file in this folder. Create the folder if it is not there:
 %APPDATA%\Lastdrop\providers
 ```
 
-Type that path into the File Explorer address bar to open it. Any file name that ends in `.json`
-works, for example `example-ai.json`.
+Type that path into the File Explorer address bar to open it, or choose **Open folder** under
+**More services** in Settings ▸ Services, which also creates it. Any file name that ends in
+`.json` works, for example `example-ai.json`.
 
 Lastdrop reads the folder **when it starts**. After you add or change a file, quit Lastdrop from its
 tray menu (*Quit Lastdrop*) and start it again.
@@ -96,8 +97,8 @@ Save it as `%APPDATA%\Lastdrop\providers\example-ai.json`, then:
 
 1. Restart Lastdrop.
 2. Open Settings ▸ Services. *Example AI* is in the list.
-3. Under **API keys**, paste your Example AI key and choose **Save key**. Saving the key also turns
-   the service on.
+3. Open its row with the arrow at the end, paste your Example AI key and choose **Save key**.
+   Saving the key also turns the service on.
 4. Open the flyout. Example AI has a card with a *Monthly requests* bar and a *Prepaid credit*
    balance.
 
@@ -192,9 +193,10 @@ folder to start from it. A file in your folder with the same `id` as a bundled o
 
 ## The API key
 
-You enter the key in Settings ▸ Services ▸ **API keys**. Lastdrop stores it in Windows Credential
-Manager, never in a file, and the settings window never shows it again. In Credential Manager it is
-a generic credential named `Lastdrop:<id>:default:api_key`, for example
+You enter the key in the service's row of Settings ▸ Services: open the row with the arrow at
+its end. Its line says *Needs an API key* until one is stored. Lastdrop stores the key in Windows
+Credential Manager, never in a file, and the settings window never shows it again. In Credential
+Manager it is a generic credential named `Lastdrop:<id>:default:api_key`, for example
 `Lastdrop:example-ai:default:api_key`.
 
 To change the key, paste a new one and choose **Save key**. **Remove** deletes it from Credential
