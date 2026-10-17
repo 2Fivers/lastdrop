@@ -1,4 +1,4 @@
-# yaml-language-server: $schema=https://aka.ms/winget-manifest.installer.1.6.0.schema.json
+# yaml-language-server: $schema=https://aka.ms/winget-manifest.installer.1.12.0.schema.json
 # The release's Lastdrop-Setup.exe is the app itself: --install --quiet installs it for the
 # current user without questions or message boxes, and the "Installed apps" entry (ProductCode
 # Lastdrop) has a QuietUninstallString (updates-spec §2).
@@ -26,4 +26,4 @@ Installers:
     InstallerUrl: https://github.com/2Fivers/lastdrop/releases/download/v{{VERSION}}/Lastdrop-Setup.exe
     InstallerSha256: {{SHA256}}
 ManifestType: installer
-ManifestVersion: 1.6.0
+ManifestVersion: 1.12.0

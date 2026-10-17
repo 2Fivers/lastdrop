@@ -23,8 +23,9 @@ current pace will last until the next reset.
 - **Your choice of what to show.** Pick the services, the meters and the widgets you care about.
 - **Real statistics.** History, burn rate, pace and a forecast of when you run out.
 - **Easy to extend.** Simple balance endpoints are described in a JSON file; no compiler needed.
-- **Your data stays yours.** Everything is read and stored locally. Nothing is sent anywhere
-  except to the service whose usage is being read.
+- **Your data stays yours.** Everything is stored locally. Nothing is sent anywhere except to
+  the service whose usage is being read, and a daily update check you can turn off. See
+  [PRIVACY.md](PRIVACY.md).
 
 ## Status
 
@@ -77,6 +78,11 @@ The screenshots show the app's built-in demo data, not a real account.
 The installer is not code-signed yet, so Windows SmartScreen warns the first time: choose
 *More info ▸ Run anyway*. To check that GitHub built it from this repository:
 `gh attestation verify Lastdrop-Setup.exe --repo 2Fivers/lastdrop`.
+
+## Documentation
+
+The [user guide](docs/guide/README.md) covers setting up, reading the flyout, accounts, adding your
+own service, what Lastdrop reads and troubleshooting.
 
 ## Plan
 
