@@ -128,26 +128,36 @@ settings are written then, so the next start is not a first run again.
 
 ## 7. Settings window
 
-An **Accounts** group on the settings window's **Services** page ([settings-spec](settings-spec.md)
-§4), with an expandable card for Claude Code and one for Codex (`{n} accounts` under the name;
-collapsed until the user, or the first run's deep link, opens it):
+In the service list of the settings window's **Services** page ([settings-spec](settings-spec.md)
+§4), the rows of the services whose accounts are folders — Claude and Codex — expand to their
+accounts. The row says `Claude Code's sign-in on this PC · {n} accounts` (every configured folder
+counts, duplicates too); it is closed until the user, or the first run's deep link, opens it, and
+it stays open across page changes while the window is open:
 
-- One row per account: its name (§4; `Account {n}` when nothing else, numbered as the tray
-  numbers the shown accounts, a duplicate with the number of the account it duplicates), the
-  folder, and its state:
-  `Signed in as {email}` (or `Signed in` when hidden or unknown), `Not signed in`,
-  `Can't tell who is signed in`, or `Same account as {name}`. An **Alias** box (up to 24
-  characters; empty = none; saved at Enter, when it loses the focus, after 800 ms without a
-  keystroke, when its card closes or the page changes, settings-spec §5.2) and **Remove**.
-  Removing the last account is not offered: turn the service off instead.
-- **Found folders** (§6) not yet used, each with **Add**.
+- One row per configured folder, duplicates included: its name (§4; `Account {n}` when nothing
+  else, numbered as the tray numbers the shown accounts, a duplicate with the number of the account
+  it duplicates; semibold), its state and its folder (shortened with `…` when it does not fit; the
+  whole path is in the row's accessible description). The state is `Signed in as {email}` (or
+  `Signed in` when hidden or unknown), `Not signed in`, `Can't tell who is signed in`, or
+  `Same account as {name}, shown once`. Trailing: an **Alias** box with its visible label (up to
+  24 characters; empty = none; saved at Enter, when it loses the focus, after 800 ms without a
+  keystroke, when its service's row closes or the page changes, settings-spec §5.2) and
+  **Remove**. Removing the last account is not offered: turn the service off instead. After
+  Remove the keyboard focus goes to the next account's alias box, else to **Add folder…**. When
+  the page's column is narrower than 520 px, the alias row sits under the name, state and folder.
+- **Found on this PC** (§6): the folders not yet used, each with **Add** (its accessible name
+  names the folder). After Add the focus goes to the next found folder's Add, else to **Add
+  folder…**.
 - **Add folder…**: a folder picker (`IFileOpenDialog`, folders only). A folder already used is
   not added twice.
-- **New account…** with a name box: creates `~\.claude-{name}` or `~\.codex-{name}` (the name
-  in lower case, characters outside `a-z 0-9 - _` replaced by `-`; `-2`, `-3` … when taken), adds
-  it as an account with the name as its alias, and opens the vendor's own sign-in in a terminal
-  with the folder set (`Provider::sign_in_command`: `claude` / `codex login`). Lastdrop never
-  signs in itself.
+- **New account…** shows a name box (labelled **New account**, with "Opens {client}'s sign-in in
+  a terminal." under it), **Create and sign in** and **Cancel**. Create and sign in makes
+  `~\.claude-{name}` or `~\.codex-{name}` (the name in lower case, characters outside
+  `a-z 0-9 - _` replaced by `-`; `-2`, `-3` … when taken), adds it as an account with the name as
+  its alias, and opens the vendor's own sign-in in a terminal with the folder set
+  (`Provider::sign_in_command`: `claude` / `codex login`). Lastdrop never signs in itself.
+- A line saying what the last action did ("Account added.", "Opened {client}'s sign-in in a
+  terminal.").
 - **Hide e-mail addresses** (Services ▸ Privacy): a switch.
 
 Adding and removing an account are saved at once; "Account added." shows only once that save
@@ -169,3 +179,6 @@ back) gets the identity last known for it, so §3 and §5 hold for it as after a
   (§6) on a fake file system.
 - `crates/app`: duplicates (§3), names (§4) and switches (§5) on the state's free functions, the
   plan skipping duplicates, the retirement of history files, the identities in `state.json`.
+- `crates/app/tests/settings_ui.rs` (§7): every configured folder has its row in Claude's
+  expander, a duplicate marked "Same account as …" and its meters left out of the meter list; the
+  first run's deep link; Add and Remove saved at once, with the focus moving on.

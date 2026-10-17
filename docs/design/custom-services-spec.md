@@ -14,8 +14,8 @@ or run: the file is data (ARCHITECTURE "Slint licence rule": provider definition
 
 A service like any other: its own entry in Settings ▸ Services (turned off until the user turns it
 on), its own card, readout rows, history and notifications, a monogram (R§6.4), and an API key in
-Settings ▸ API keys, kept in Credential Manager as `Lastdrop:<id>:<account>:api_key`. It has one
-account. It is read at most every 5 minutes.
+its row of Settings ▸ Services, kept in Credential Manager as `Lastdrop:<id>:<account>:api_key`.
+It has one account. It is read at most every 5 minutes.
 
 ## 2. The file
 
@@ -104,8 +104,10 @@ API-key message. The answer is read only for the pointers of the file and droppe
 
 ## 6. Settings
 
-Each described service is in Settings ▸ Services and has a row in Settings ▸ API keys. The hint of
-the services section says that more can be described in `%APPDATA%\Lastdrop\providers\`.
+Each described service has a row in Settings ▸ Services ("Described in a JSON file · Needs an API
+key" or "· API key stored") that expands to its API key ([settings-spec](settings-spec.md) §4).
+Under the service list, **More services** ▸ "Add your own service" says what can be described and
+**Open folder** opens `%APPDATA%\Lastdrop\providers\` in File Explorer, made first when missing.
 
 Saving or removing a key tells the tray process which service it was by 24 bits of the hash of
 the file id, not by its place in the list: the dialog process may have read a file the tray

@@ -3,6 +3,7 @@
 // components after WinUI's SettingsCard / SettingsExpander pattern; every text comes from Rust.
 
 import { Palette } from "std-widgets.slint";
+import { GlyphData, ProviderGlyph } from "common.slint";
 
 // Settings-specific semantic colours (settings-spec §3.3). The settings window follows Windows'
 // app mode (light or dark, Fluent's palette) and, in a contrast theme, Windows' contrast colours,
@@ -269,38 +270,73 @@ export component StackedRow inherits Rectangle {
 
 // A card (settings-spec §3.1): radius 4, the card fill and a 1 px stroke around its rows (the
 // children: one CardRow, or several rows separated by dividers — a grouped card). `highlighted`
-// draws an accent outline (a deep link's target, settings-spec §7).
+// draws an accent outline (a deep link's target, settings-spec §7). It does not clip: Tab
+// skips what a clipping element other than the page's scroll view hides (Slint), so a card
+// taller than the page would lose the Tab stops scrolled out of view. A row with a fill of its
+// own rounds its corners instead (ExpanderHeader).
 export component SettingsCard inherits Rectangle {
     in property <bool> highlighted;
     background: SettingsTheme.card-fill;
     border-radius: 4px;
     border-width: root.highlighted ? 2px : 1px;
     border-color: root.highlighted ? SettingsTheme.accent : SettingsTheme.card-stroke;
-    clip: true;
     VerticalLayout {
         @children
     }
 }
 
-// The header of a settings expander (settings-spec §3.2): a card row whose expansion is its own
-// control — the chevron button (expanded state for screen readers; Enter or Space) or a click on
-// the row. The expanded content follows in the same card, instantiated only while expanded (the
-// page writes `if expanded`), so collapsed content is in neither the Tab order nor the
-// accessibility tree.
+// The header of a settings expander (settings-spec §3.2): a card row — [provider glyph] header
+// and description · the trailing controls (the children: a service's switch, never coupled to the
+// expansion) · the chevron button — whose expansion is its own control: the chevron (expanded
+// state for screen readers; Enter or Space) or a click on the row's free area. The expanded
+// content follows in the same card, instantiated only while expanded (the page writes
+// `if expanded`), so collapsed content is in neither the Tab order nor the accessibility tree;
+// closing it with the pointer gives the chevron the keyboard focus, which the content may have
+// held. Without `expandable` it is a plain row: no chevron (its place stays empty, so the
+// switches of a grouped card line up), and a click does nothing.
 export component ExpanderHeader inherits Rectangle {
     in property <string> header;
     in property <string> description;
-    in property <string> icon;
+    // A service's glyph, drawn in the window's text colour; none when it has neither path
+    // commands nor a monogram.
+    in property <GlyphData> glyph;
+    in property <bool> expandable: true;
     in property <bool> expanded;
-    // The chevron's accessible name ("Claude Code accounts").
+    // A divider above (every row of a grouped card but the first).
+    in property <bool> divider;
+    // The card's last row: its hover fill rounds the card's bottom corners (the first row's, with
+    // no divider, its top ones).
+    in property <bool> last;
+    // The chevron's accessible name ("Claude accounts").
     in property <string> toggle-label: root.header;
     callback toggled(bool);
     min-height: root.description == "" ? 48px : 64px;
-    background: touch.pressed ? SettingsTheme.subtle-pressed : touch.has-hover ? SettingsTheme.subtle-hover : transparent;
+    background: !root.expandable ? transparent : touch.pressed ? SettingsTheme.subtle-pressed : touch.has-hover ? SettingsTheme.subtle-hover : transparent;
+    border-top-left-radius: root.divider ? 0px : 4px;
+    border-top-right-radius: root.divider ? 0px : 4px;
+    border-bottom-left-radius: root.last ? 4px : 0px;
+    border-bottom-right-radius: root.last ? 4px : 0px;
+    accessible-role: groupbox;
+    accessible-label: root.header;
+    accessible-description: root.description;
 
+    if root.divider: Rectangle {
+        y: 0px;
+        height: 1px;
+        background: SettingsTheme.divider;
+    }
+    // A click: the focus goes to the chevron when it closes the content.
+    function toggle-by-pointer() {
+        SettingsTheme.keyboard-focus-visible = false;
+        if (root.expanded) {
+            chevron-focus.focus();
+        }
+        root.toggled(!root.expanded);
+    }
     touch := TouchArea {
+        enabled: root.expandable;
         clicked => {
-            root.toggled(!root.expanded);
+            root.toggle-by-pointer();
         }
     }
     HorizontalLayout {
@@ -309,14 +345,13 @@ export component ExpanderHeader inherits Rectangle {
         padding-top: 10px;
         padding-bottom: 10px;
         spacing: 16px;
-        if root.icon != "": Text {
-            text: root.icon;
-            font-family: SettingsTheme.font-icons;
-            font-size: 20px;
-            width: 20px;
-            color: SettingsTheme.text-primary;
-            vertical-alignment: center;
-            accessible-role: none;
+        if root.glyph.commands != "" || root.glyph.monogram != "": VerticalLayout {
+            alignment: center;
+            ProviderGlyph {
+                glyph: root.glyph;
+                size: 20px;
+                foreground: SettingsTheme.text-primary;
+            }
         }
         VerticalLayout {
             alignment: center;
@@ -327,63 +362,75 @@ export component ExpanderHeader inherits Rectangle {
                 font-size: 14px;
                 color: SettingsTheme.text-primary;
                 wrap: word-wrap;
+                accessible-role: none;
             }
             if root.description != "": Text {
                 text: root.description;
                 font-size: 12px;
                 color: SettingsTheme.text-secondary;
                 wrap: word-wrap;
+                accessible-role: none;
             }
         }
         VerticalLayout {
             alignment: center;
-            chevron := Rectangle {
+            HorizontalLayout {
+                spacing: 8px;
+                @children
+            }
+        }
+        VerticalLayout {
+            alignment: center;
             width: 32px;
-            height: 32px;
-            border-radius: 4px;
-            background: chevron-touch.pressed ? SettingsTheme.subtle-pressed : chevron-touch.has-hover ? SettingsTheme.subtle-hover : transparent;
-            accessible-role: button;
-            accessible-label: root.toggle-label;
-            accessible-expandable: true;
-            accessible-expanded: root.expanded;
-            accessible-action-default => {
-                root.toggled(!root.expanded);
-            }
-            accessible-action-expand => {
-                root.toggled(true);
-            }
-            Text {
-                // ChevronDown / ChevronUp.
-                text: root.expanded ? "\u{E70E}" : "\u{E70D}";
-                font-family: SettingsTheme.font-icons;
-                font-size: 12px;
-                color: SettingsTheme.text-primary;
-                horizontal-alignment: center;
-                vertical-alignment: center;
-                accessible-role: none;
-            }
-            chevron-touch := TouchArea {
-                clicked => {
+            Rectangle {
+                visible: root.expandable;
+                width: 32px;
+                height: 32px;
+                border-radius: 4px;
+                background: chevron-touch.pressed ? SettingsTheme.subtle-pressed : chevron-touch.has-hover ? SettingsTheme.subtle-hover : transparent;
+                accessible-role: button;
+                accessible-label: root.toggle-label;
+                accessible-expandable: true;
+                accessible-expanded: root.expanded;
+                accessible-action-default => {
                     root.toggled(!root.expanded);
                 }
-            }
-            chevron-focus := FocusScope {
-                focus-on-click: false;
-                key-pressed(event) => {
-                    if (event.text == Key.Return || event.text == " ") {
-                        root.toggled(!root.expanded);
-                        return accept;
-                    }
-                    reject
+                accessible-action-expand => {
+                    root.toggled(true);
                 }
-            }
-            if chevron-focus.has-focus && SettingsTheme.keyboard-focus-visible: SettingsFocusRect {
-                x: -2px;
-                y: -2px;
-                width: parent.width + 4px;
-                height: parent.height + 4px;
-                radius: 4px;
-            }
+                Text {
+                    // ChevronDown / ChevronUp.
+                    text: root.expanded ? "\u{E70E}" : "\u{E70D}";
+                    font-family: SettingsTheme.font-icons;
+                    font-size: 12px;
+                    color: SettingsTheme.text-primary;
+                    horizontal-alignment: center;
+                    vertical-alignment: center;
+                    accessible-role: none;
+                }
+                chevron-touch := TouchArea {
+                    clicked => {
+                        root.toggle-by-pointer();
+                    }
+                }
+                chevron-focus := FocusScope {
+                    enabled: root.expandable;
+                    focus-on-click: false;
+                    key-pressed(event) => {
+                        if (event.text == Key.Return || event.text == " ") {
+                            root.toggled(!root.expanded);
+                            return accept;
+                        }
+                        reject
+                    }
+                }
+                if chevron-focus.has-focus && SettingsTheme.keyboard-focus-visible: SettingsFocusRect {
+                    x: -2px;
+                    y: -2px;
+                    width: parent.width + 4px;
+                    height: parent.height + 4px;
+                    radius: 4px;
+                }
             }
         }
     }

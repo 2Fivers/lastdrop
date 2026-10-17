@@ -1,5 +1,5 @@
-//! The settings window's **Accounts** section (accounts-spec §6–§7): what it lists and the edits
-//! it makes to the settings. Pure functions over [`AccountsInfo`] — who is signed in to each listed
+//! The accounts in the settings window's service list (accounts-spec §6–§7; Claude Code's and
+//! Codex's rows expand to them): what it lists and the edits it makes to the settings. Pure functions over [`AccountsInfo`] — who is signed in to each listed
 //! folder and the folders found on this PC — which [`AccountsInfo::read`] gathers when the window
 //! opens (the dialog process may wait on the disk, ARCHITECTURE "Processes").
 //!
@@ -19,8 +19,15 @@ use lastdrop_providers::{AccountSource, identity};
 
 use crate::ui;
 
-/// The services whose accounts the window manages, in this order (accounts-spec §7).
+/// The services whose accounts the window manages, in this order (accounts-spec §7): the ones
+/// whose accounts are folders ([`has_folders`]).
 pub const SERVICES: [ProviderId; 2] = [ProviderId::Claude, ProviderId::Codex];
+
+/// Whether `provider`'s accounts are folders on this PC (accounts-spec §1), so the window lists
+/// them and adds more: Claude's and Codex's.
+pub fn has_folders(provider: ProviderId) -> bool {
+    SourceSettings::folder_of(provider, PathBuf::new()).is_some()
+}
 
 /// A folder as Windows compares it: lower case, `\` separators, no trailing separator.
 pub fn folder_id(path: &Path) -> String {
@@ -306,6 +313,7 @@ pub fn account_rows(
                 account: account.key.clone(),
             };
             let row = ui::AccountRow {
+                id: account.key.0.as_str().into(),
                 alias_label: text(strings, Msg::SettingsAccountsAliasA11y, &[("name", &name)])
                     .into(),
                 remove_label: text(strings, Msg::SettingsAccountsRemoveA11y, &[("name", &name)])
@@ -640,6 +648,15 @@ mod tests {
             "Not signed in",
             "nobody signed in is never the same account"
         );
+    }
+
+    #[test]
+    fn the_services_with_accounts_are_the_ones_with_folders() {
+        let with_folders: Vec<ProviderId> = ProviderId::ALL
+            .into_iter()
+            .filter(|p| has_folders(*p))
+            .collect();
+        assert_eq!(with_folders, SERVICES);
     }
 
     #[test]

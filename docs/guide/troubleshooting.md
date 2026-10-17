@@ -31,8 +31,8 @@ there.
 
 Meshy, OpenCode Go and the services described in JSON are read with an API key. The message (in
 the flyout's header: *Meshy: API key missing or rejected*) means there is none, or the service
-refused it (HTTP 401). Choose *Enter key…* to open the settings,
-paste the key under **API keys** and choose **Save key**. Lastdrop reads the service again at once.
+refused it (HTTP 401). Choose *Enter key…* to open the settings, open the service's row with the
+arrow at its end, paste the key and choose **Save key**. Lastdrop reads the service again at once.
 
 OpenCode Go can also use the key OpenCode itself keeps, so it needs no key in Lastdrop if you use
 OpenCode on this PC.

@@ -117,6 +117,12 @@ pub fn load(dir: &Path) {
     custom::install(services);
 }
 
+/// Installs the bundled services only, reading no folder (the demo's previews and the window
+/// tests).
+pub fn load_bundled() {
+    custom::install(merge(&[]));
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
