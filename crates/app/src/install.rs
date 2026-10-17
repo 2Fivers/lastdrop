@@ -2,16 +2,21 @@
 //! the release's `Lastdrop-Setup.exe` is the app itself. Run under that name (or with
 //! `--install`) it copies itself to `%LOCALAPPDATA%\Programs\Lastdrop\lastdrop.exe`, writes a
 //! Start menu shortcut and the "Installed apps" entry, keeps "Start with Windows" pointing at the
-//! installed copy, and starts it. `--uninstall` undoes that and leaves settings and history.
+//! installed copy (and back on after a reinstall when the settings have it on), and starts it.
+//! `--uninstall` undoes that and leaves settings and history.
 //! An update runs the new installer with `--install --update`: no questions, and the installed
 //! app starts again quietly. A package manager (winget) runs `--install --quiet` and
 //! `--uninstall --quiet`: no questions, no message boxes, only the exit code and the log.
+//!
+//! The log is the installer's own, `%LOCALAPPDATA%\Lastdrop\logs\install.log` ([`run`]); an
+//! uninstall leaves it with the other logs.
 //!
 //! Every step that touches the running app asks it to quit first (the settings-changed message
 //! with [`Changes::quit`]) and waits for its mutex to go and for every process that runs the
 //! installed `lastdrop.exe` to end ([`quit_running_app`]).
 //!
-//! Threading: the installer's own process, main thread; no Slint, only message boxes.
+//! Threading: the installer's own process, main thread (and the logger's writer thread); no
+//! Slint, only message boxes.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -19,10 +24,12 @@ use std::time::{Duration, Instant};
 
 use lastdrop_core::grammar::strings::text;
 use lastdrop_core::grammar::{Language, Msg, Strings};
+use lastdrop_core::settings::Settings;
 use lastdrop_win::install::{self as win_install, UninstallEntry};
 use lastdrop_win::single_instance;
 
 use crate::dialog::Changes;
+use crate::logger;
 
 /// The program's file name in the install folder.
 pub const EXE_NAME: &str = "lastdrop.exe";
@@ -75,17 +82,59 @@ pub fn is_setup(exe: &Path) -> bool {
         .is_some_and(|s| s.to_ascii_lowercase().starts_with(SETUP_STEM))
 }
 
+/// The saved settings (defaults when there are none or they cannot be read). Read without side
+/// effects: a broken file stays where it is for the app to set aside and report.
+fn saved_settings() -> Settings {
+    crate::persist::Paths::from_env()
+        .ok()
+        .and_then(|p| crate::persist::read_settings(&p.settings).ok())
+        .map(|(settings, _)| settings)
+        .unwrap_or_default()
+}
+
 /// The language of the installer's messages: the settings', else Windows'.
 fn strings() -> &'static dyn Strings {
-    let settings = crate::persist::Paths::from_env()
-        .ok()
-        .map(|p| crate::persist::load_settings(&p.settings).0)
-        .unwrap_or_default();
     Language::resolve(
-        settings.language.as_deref(),
+        saved_settings().language.as_deref(),
         &lastdrop_win::locale::ui_languages(),
     )
     .strings()
+}
+
+/// What the Run value (`HKCU\…\Run\Lastdrop`) names before an install.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum RunValue {
+    /// The installed copy.
+    Installed,
+    /// Another program: an older copy elsewhere, or a development build.
+    Other,
+    /// Nothing: never turned on, turned off, or removed by an uninstall.
+    Missing,
+}
+
+/// Whether the install writes the Run value for the installed copy. It follows the user's
+/// choice wherever it was made: a Run value for another copy moves to the installed one, and a
+/// missing one comes back when `settings.json` has "Start with Windows" on. An uninstall removes
+/// the Run value but leaves the settings, so without that a reinstall would show the switch on
+/// while Windows no longer starts Lastdrop.
+fn writes_run_value(before: RunValue, setting_on: bool) -> bool {
+    match before {
+        RunValue::Installed => false,
+        RunValue::Other => true,
+        RunValue::Missing => setting_on,
+    }
+}
+
+/// What the Run value names now; `None` when the registry cannot be read (left alone then).
+fn run_value(installed: &Path) -> Option<RunValue> {
+    if lastdrop_win::autostart::is_enabled(installed).ok()? {
+        return Some(RunValue::Installed);
+    }
+    Some(if lastdrop_win::autostart::is_set().ok()? {
+        RunValue::Other
+    } else {
+        RunValue::Missing
+    })
 }
 
 /// Asks a running Lastdrop to quit and waits, at most [`QUIT_WAIT`] in all, for its mutex to go
@@ -244,22 +293,18 @@ fn install(quietly: bool) -> Result<PathBuf, String> {
         size_kb,
     })
     .map_err(|e| e.to_string())?;
-    // "Start with Windows" follows the installed copy (an older copy elsewhere, or the previous
-    // version, may be what the Run key names).
-    if lastdrop_win::autostart::is_enabled(&target).is_ok_and(|on| !on)
-        && run_key_set()
-        && let Err(e) = lastdrop_win::autostart::enable(&target)
+    // "Start with Windows" names the installed copy when it is on ([`writes_run_value`]).
+    if let Some(before) = run_value(&target)
+        && writes_run_value(before, saved_settings().start_with_windows)
     {
-        log::warn!("install: autostart not moved: {e}");
+        match lastdrop_win::autostart::enable(&target) {
+            Ok(()) => log::info!("install: Start with Windows names the installed copy"),
+            Err(e) => log::warn!("install: Start with Windows not set: {e}"),
+        }
     }
     log::info!("install: Lastdrop {} installed", env!("CARGO_PKG_VERSION"));
     start(&target, quietly);
     Ok(target)
-}
-
-/// Whether the Run value exists at all (whatever program it names).
-fn run_key_set() -> bool {
-    lastdrop_win::autostart::is_set().unwrap_or(false)
 }
 
 /// Uninstalls (updates-spec §2): quits the app, removes the Run value, the shortcut and the
@@ -279,6 +324,10 @@ fn uninstall() -> Result<(), String> {
     }
     win_install::remove_uninstall_entry().map_err(|e| e.to_string())?;
     remove_folder_later(&dir);
+    log::info!(
+        "uninstall: Lastdrop {} uninstalled",
+        env!("CARGO_PKG_VERSION")
+    );
     Ok(())
 }
 
@@ -314,8 +363,29 @@ fn remove_folder_later(dir: &Path) {
     }
 }
 
-/// Runs the installer in `mode`; the process's exit code.
+/// Runs the installer in `mode` and logs it to its own file (`install.log`,
+/// [`logger::INSTALL_STEM`]; the app it quits may still be writing `lastdrop.log`); the
+/// process's exit code. The installer still runs without a log file.
 pub fn run(mode: Mode) -> std::process::ExitCode {
+    if let Ok(paths) = crate::persist::Paths::from_env() {
+        let _ = logger::init_named(&paths.logs, logger::INSTALL_STEM, log::LevelFilter::Info);
+    }
+    log::info!(
+        "Lastdrop {} installer starting ({mode:?})",
+        env!("CARGO_PKG_VERSION")
+    );
+    let ok = run_mode(mode);
+    log::info!("installer stopped (exit code {})", u8::from(!ok));
+    logger::shutdown();
+    if ok {
+        std::process::ExitCode::SUCCESS
+    } else {
+        std::process::ExitCode::FAILURE
+    }
+}
+
+/// [`run`] without the log's start and end; whether it went well (a question answered No did).
+fn run_mode(mode: Mode) -> bool {
     let strings = strings();
     let title = "Lastdrop";
     let version = env!("CARGO_PKG_VERSION");
@@ -330,61 +400,62 @@ pub fn run(mode: Mode) -> std::process::ExitCode {
                 &[("version", version), ("folder", &dir)],
             );
             if !win_install::ask(title, &question) {
-                return std::process::ExitCode::SUCCESS;
+                log::info!("install: not wanted");
+                return true;
             }
-            finish(install(false).map(|_| ()), strings, Msg::InstallDone)
+            finish(
+                "install",
+                install(false).map(|_| ()),
+                strings,
+                Msg::InstallDone,
+            )
         }
         Mode::Install { update, quiet } => {
             let result = install(update || quiet).map(|_| ());
             if update || quiet {
-                // Quietly: the app says itself that it was updated, or the log says why not. An
-                // update still shows its failure; a quiet install leaves it to the exit code.
+                // Quietly: nothing is shown when it worked (the app starts again with
+                // `--autostart` and opens nothing, updates-spec §3), and the log says why when it
+                // did not. An update still shows its failure; a quiet install leaves it to the
+                // exit code and the log.
                 if let Err(e) = &result {
                     log::error!("{}: {e}", if update { "update" } else { "install" });
                     if !quiet {
                         win_install::tell(title, e, true);
                     }
                 }
-                return exit(result.is_ok());
+                return result.is_ok();
             }
-            finish(result, strings, Msg::InstallDone)
+            finish("install", result, strings, Msg::InstallDone)
         }
         Mode::Uninstall { quiet: true } => {
             let result = uninstall();
             if let Err(e) = &result {
                 log::error!("uninstall: {e}");
             }
-            exit(result.is_ok())
+            result.is_ok()
         }
         Mode::Uninstall { quiet: false } => {
             if !win_install::ask(title, strings.template(Msg::UninstallAsk)) {
-                return std::process::ExitCode::SUCCESS;
+                log::info!("uninstall: not wanted");
+                return true;
             }
-            finish(uninstall(), strings, Msg::UninstallDone)
+            finish("uninstall", uninstall(), strings, Msg::UninstallDone)
         }
     }
 }
 
-fn exit(ok: bool) -> std::process::ExitCode {
-    if ok {
-        std::process::ExitCode::SUCCESS
-    } else {
-        std::process::ExitCode::FAILURE
-    }
-}
-
-/// Tells the user how it went.
-fn finish(result: Result<(), String>, strings: &dyn Strings, done: Msg) -> std::process::ExitCode {
+/// Tells the user how `what` (`install`, `uninstall`) went; whether it went well.
+fn finish(what: &str, result: Result<(), String>, strings: &dyn Strings, done: Msg) -> bool {
     match result {
         Ok(()) => {
             win_install::tell("Lastdrop", strings.template(done), false);
-            exit(true)
+            true
         }
         Err(e) => {
-            log::error!("install: {e}");
+            log::error!("{what}: {e}");
             let message = text(strings, Msg::InstallFailed, &[("detail", &e)]);
             win_install::tell("Lastdrop", &message, true);
-            exit(false)
+            false
         }
     }
 }
@@ -406,6 +477,20 @@ mod tests {
             r"C:\Users\x\AppData\Local\Programs\Lastdrop\lastdrop.exe"
         )));
         assert!(!is_setup(Path::new("Setup.exe")));
+    }
+
+    #[test]
+    fn start_with_windows_follows_the_user_after_an_install() {
+        // Already the installed copy: nothing to write.
+        assert!(!writes_run_value(RunValue::Installed, true));
+        assert!(!writes_run_value(RunValue::Installed, false));
+        // Another copy's Run value moves to the installed copy.
+        assert!(writes_run_value(RunValue::Other, true));
+        assert!(writes_run_value(RunValue::Other, false));
+        // A reinstall after an uninstall (which removed the value) restores it when the settings
+        // still say on, and writes nothing when they say off.
+        assert!(writes_run_value(RunValue::Missing, true));
+        assert!(!writes_run_value(RunValue::Missing, false));
     }
 
     #[test]

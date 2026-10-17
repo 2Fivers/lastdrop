@@ -53,7 +53,8 @@ const SETTINGS_SIZES: [(f32, f32); 2] = [
 ];
 /// The about window's preferred width.
 const ABOUT_PREVIEW_W: f32 = 420.0;
-/// The usage history window's preview size: its preferred width, tall enough for the page.
+/// The usage history window's preview size: its preferred width, and at most this tall (it is as
+/// tall as its page).
 const HISTORY_PREVIEW_W: f32 = 640.0;
 /// Theme Studio's preview size, logical px.
 const STUDIO_PREVIEW_W: f32 = 880.0;
@@ -240,7 +241,7 @@ fn render_live_history(language: Option<Language>, scale: f64, out: &Path) -> Re
         scale,
         HISTORY_PREVIEW_W,
         HISTORY_PREVIEW_H,
-        &|| HISTORY_PREVIEW_H,
+        &|| window.get_content_height(),
         &|_| {},
         out,
     )?;
@@ -360,6 +361,8 @@ enum SettingsView {
     Page(i32),
     /// The first run's deep link: the accounts with the found folders.
     Accounts,
+    /// Services with Meshy's and OpenCode Go's API keys expanded.
+    Keys,
     /// The tray menu's "Pinned meters…": the readout's pins, choosing.
     Pins,
     /// General with a refused shortcut, and the InfoBar of a write that failed on closing.
@@ -367,7 +370,7 @@ enum SettingsView {
 }
 
 /// The settings window's previews: each page, then the states, at both sizes.
-const SETTINGS_VIEWS: [(&str, SettingsView); 7] = [
+const SETTINGS_VIEWS: [(&str, SettingsView); 8] = [
     (
         "services",
         SettingsView::Page(crate::settings_window::PAGE_SERVICES),
@@ -385,6 +388,7 @@ const SETTINGS_VIEWS: [(&str, SettingsView); 7] = [
         SettingsView::Page(crate::settings_window::PAGE_GENERAL),
     ),
     ("accounts", SettingsView::Accounts),
+    ("keys", SettingsView::Keys),
     ("pins", SettingsView::Pins),
     ("errors", SettingsView::Errors),
 ];
@@ -403,9 +407,10 @@ fn night_sky() -> lastdrop_win::theme::HighContrastColors {
 }
 
 /// What the settings window shows for the demo: its settings and invented accounts
-/// ([`demo::Demo::accounts`]), the meters its services report, a stored Meshy key, in the demo's
-/// language and regional format (Windows' display language is the demo's language too), and no
-/// files: the themes are the built-in ones.
+/// ([`demo::Demo::accounts`]) with the described services this process has installed (turned off,
+/// as loading `settings.json` adds them), the meters its services report, a stored Meshy key, in
+/// the demo's language and regional format (Windows' display language is the demo's language
+/// too), and no files: the themes are the built-in ones.
 pub fn demo_settings_inputs(world: &demo::Demo, contrast: bool) -> crate::settings_window::Inputs {
     let reported: Vec<(MeterKey, MeterNames)> = world
         .services
@@ -423,7 +428,8 @@ pub fn demo_settings_inputs(world: &demo::Demo, contrast: bool) -> crate::settin
             })
         })
         .collect();
-    let (settings, accounts) = world.accounts();
+    let (mut settings, accounts) = world.accounts();
+    settings.add_new_providers();
     let mut theme = world.theme;
     theme.apps_dark = theme.taskbar_dark;
     if contrast {
@@ -465,6 +471,8 @@ fn render_settings(
         .map(|s| s.to_string_lossy().into_owned())
         .unwrap_or_else(|| "settings".to_owned());
     let dir = out.parent().unwrap_or_else(|| Path::new("."));
+    // The service list shows the described services Lastdrop ships, as on a fresh install.
+    crate::custom_services::load_bundled();
     for (name, view) in SETTINGS_VIEWS {
         for (w, h) in SETTINGS_SIZES {
             let inputs = demo_settings_inputs(world, contrast);
@@ -485,6 +493,15 @@ fn render_settings(
             match view {
                 SettingsView::Page(page) => window.set_page(page),
                 SettingsView::Accounts => sw::reveal(Focus::Accounts),
+                SettingsView::Keys => {
+                    let rows: Vec<ui::ProviderRow> =
+                        slint::Model::iter(&window.get_providers()).collect();
+                    for (i, row) in rows.iter().enumerate() {
+                        if row.id == "meshy" || row.id == "opencode_go" {
+                            window.invoke_service_toggled(i32::try_from(i).unwrap_or(0), true);
+                        }
+                    }
+                }
                 SettingsView::Pins => sw::reveal(Focus::Pins),
                 SettingsView::Errors => {
                     window.set_page(sw::PAGE_GENERAL);
@@ -547,10 +564,14 @@ fn demo_sources(world: &demo::Demo) -> Vec<crate::history_window::Source> {
         .collect()
 }
 
-/// Renders the usage history window with the demo's first service over the last 30 days.
+/// Renders the usage history window with the demo's first service over the last 30 days, in the
+/// demo's colour mode.
 fn render_history(world: &demo::Demo, scale: f64, out: &Path) -> Result<(), AppError> {
     use crate::history_window::{build, fill_choices, fill_model};
     let window = ui::HistoryWindow::new()?;
+    if world.theme.apps_dark {
+        window.invoke_use_dark_scheme();
+    }
     let strings = world.language.strings();
     let sources = demo_sources(world);
     fill_choices(&window, &sources, strings);
@@ -587,7 +608,7 @@ fn render_history(world: &demo::Demo, scale: f64, out: &Path) -> Result<(), AppE
         scale,
         HISTORY_PREVIEW_W,
         HISTORY_PREVIEW_H,
-        &|| HISTORY_PREVIEW_H,
+        &|| window.get_content_height(),
         &|_| {},
         out,
     )?;

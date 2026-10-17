@@ -587,6 +587,11 @@ fn verdict(eval: &Evaluation, cx: &TextContext<'_>) -> Verdict {
         Item::Stale(service, reason) => {
             let svc = service.display_name();
             match reason {
+                // A service read with an API key says so, as its card's message line does.
+                StaleReason::SignIn if service.source.provider.client_name().is_none() => (
+                    SeverityGlyph::Info,
+                    text(s, Msg::FlyoutVerdictApiKey, &[("service", &svc)]),
+                ),
                 StaleReason::SignIn => (
                     SeverityGlyph::Info,
                     text(s, Msg::FlyoutVerdictSignIn, &[("service", &svc)]),

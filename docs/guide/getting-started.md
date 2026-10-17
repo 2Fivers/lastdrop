@@ -44,8 +44,8 @@ other services on in **Settings ▸ Services**; [What Lastdrop reads](what-lastd
 what each one needs.
 
 If Claude Code or Codex has more than one config folder on your PC, the first time you start
-Lastdrop yourself it also opens the settings at **Accounts**, so you can choose which of them to
-read. See [Accounts](accounts.md).
+Lastdrop yourself it also opens its accounts in **Settings ▸ Services**, so you can choose which
+of them to read. See [Accounts](accounts.md).
 
 Lastdrop never signs in to a service for you. If a service is not signed in, sign in with its own
 app or command-line tool, and Lastdrop picks it up.
@@ -117,8 +117,8 @@ to Windows* in Settings. It then starts quietly when you sign in, without openin
 ## Updates
 
 Lastdrop asks GitHub for its newest release two minutes after it starts and then once a day. When
-a newer version is out, it shows a notification and the flyout's footer says *Lastdrop x.y.z is
-available · Install*. Nothing is installed until you choose **Install**. Lastdrop then downloads
+a newer version is out, it shows a notification, once for each version (a restart does not repeat
+it), and the flyout's footer says *Lastdrop x.y.z is available · Install*. Nothing is installed until you choose **Install**. Lastdrop then downloads
 the new installer, checks its size and its SHA-256 checksum against the release's `SHA256SUMS`,
 installs it and starts again. Your settings and history stay.
 

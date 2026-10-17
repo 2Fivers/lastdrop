@@ -278,11 +278,19 @@ export component HistoryWindow inherits Window {
     in property <[TokenRow]> token-rows;
     in property <TokenRow> tokens-total;
     in property <string> tokens-note;
+    // The height that shows the whole page without scrolling: the header, the page and the
+    // footer (the --preview-history render).
+    out property <length> content-height: root.height - sv.visible-height + page.preferred-height;
 
     callback service-changed(int);
     callback range-changed(int);
     // `close` would shadow Window's builtin close() (Slint 1.18), hence `dismiss`.
     callback dismiss();
+
+    // The --preview-history render with --dark. The window itself follows Windows' colour mode.
+    public function use-dark-scheme() {
+        Palette.color-scheme = ColorScheme.dark;
+    }
 
     VerticalLayout {
         HorizontalLayout {

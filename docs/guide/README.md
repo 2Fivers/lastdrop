@@ -19,5 +19,6 @@ built, see [ARCHITECTURE](../ARCHITECTURE.md) and the [design specs](../design) 
 The guide follows the code in this repository, which can be ahead of the latest release. In
 Lastdrop 0.1.1 and earlier the settings window is one long page with an **Apply** button instead
 of four pages that save at once, and the flyout's footer has no usage history button (use *Usage
-history…* in the tray menu). The settings have the same names, so where this guide says "under
-**API keys** in the settings", look for that heading.
+history…* in the tray menu). There, accounts and API keys have headings of their own,
+**Accounts** and **API keys**, instead of opening from their service's row under **Services**;
+the settings in them have the same names.

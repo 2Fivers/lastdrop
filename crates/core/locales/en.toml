@@ -158,6 +158,7 @@ lowercase_names = true
 "flyout.verdict.exhausted" = "{label} is used up until {time}"
 "flyout.verdict.stale" = "{service}: no reading for {age}"
 "flyout.verdict.signin" = "{service}: sign in again"
+"flyout.verdict.apikey" = "{service}: API key missing or rejected"
 "flyout.verdict.paused" = "Updates paused"
 "flyout.verdict.loading" = "Reading usage…"
 "flyout.verdict.more" = " · {n} more"
@@ -361,14 +362,38 @@ lowercase_names = true
 "settings.notsaved.title" = "Not saved"
 "settings.retry" = "Try again"
 "settings.discard" = "Close without saving"
-"settings.services.hint" = "Claude and Codex are read from their own files on this PC, Copilot with the GitHub CLI's sign-in (gh auth login), Cursor with the Cursor app's, Grok with the Grok CLI's (grok login) and Antigravity through its CLI (agy). Lastdrop never signs in for you and never changes their sign-in. More services that report a balance or usage over a simple API can be described in a JSON file in %APPDATA%\\Lastdrop\\providers, read when Lastdrop starts."
-"settings.key" = "API keys"
-# `{service}`: Meshy or OpenCode Go.
+# The line under each service in the service list (settings-spec §4): how it is read, or its
+# state. Claude's and Codex's are followed by ` · ` and `settings.accounts.count`, a described
+# service's by ` · ` and the key's state (`settings.service.key.*`).
+"settings.service.claude" = "Claude Code's sign-in on this PC"
+"settings.service.codex" = "Codex's sign-in on this PC"
+"settings.service.copilot" = "The GitHub CLI's sign-in (gh auth login)"
+"settings.service.cursor" = "The Cursor app's sign-in"
+"settings.service.grok" = "The Grok CLI's sign-in (grok login)"
+"settings.service.antigravity" = "Read through its CLI (agy)"
+"settings.service.custom" = "Described in a JSON file"
+"settings.service.key.stored" = "API key stored"
+"settings.service.key.needed" = "Needs an API key"
+"settings.service.opencode.own" = "Uses your API key"
+"settings.service.opencode.shared" = "Uses the key OpenCode keeps"
+# The accessible name of the button that shows Claude's or Codex's accounts. `{service}`: Claude
+# or Codex.
+"settings.service.accounts.a11y" = "{service} accounts"
+# `{service}`: the service's name.
 "settings.key.paste" = "Paste your {service} API key"
 "settings.key.replace" = "A key is stored. Paste a new one to replace it"
 "settings.key.save" = "Save key"
 "settings.key.remove" = "Remove"
-"settings.key.hint" = "Stored in Windows Credential Manager, never in a file. Lastdrop only reads your usage. Without a key here, OpenCode Go uses the one OpenCode itself keeps."
+# The key box's visible label.
+"settings.key.label" = "API key"
+# The accessible names of the key box (and of the button that shows it), Save key and Remove.
+# `{service}`: the service's name.
+"settings.key.a11y" = "{service} API key"
+"settings.key.save.a11y" = "Save the {service} API key"
+"settings.key.remove.a11y" = "Remove the {service} API key"
+"settings.key.hint" = "Stored in Windows Credential Manager, never in a file. Lastdrop only reads your usage."
+# After `settings.key.hint`, for OpenCode Go only.
+"settings.key.opencode" = "Without a key here, Lastdrop uses the one OpenCode itself keeps."
 "settings.key.saved" = "Key saved. Lastdrop reads {service} with it."
 "settings.key.notsaved" = "Couldn't store the key: {detail}"
 "settings.key.removed" = "Key removed."
@@ -509,8 +534,6 @@ lowercase_names = true
 # ---- Accounts (accounts-spec §4, §7)
 # `{n}`: the account's place among its service's shown accounts, from 1.
 "account.n" = "Account {n}"
-"settings.accounts" = "Accounts"
-"settings.accounts.hint" = "Each Claude Code or Codex folder can be signed in to an account of its own. Lastdrop reads each folder's sign-in and never signs in for you."
 # `{email}`: the address the folder is signed in with.
 "settings.accounts.signedin" = "Signed in as {email}"
 "settings.accounts.signedin.hidden" = "Signed in"
@@ -523,7 +546,7 @@ lowercase_names = true
 # The alias box's and the Remove button's accessible names. `{name}`: the account's name.
 "settings.accounts.alias.a11y" = "Alias of {name}"
 "settings.accounts.remove.a11y" = "Remove account {name}"
-# Under the service in its accounts card.
+# Under the service in the service list, after ` · ` (`settings.service.claude`).
 "settings.accounts.count" = { one = "{n} account", other = "{n} accounts" }
 "settings.accounts.remove" = "Remove"
 "settings.accounts.found" = "Found on this PC"
@@ -532,8 +555,13 @@ lowercase_names = true
 # The folder picker's title. `{client}`: Claude Code or Codex.
 "settings.accounts.picker" = "Choose a {client} folder"
 "settings.accounts.new" = "New account"
+# The button that shows the new account's name box.
+"settings.accounts.new.open" = "New account…"
 "settings.accounts.new.name" = "Name, for example Work"
 "settings.accounts.new.create" = "Create and sign in"
+"settings.accounts.new.cancel" = "Cancel"
+# Under the new account's name box. `{client}`: Claude Code or Codex.
+"settings.accounts.new.note" = "Opens {client}'s sign-in in a terminal."
 "settings.accounts.added" = "Account added."
 "settings.accounts.already" = "That folder is already one of the accounts."
 "settings.accounts.created" = "Opened {client}'s sign-in in a terminal."
@@ -542,6 +570,12 @@ lowercase_names = true
 "settings.privacy.hide" = "Hide e-mail addresses"
 "settings.privacy" = "Privacy"
 "settings.privacy.hide.description" = "Show Account 1, Account 2 instead"
+# Services described in a JSON file (custom-services-spec §3): the folder they go in.
+"settings.custom" = "More services"
+"settings.custom.add" = "Add your own service"
+"settings.custom.add.description" = "Services with a simple usage API can be described in a JSON file, read when Lastdrop starts."
+"settings.custom.open" = "Open folder"
+"settings.custom.open.a11y" = "Open the folder of your own services"
 
 # ---- About window (R§10 "About Lastdrop")
 "about.title" = "About Lastdrop"

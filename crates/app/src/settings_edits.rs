@@ -20,6 +20,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use lastdrop_core::grammar::{Language, TimeStyle};
 use lastdrop_core::model::{MeterId, MeterKey, ProviderId, SourceKey};
+use lastdrop_core::secret::SecretString;
 use lastdrop_core::settings::{
     AccountSettings, Hotkey, ReadoutContent, RefreshInterval, Settings, clean_alias,
 };
@@ -488,10 +489,21 @@ pub trait Outside {
     fn test_hotkey(&mut self, hotkey: &Hotkey) -> Result<(), HotkeyError>;
     /// The file was written: tells the tray process.
     fn written(&mut self);
+    /// Stores `key` as `provider`'s API key, the credential `target`, and tells the tray process,
+    /// which reads the service again (settings-spec §5.6). Not part of a commit: **Save key** does
+    /// it at once. The error's text is secret-free.
+    fn store_key(
+        &mut self,
+        provider: ProviderId,
+        target: &str,
+        key: &SecretString,
+    ) -> Result<(), String>;
+    /// Removes `provider`'s stored API key `target` and tells the tray process.
+    fn remove_key(&mut self, provider: ProviderId, target: &str) -> Result<(), String>;
 }
 
-/// The real [`Outside`]: `settings.json` under the settings lock, the Run value, `RegisterHotKey`
-/// and the settings-changed message to the tray process.
+/// The real [`Outside`]: `settings.json` under the settings lock, the Run value, `RegisterHotKey`,
+/// Credential Manager and the settings-changed and key messages to the tray process.
 pub struct RealOutside {
     /// `settings.json` and its lock.
     pub file: SettingsFile,
@@ -541,10 +553,28 @@ impl Outside for RealOutside {
             ..Changes::default()
         });
     }
+
+    fn store_key(
+        &mut self,
+        provider: ProviderId,
+        target: &str,
+        key: &SecretString,
+    ) -> Result<(), String> {
+        lastdrop_win::credentials::write(target, key).map_err(|e| e.to_string())?;
+        dialog::notify(Changes::key_of(provider));
+        Ok(())
+    }
+
+    fn remove_key(&mut self, provider: ProviderId, target: &str) -> Result<(), String> {
+        lastdrop_win::credentials::delete(target).map_err(|e| e.to_string())?;
+        dialog::notify(Changes::key_of(provider));
+        Ok(())
+    }
 }
 
 /// An [`Outside`] in memory (previews and the window's interaction tests): the "file" is a
-/// value, the registry and the hotkey test do what the fields say, and nothing reaches the tray.
+/// value, the registry, the hotkey test and Credential Manager do what the fields say, and nothing
+/// reaches the tray.
 #[derive(Clone, Debug, Default)]
 pub struct MemoryOutside {
     /// The file's settings.
@@ -559,6 +589,10 @@ pub struct MemoryOutside {
     pub autostart: Vec<bool>,
     /// Successful writes.
     pub writes: usize,
+    /// The credential targets of the API keys stored (never the keys).
+    pub keys: BTreeSet<String>,
+    /// Storing or removing a key fails with this detail.
+    pub fail_key: Option<String>,
 }
 
 impl Outside for MemoryOutside {
@@ -588,6 +622,27 @@ impl Outside for MemoryOutside {
     }
 
     fn written(&mut self) {}
+
+    fn store_key(
+        &mut self,
+        _provider: ProviderId,
+        target: &str,
+        _key: &SecretString,
+    ) -> Result<(), String> {
+        if let Some(detail) = &self.fail_key {
+            return Err(detail.clone());
+        }
+        self.keys.insert(target.to_owned());
+        Ok(())
+    }
+
+    fn remove_key(&mut self, _provider: ProviderId, target: &str) -> Result<(), String> {
+        if let Some(detail) = &self.fail_key {
+            return Err(detail.clone());
+        }
+        self.keys.remove(target);
+        Ok(())
+    }
 }
 
 /// An [`Outside`] shared with whoever made it (the window's interaction tests look at it while the
@@ -615,6 +670,19 @@ impl Outside for std::rc::Rc<std::cell::RefCell<MemoryOutside>> {
 
     fn written(&mut self) {
         self.borrow_mut().written();
+    }
+
+    fn store_key(
+        &mut self,
+        provider: ProviderId,
+        target: &str,
+        key: &SecretString,
+    ) -> Result<(), String> {
+        self.borrow_mut().store_key(provider, target, key)
+    }
+
+    fn remove_key(&mut self, provider: ProviderId, target: &str) -> Result<(), String> {
+        self.borrow_mut().remove_key(provider, target)
     }
 }
 
@@ -1090,6 +1158,17 @@ mod tests {
         fn written(&mut self) {
             assert!(!self.locked, "the tray is told after the lock is released");
             self.notified += 1;
+        }
+        fn store_key(
+            &mut self,
+            _provider: ProviderId,
+            _target: &str,
+            _key: &SecretString,
+        ) -> Result<(), String> {
+            unreachable!("keys are not part of a commit")
+        }
+        fn remove_key(&mut self, _provider: ProviderId, _target: &str) -> Result<(), String> {
+            unreachable!("keys are not part of a commit")
         }
     }
 

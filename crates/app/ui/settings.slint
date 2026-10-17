@@ -12,14 +12,30 @@
 
 import { Button, CheckBox, LineEdit, ComboBox, ScrollView, Switch, Palette } from "std-widgets.slint";
 import { SettingsTheme, SettingsFocusRect, NavItem, GroupHeading, PageNote, CardRow, StackedRow, SettingsCard, ExpanderHeader, InfoBar } from "settings_controls.slint";
+import { GlyphData } from "common.slint";
 
 export { SettingsTheme }
 
-// One service of the service list: on or off.
+// What a service row's expander holds (settings-spec §4), from the service's capabilities: the
+// accounts of a service whose accounts are folders (Claude, Codex), the API key of a service read
+// with a key stored here (Meshy, OpenCode Go, described services), or nothing.
+export enum ServiceKind { none, accounts, key }
+
+// One service of the service list: its glyph, name, one line on how it is read or its state, on
+// or off, and what its expander holds. `block` is its accounts block (an index into
+// `account-blocks`), `key-row` its API key row (an index into `api-keys`), -1 when it has none;
+// `toggle-label` the expander button's accessible name ("Claude accounts", "Meshy API key").
 export struct ProviderRow {
     id: string,
     name: string,
     enabled: bool,
+    glyph: GlyphData,
+    description: string,
+    kind: ServiceKind,
+    expanded: bool,
+    block: int,
+    key-row: int,
+    toggle-label: string,
 }
 
 // One meter of an enabled service (settings `hidden_meters`, F§2.2; readout pins, R§4.3).
@@ -34,20 +50,26 @@ export struct MeterChoice {
     pin-label: string,
 }
 
-// The API key of one service: its name, the box's placeholder, whether a key is stored and what
-// the last Save or Remove did. The key itself is never shown or kept here.
+// The API key of one service: the box's placeholder, whether a key is stored, what the last Save
+// or Remove did, the note under it (Credential Manager) and the accessible names of the box, Save
+// key and Remove ("Save the Meshy API key"). The key itself is never shown or kept here.
 export struct ApiKeyRow {
-    title: string,
     placeholder: string,
     stored: bool,
     status: string,
+    note: string,
+    box-label: string,
+    save-label: string,
+    remove-label: string,
 }
 
-// One account of Claude Code or Codex (accounts-spec §7): its name (alias, e-mail or
-// `Account 2`), its folder, who is signed in there, its alias, whether it may be removed (not the
-// last one of its service) and the alias box's accessible name. Rust updates rows in place;
-// `revision` changes when Rust sets the alias box's text (after its edit committed).
+// One account of Claude Code or Codex (accounts-spec §7): its key (`default`, `f-…`: never an
+// e-mail address), its name (alias, e-mail or `Account 2`), its folder, who is signed in there,
+// its alias, whether it may be removed (not the last one of its service) and the alias box's
+// accessible name. Rust updates rows in place; `revision` changes when Rust sets the alias box's
+// text (after its edit committed).
 export struct AccountRow {
+    id: string,
     name: string,
     folder: string,
     status: string,
@@ -64,12 +86,13 @@ export struct FoundFolder {
     status: string,
 }
 
-// The accounts of one service, with its folders found on this PC. Set once; its rows change in
-// place, and what changes about the block itself is in the window's `block-*` lists.
+// The accounts of one service, with its folders found on this PC and the line under a new
+// account's name box ("Opens Claude Code's sign-in in a terminal."). Set once; its rows change in
+// place, and what the last action did is in the window's `block-status`.
 export struct AccountBlock {
-    title: string,
     accounts: [AccountRow],
     found: [FoundFolder],
+    new-note: string,
 }
 
 // The window's fixed texts (`settings.*` strings), from Rust.
@@ -81,9 +104,6 @@ export struct SettingsTexts {
     page-display-description: string,
     page-notifications: string,
     page-general: string,
-    services-hint: string,
-    accounts: string,
-    accounts-hint: string,
     accounts-alias: string,
     accounts-alias-none: string,
     accounts-remove: string,
@@ -91,15 +111,21 @@ export struct SettingsTexts {
     accounts-add: string,
     accounts-add-folder: string,
     accounts-new: string,
+    accounts-new-open: string,
     accounts-new-name: string,
     accounts-new-create: string,
+    accounts-new-cancel: string,
     privacy: string,
     privacy-hide: string,
     privacy-hide-description: string,
-    key: string,
+    custom: string,
+    custom-add: string,
+    custom-add-description: string,
+    custom-open: string,
+    custom-open-label: string,
+    key-label: string,
     key-save: string,
     key-remove: string,
-    key-hint: string,
     refresh: string,
     refresh-check: string,
     appearance: string,
@@ -228,13 +254,14 @@ export component SettingsWindow inherits Window {
     in-out property <int> page: 0;
 
     // ---- Services
+    // The services in the settings' order, each with its expander's state (Rust keeps it).
     in property <[ProviderRow]> providers;
     // Claude Code's and Codex's accounts (accounts-spec §7), one block per service, and per block
-    // whether it is expanded, its summary (`2 accounts`) and what the last action did.
+    // what the last action did.
     in property <[AccountBlock]> account-blocks;
-    in property <[bool]> block-expanded;
-    in property <[string]> block-summary;
     in property <[string]> block-status;
+    // The block whose new account's name box is shown (New account…), -1 for none.
+    in-out property <int> new-account-block: -1;
     in-out property <bool> hide-personal-info;
     in property <[ApiKeyRow]> api-keys;
 
@@ -303,10 +330,11 @@ export component SettingsWindow inherits Window {
     in property <int> reveal-block;
 
     callback page-changed(int);
+    // A service (row) turned on or off; its expander opened or closed.
     callback provider-toggled(int, bool);
-    // Accounts: (block, row) of an account or a found folder; a block for the folder picker, for a
-    // new account with its name and for expanding or collapsing.
-    callback block-toggled(int, bool);
+    callback service-toggled(int, bool);
+    // Accounts: (block, row) of an account or a found folder; a block for the folder picker and
+    // for a new account with its name.
     callback account-alias-edited(int, int, string);
     callback account-alias-done(int, int);
     callback account-removed(int, int);
@@ -317,6 +345,8 @@ export component SettingsWindow inherits Window {
     // Store (row, key) and remove (row) an API key.
     callback set-api-key(int, string);
     callback clear-api-key(int);
+    // "Add your own service": the folder of described services in File Explorer.
+    callback open-providers-folder();
     callback theme-selected(int);
     // Theme Studio, starting from the theme at that index.
     callback open-studio(int);
@@ -349,6 +379,14 @@ export component SettingsWindow inherits Window {
     property <int> pins-request;
     // Bumped by a deep link to the accounts.
     property <int> reveal-request;
+    // Where the keyboard focus goes when the row holding it went (an account removed, a found
+    // folder added; settings-spec §8), in block `focus-block`: the alias box of an account
+    // ("account:<key>"), a found folder's Add ("found:<folder>") or Add folder… ("add-folder").
+    // Rust sets them and bumps `focus-request`. By the row's data, not its index: rows after the
+    // one that went keep their old index until the repeater catches up.
+    in property <int> focus-block: -1;
+    in property <string> focus-target;
+    in property <int> focus-request;
 
     // The --preview-settings render with --dark. The window itself follows Windows' app mode.
     public function use-dark-scheme() {
@@ -380,19 +418,39 @@ export component SettingsWindow inherits Window {
     }
 
     // Deep link to the accounts (the first run found more folders, accounts-spec §6): the
-    // Services page, scrolled to the accounts; the first found folder's Add takes the focus once
-    // its block is expanded.
+    // Services page; once the service of `reveal-block` is expanded (Rust expands it), the page
+    // scrolls to it and its first found folder's Add takes the focus.
     public function reveal-accounts(focus-found: bool) {
         root.select-page(0);
-        services-sv.content-y = max(
-            min(0px, 12px - (accounts-heading.absolute-position.y - services-page.absolute-position.y)),
-            services-sv.visible-height - services-page.preferred-height);
         root.reveal-found = focus-found;
         root.reveal-request += 1;
     }
 
+    // Scrolls the Services page so `y` (a position in it) is 12 px below the top.
+    function scroll-services-to(y: length) {
+        services-sv.content-y = max(min(0px, 12px - y), services-sv.visible-height - services-page.preferred-height);
+    }
+
+    // An expander opened: the page scrolls as little as it takes to show its header and content,
+    // from `top` to `bottom` (positions in the page), or the header at the top when they do not
+    // fit (as WinUI brings an expanded expander into view). Tab skips a box scrolled out of view
+    // (a LineEdit clips itself, and Slint's Tab only passes what the scroll view alone hides), so
+    // the boxes it opens must be in view.
+    function show-services-part(top: length, bottom: length) {
+        if (bottom - top + 24px > services-sv.visible-height) {
+            root.scroll-services-to(top);
+        } else if (bottom + 12px > services-sv.visible-height - services-sv.content-y) {
+            root.scroll-services-to(bottom + 24px - services-sv.visible-height);
+        }
+    }
+
     // The content column's side padding (its width is at most 720 px).
     property <length> side: content.width < 560px ? 24px : 32px;
+    // A narrow column (settings-spec §4): an account's alias box goes under its name and state,
+    // rows of a box and its buttons put the buttons under the box, and an expander's rows are
+    // indented less. From the pane's width, not the page's, so a scroll bar never changes it.
+    property <bool> narrow: min(720px, content.width - 2 * root.side) < 520px;
+    property <length> indent: root.narrow ? 16px : 40px;
 
     keys := FocusScope {
         focus-on-click: false;
@@ -527,215 +585,342 @@ export component SettingsWindow inherits Window {
                                     title: root.texts.page-services;
                                     description: root.texts.page-services-description;
                                 }
+                                // One grouped card of the services; a service with something to
+                                // manage expands to its accounts or its API key (settings-spec §4).
                                 SettingsCard {
-                                    for row[i] in root.providers: CardRow {
-                                        header: row.name;
-                                        divider: i > 0;
-                                        property <bool> on: row.enabled;
-                                        changed on => {
-                                            provider-switch.checked = self.on;
-                                        }
-                                        provider-switch := Switch {
-                                            checked: row.enabled;
-                                            accessible-label: row.name;
-                                            toggled => {
-                                                root.provider-toggled(i, self.checked);
+                                    for row[i] in root.providers: VerticalLayout {
+                                        service-header := ExpanderHeader {
+                                            header: row.name;
+                                            description: row.description;
+                                            glyph: row.glyph;
+                                            divider: i > 0;
+                                            last: i == root.providers.length - 1 && !row.expanded;
+                                            expandable: row.kind != ServiceKind.none;
+                                            expanded: row.expanded;
+                                            toggle-label: row.toggle-label;
+                                            toggled(on) => {
+                                                root.service-toggled(i, on);
                                             }
-                                        }
-                                    }
-                                }
-                                PageNote {
-                                    text: root.texts.services-hint;
-                                }
-
-                                accounts-heading := GroupHeader {
-                                    text: root.texts.accounts;
-                                    description: root.texts.accounts-hint;
-                                }
-                                for block[b] in root.account-blocks: SettingsCard {
-                                    ExpanderHeader {
-                                        header: block.title;
-                                        description: root.block-summary[b];
-                                        expanded: root.block-expanded[b];
-                                        toggled(on) => {
-                                            SettingsTheme.keyboard-focus-visible = false;
-                                            root.block-toggled(b, on);
-                                        }
-                                    }
-                                    if root.block-expanded[b]: VerticalLayout {
-                                        for account[a] in block.accounts: StackedRow {
-                                            header: account.name;
-                                            description: account.status;
-                                            divider: true;
-                                            indent: 24px;
-                                            property <int> revision: account.revision;
-                                            changed revision => {
-                                                alias-box.text = account.alias;
+                                            property <bool> on: row.enabled;
+                                            changed on => {
+                                                provider-switch.checked = self.on;
                                             }
-                                            PageNote {
-                                                text: account.folder;
-                                                wrap: no-wrap;
-                                                overflow: elide;
-                                            }
-                                            HorizontalLayout {
-                                                spacing: 8px;
-                                                Text {
-                                                    text: root.texts.accounts-alias;
-                                                    font-size: 14px;
-                                                    color: SettingsTheme.text-primary;
-                                                    vertical-alignment: center;
-                                                    accessible-role: none;
+                                            provider-switch := Switch {
+                                                checked: row.enabled;
+                                                accessible-label: row.name;
+                                                toggled => {
+                                                    root.provider-toggled(i, self.checked);
                                                 }
-                                                alias-box := LineEdit {
-                                                    text: account.alias;
-                                                    placeholder-text: root.texts.accounts-alias-none;
-                                                    accessible-label: account.alias-label;
-                                                    horizontal-stretch: 1;
-                                                    max-width: 280px;
-                                                    edited(text) => {
-                                                        root.account-alias-edited(b, a, text);
+                                            }
+                                        }
+
+                                        // ---- Claude Code's or Codex's accounts (accounts-spec §7)
+                                        if row.expanded && row.kind == ServiceKind.accounts: Rectangle {
+                                            init => {
+                                                root.show-services-part(
+                                                    service-header.absolute-position.y - services-page.absolute-position.y,
+                                                    self.absolute-position.y - services-page.absolute-position.y + self.height);
+                                            }
+                                            VerticalLayout {
+                                                for account[a] in root.account-blocks[row.block].accounts: Rectangle {
+                                                    // Name, state and folder · Alias and Remove; in a
+                                                    // narrow column the alias row goes under them.
+                                                    // Placed by hand: the same alias box in both
+                                                    // arrangements, so a resize keeps what it holds.
+                                                    property <length> pad-left: 16px + root.indent;
+                                                    property <length> inner: self.width - self.pad-left - 16px;
+                                                    height: root.narrow
+                                                        ? 10px + texts.preferred-height + 8px + controls.preferred-height + 10px
+                                                        : max(texts.preferred-height, controls.preferred-height) + 20px;
+                                                    accessible-role: groupbox;
+                                                    accessible-label: account.name;
+                                                    accessible-description: account.status + " · " + account.folder;
+                                                    property <int> revision: account.revision;
+                                                    changed revision => {
+                                                        alias-box.text = account.alias;
                                                     }
-                                                    accepted(text) => {
-                                                        root.account-alias-done(b, a);
+                                                    property <int> focus-request: root.focus-request;
+                                                    changed focus-request => {
+                                                        if (root.focus-block == row.block && root.focus-target == "account:" + account.id) {
+                                                            alias-box.focus();
+                                                        }
                                                     }
-                                                    changed has-focus => {
-                                                        if (!self.has-focus) {
-                                                            root.account-alias-done(b, a);
+                                                    Rectangle {
+                                                        y: 0px;
+                                                        height: 1px;
+                                                        background: SettingsTheme.divider;
+                                                    }
+                                                    texts := VerticalLayout {
+                                                        x: parent.pad-left;
+                                                        y: root.narrow ? 10px : (parent.height - self.height) / 2;
+                                                        width: root.narrow ? parent.inner : parent.inner - controls.width - 16px;
+                                                        height: self.preferred-height;
+                                                        spacing: 2px;
+                                                        Text {
+                                                            text: account.name;
+                                                            font-size: 14px;
+                                                            font-weight: 600;
+                                                            color: SettingsTheme.text-primary;
+                                                            wrap: word-wrap;
+                                                            accessible-role: none;
+                                                        }
+                                                        Text {
+                                                            text: account.status;
+                                                            font-size: 14px;
+                                                            color: SettingsTheme.text-primary;
+                                                            wrap: word-wrap;
+                                                            accessible-role: none;
+                                                        }
+                                                        Text {
+                                                            text: account.folder;
+                                                            font-size: 12px;
+                                                            color: SettingsTheme.text-secondary;
+                                                            overflow: elide;
+                                                            accessible-role: none;
+                                                        }
+                                                    }
+                                                    controls := HorizontalLayout {
+                                                        x: root.narrow ? parent.pad-left : parent.width - 16px - self.width;
+                                                        y: root.narrow ? texts.y + texts.height + 8px : (parent.height - self.height) / 2;
+                                                        width: root.narrow ? parent.inner : self.preferred-width;
+                                                        height: self.preferred-height;
+                                                        spacing: 8px;
+                                                        Text {
+                                                            text: root.texts.accounts-alias;
+                                                            font-size: 14px;
+                                                            color: SettingsTheme.text-primary;
+                                                            horizontal-stretch: 0;
+                                                            vertical-alignment: center;
+                                                            accessible-role: none;
+                                                        }
+                                                        alias-box := LineEdit {
+                                                            text: account.alias;
+                                                            placeholder-text: root.texts.accounts-alias-none;
+                                                            accessible-label: account.alias-label;
+                                                            preferred-width: 160px;
+                                                            horizontal-stretch: 1;
+                                                            edited(text) => {
+                                                                root.account-alias-edited(row.block, a, text);
+                                                            }
+                                                            accepted(text) => {
+                                                                root.account-alias-done(row.block, a);
+                                                            }
+                                                            changed has-focus => {
+                                                                if (!self.has-focus) {
+                                                                    root.account-alias-done(row.block, a);
+                                                                }
+                                                            }
+                                                        }
+                                                        if account.removable: Button {
+                                                            text: root.texts.accounts-remove;
+                                                            accessible-label: account.remove-label;
+                                                            clicked => {
+                                                                root.account-removed(row.block, a);
+                                                            }
                                                         }
                                                     }
                                                 }
-                                                if account.removable: Button {
-                                                    text: root.texts.accounts-remove;
-                                                    accessible-label: account.remove-label;
-                                                    clicked => {
-                                                        root.account-removed(b, a);
+                                                if root.account-blocks[row.block].found.length > 0: StackedRow {
+                                                    header: root.texts.accounts-found;
+                                                    divider: true;
+                                                    indent: root.indent;
+                                                }
+                                                for found[f] in root.account-blocks[row.block].found: CardRow {
+                                                    header: found.folder;
+                                                    description: found.status;
+                                                    indent: root.indent;
+                                                    property <int> request: root.reveal-request;
+                                                    // The accounts deep link: this service at the top,
+                                                    // its first found folder's Add focused.
+                                                    function take-reveal() {
+                                                        if (root.reveal-found && root.reveal-block == row.block && f == 0) {
+                                                            root.reveal-found = false;
+                                                            root.scroll-services-to(service-header.absolute-position.y - services-page.absolute-position.y);
+                                                            add-found.focus();
+                                                        }
+                                                    }
+                                                    changed request => {
+                                                        self.take-reveal();
+                                                    }
+                                                    init => {
+                                                        self.take-reveal();
+                                                    }
+                                                    property <int> focus-request: root.focus-request;
+                                                    changed focus-request => {
+                                                        if (root.focus-block == row.block && root.focus-target == "found:" + found.folder) {
+                                                            add-found.focus();
+                                                        }
+                                                    }
+                                                    add-found := Button {
+                                                        text: root.texts.accounts-add;
+                                                        accessible-label: root.texts.accounts-add + " " + found.folder;
+                                                        clicked => {
+                                                            root.found-added(row.block, f);
+                                                        }
                                                     }
                                                 }
                                                 Rectangle {
-                                                    horizontal-stretch: 0.01;
+                                                    Rectangle {
+                                                        y: 0px;
+                                                        height: 1px;
+                                                        background: SettingsTheme.divider;
+                                                    }
+                                                    FlexboxLayout {
+                                                        padding-left: 16px + root.indent;
+                                                        padding-right: 16px;
+                                                        padding-top: 12px;
+                                                        padding-bottom: 12px;
+                                                        spacing: 8px;
+                                                        add-folder := Button {
+                                                            text: root.texts.accounts-add-folder;
+                                                            property <int> focus-request: root.focus-request;
+                                                            changed focus-request => {
+                                                                if (root.focus-block == row.block && root.focus-target == "add-folder") {
+                                                                    self.focus();
+                                                                }
+                                                            }
+                                                            clicked => {
+                                                                root.add-folder(row.block);
+                                                            }
+                                                        }
+                                                        new-account := Button {
+                                                            text: root.texts.accounts-new-open;
+                                                            clicked => {
+                                                                root.new-account-block = row.block;
+                                                            }
+                                                        }
+                                                    }
+                                                }
+                                                // New account…: a name box, Create and sign in, Cancel.
+                                                if root.new-account-block == row.block: StackedRow {
+                                                    header: root.texts.accounts-new;
+                                                    description: root.account-blocks[row.block].new-note;
+                                                    divider: true;
+                                                    indent: root.indent;
+                                                    init => {
+                                                        new-name.focus();
+                                                    }
+                                                    FlexboxLayout {
+                                                        spacing: 8px;
+                                                        flex-direction: root.narrow ? FlexboxLayoutDirection.column : FlexboxLayoutDirection.row;
+                                                        flex-wrap: FlexboxLayoutWrap.no-wrap;
+                                                        alignment: stretch;
+                                                        cross-axis-alignment: root.narrow ? CrossAxisAlignment.stretch : CrossAxisAlignment.center;
+                                                        new-name := LineEdit {
+                                                            placeholder-text: root.texts.accounts-new-name;
+                                                            accessible-label: root.texts.accounts-new;
+                                                            min-width: 160px;
+                                                            horizontal-stretch: 1;
+                                                            accepted(text) => {
+                                                                if (text != "") {
+                                                                    root.new-account(row.block, text);
+                                                                    self.text = "";
+                                                                    root.new-account-block = -1;
+                                                                    new-account.focus();
+                                                                }
+                                                            }
+                                                        }
+                                                        HorizontalLayout {
+                                                            horizontal-stretch: 0;
+                                                            alignment: start;
+                                                            spacing: 8px;
+                                                            Button {
+                                                                text: root.texts.accounts-new-create;
+                                                                enabled: new-name.text != "";
+                                                                clicked => {
+                                                                    root.new-account(row.block, new-name.text);
+                                                                    new-name.text = "";
+                                                                    root.new-account-block = -1;
+                                                                    new-account.focus();
+                                                                }
+                                                            }
+                                                            Button {
+                                                                text: root.texts.accounts-new-cancel;
+                                                                clicked => {
+                                                                    root.new-account-block = -1;
+                                                                    new-account.focus();
+                                                                }
+                                                            }
+                                                        }
+                                                    }
+                                                }
+                                                if root.block-status[row.block] != "": HorizontalLayout {
+                                                    padding-left: 16px + root.indent;
+                                                    padding-right: 16px;
+                                                    padding-bottom: 12px;
+                                                    PageNote {
+                                                        text: root.block-status[row.block];
+                                                    }
                                                 }
                                             }
                                         }
-                                        if block.found.length > 0: StackedRow {
-                                            header: root.texts.accounts-found;
+
+                                        // ---- The service's API key (settings-spec §5.6)
+                                        if row.expanded && row.kind == ServiceKind.key: StackedRow {
+                                            header: root.texts.key-label;
                                             divider: true;
-                                            indent: 24px;
-                                        }
-                                        for found[f] in block.found: CardRow {
-                                            header: found.folder;
-                                            description: found.status;
-                                            indent: 24px;
-                                            property <int> request: root.reveal-request;
-                                            function take-reveal() {
-                                                if (root.reveal-found && root.reveal-block == b && f == 0) {
-                                                    root.reveal-found = false;
-                                                    add-found.focus();
-                                                }
-                                            }
-                                            changed request => {
-                                                self.take-reveal();
-                                            }
+                                            indent: root.indent;
                                             init => {
-                                                self.take-reveal();
+                                                root.show-services-part(
+                                                    service-header.absolute-position.y - services-page.absolute-position.y,
+                                                    self.absolute-position.y - services-page.absolute-position.y + self.height);
                                             }
-                                            add-found := Button {
-                                                text: root.texts.accounts-add;
-                                                accessible-label: root.texts.accounts-add + " " + found.folder;
-                                                clicked => {
-                                                    root.found-added(b, f);
-                                                }
+                                            // A key typed but not saved is not kept when the page
+                                            // changes (nor when the expander closes: the box goes).
+                                            property <int> shown-page: root.page;
+                                            changed shown-page => {
+                                                key-box.text = "";
                                             }
-                                        }
-                                        StackedRow {
-                                            divider: true;
-                                            indent: 24px;
-                                            header: root.texts.accounts-new;
-                                            HorizontalLayout {
+                                            FlexboxLayout {
                                                 spacing: 8px;
-                                                new-name := LineEdit {
-                                                    placeholder-text: root.texts.accounts-new-name;
-                                                    accessible-label: root.texts.accounts-new;
+                                                flex-direction: root.narrow ? FlexboxLayoutDirection.column : FlexboxLayoutDirection.row;
+                                                flex-wrap: FlexboxLayoutWrap.no-wrap;
+                                                alignment: stretch;
+                                                cross-axis-alignment: root.narrow ? CrossAxisAlignment.stretch : CrossAxisAlignment.center;
+                                                key-box := LineEdit {
+                                                    placeholder-text: root.api-keys[row.key-row].placeholder;
+                                                    accessible-label: root.api-keys[row.key-row].box-label;
+                                                    input-type: password;
+                                                    min-width: 160px;
                                                     horizontal-stretch: 1;
-                                                    max-width: 280px;
-                                                    accepted(text) => {
-                                                        if (text != "") {
-                                                            root.new-account(b, text);
+                                                    accepted => {
+                                                        if (self.text != "") {
+                                                            root.set-api-key(row.key-row, self.text);
                                                             self.text = "";
                                                         }
                                                     }
                                                 }
-                                                Button {
-                                                    text: root.texts.accounts-new-create;
-                                                    enabled: new-name.text != "";
-                                                    clicked => {
-                                                        root.new-account(b, new-name.text);
-                                                        new-name.text = "";
+                                                HorizontalLayout {
+                                                    horizontal-stretch: 0;
+                                                    alignment: start;
+                                                    spacing: 8px;
+                                                    Button {
+                                                        text: root.texts.key-save;
+                                                        accessible-label: root.api-keys[row.key-row].save-label;
+                                                        enabled: key-box.text != "";
+                                                        clicked => {
+                                                            root.set-api-key(row.key-row, key-box.text);
+                                                            key-box.text = "";
+                                                        }
                                                     }
-                                                }
-                                                Rectangle {
-                                                    horizontal-stretch: 0.01;
-                                                }
-                                            }
-                                            HorizontalLayout {
-                                                alignment: start;
-                                                Button {
-                                                    text: root.texts.accounts-add-folder;
-                                                    clicked => {
-                                                        root.add-folder(b);
-                                                    }
-                                                }
-                                            }
-                                            if root.block-status[b] != "": PageNote {
-                                                text: root.block-status[b];
-                                            }
-                                        }
-                                    }
-                                }
-
-                                GroupHeader {
-                                    text: root.texts.key;
-                                    description: root.texts.key-hint;
-                                }
-                                SettingsCard {
-                                    for row[i] in root.api-keys: StackedRow {
-                                        header: row.title;
-                                        divider: i > 0;
-                                        // A key typed but not saved is not kept when the page changes.
-                                        property <int> shown-page: root.page;
-                                        changed shown-page => {
-                                            key-box.text = "";
-                                        }
-                                        HorizontalLayout {
-                                            spacing: 8px;
-                                            key-box := LineEdit {
-                                                placeholder-text: row.placeholder;
-                                                accessible-label: row.placeholder;
-                                                input-type: password;
-                                                horizontal-stretch: 1;
-                                                accepted => {
-                                                    if (self.text != "") {
-                                                        root.set-api-key(i, self.text);
-                                                        self.text = "";
+                                                    if root.api-keys[row.key-row].stored: Button {
+                                                        text: root.texts.key-remove;
+                                                        accessible-label: root.api-keys[row.key-row].remove-label;
+                                                        // The button goes with the key: the
+                                                        // focus goes back to the box.
+                                                        clicked => {
+                                                            root.clear-api-key(row.key-row);
+                                                            key-box.focus();
+                                                        }
                                                     }
                                                 }
                                             }
-                                            Button {
-                                                text: root.texts.key-save;
-                                                enabled: key-box.text != "";
-                                                clicked => {
-                                                    root.set-api-key(i, key-box.text);
-                                                    key-box.text = "";
-                                                }
+                                            if root.api-keys[row.key-row].status != "": PageNote {
+                                                text: root.api-keys[row.key-row].status;
                                             }
-                                            if row.stored: Button {
-                                                text: root.texts.key-remove;
-                                                clicked => {
-                                                    root.clear-api-key(i);
-                                                }
+                                            PageNote {
+                                                text: root.api-keys[row.key-row].note;
                                             }
-                                        }
-                                        if row.status != "": PageNote {
-                                            text: row.status;
                                         }
                                     }
                                 }
@@ -752,6 +937,23 @@ export component SettingsWindow inherits Window {
                                             accessible-label: root.texts.privacy-hide;
                                             toggled => {
                                                 root.privacy-toggled(self.checked);
+                                            }
+                                        }
+                                    }
+                                }
+
+                                GroupHeader {
+                                    text: root.texts.custom;
+                                }
+                                SettingsCard {
+                                    CardRow {
+                                        header: root.texts.custom-add;
+                                        description: root.texts.custom-add-description;
+                                        Button {
+                                            text: root.texts.custom-open;
+                                            accessible-label: root.texts.custom-open-label;
+                                            clicked => {
+                                                root.open-providers-folder();
                                             }
                                         }
                                     }

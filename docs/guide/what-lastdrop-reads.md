@@ -113,8 +113,8 @@ How often: at most every 10 minutes. Off until you turn it on.
 
 ## OpenCode Go
 
-- Uses the API key you save in Settings ▸ **API keys**. Without one, it reads the OpenCode Go key
-  that OpenCode keeps in `%USERPROFILE%\.local\share\opencode\auth.json`.
+- Uses the API key you save in its row of Settings ▸ **Services**. Without one, it reads the
+  OpenCode Go key that OpenCode keeps in `%USERPROFILE%\.local\share\opencode\auth.json`.
 - Asks `GET https://opencode.ai/zen/go/v1/usage` with `Authorization: Bearer <key>`. This is the
   address OpenCode's console uses; it is not documented.
 
@@ -133,7 +133,7 @@ How often: at most every 5 minutes. Off until you turn it on.
 
 ## Meshy
 
-- Uses the API key you save in Settings ▸ **API keys**.
+- Uses the API key you save in its row of Settings ▸ **Services**.
 - Asks `GET https://api.meshy.ai/openapi/v1/balance` with `Authorization: Bearer <key>`.
 
 How often: at most every 5 minutes. Off until you save a key.
@@ -142,7 +142,7 @@ How often: at most every 5 minutes. Off until you save a key.
 
 DeepSeek, ElevenLabs, OpenRouter and any service you [describe yourself](custom-services.md):
 
-- Uses the API key you save in Settings ▸ **API keys**.
+- Uses the API key you save in its row of Settings ▸ **Services**.
 - Asks `GET` the address in the service's file, with the key in the header the file names.
 
 | Service | Address |
@@ -156,7 +156,7 @@ them. How often: at most every 5 minutes. Off until you turn it on or save a key
 
 ## API keys
 
-The keys you save in Settings ▸ **API keys** are stored in Windows Credential Manager as generic
+The keys you save in Settings ▸ **Services** are stored in Windows Credential Manager as generic
 credentials named `Lastdrop:<service>:default:api_key`, for example
 `Lastdrop:meshy:default:api_key`. Lastdrop reads only its own entries there. You can see and
 delete them in Control Panel ▸ Credential Manager ▸ Windows Credentials.
@@ -177,7 +177,7 @@ settings.
 | Settings (no keys or tokens) | `%APPDATA%\Lastdrop\settings.json` |
 | Your service files, themes and prices | `%APPDATA%\Lastdrop\providers`, `themes`, `prices.json` |
 | Usage history: the numbers only, 90 days | `%LOCALAPPDATA%\Lastdrop\history` |
-| What the app remembers between runs: which meters it saw, what it notified, and a short hash of who each Claude Code or Codex folder is signed in to | `%LOCALAPPDATA%\Lastdrop\state.json` |
+| What the app remembers between runs: which meters it saw, what it notified (the last update it announced too), and a short hash of who each Claude Code or Codex folder is signed in to | `%LOCALAPPDATA%\Lastdrop\state.json` |
 | Logs, with tokens, keys and e-mail addresses masked | `%LOCALAPPDATA%\Lastdrop\logs` |
 | A downloaded update | `%LOCALAPPDATA%\Lastdrop\updates` |
 | API keys you saved | Windows Credential Manager |

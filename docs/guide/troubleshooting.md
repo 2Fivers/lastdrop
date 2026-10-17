@@ -29,9 +29,10 @@ there.
 
 ### API key missing or rejected
 
-Meshy, OpenCode Go and the services described in JSON are read with an API key. The message means
-there is none, or the service refused it (HTTP 401). Choose *Enter key…* to open the settings,
-paste the key under **API keys** and choose **Save key**. Lastdrop reads the service again at once.
+Meshy, OpenCode Go and the services described in JSON are read with an API key. The message (in
+the flyout's header: *Meshy: API key missing or rejected*) means there is none, or the service
+refused it (HTTP 401). Choose *Enter key…* to open the settings, open the service's row with the
+arrow at its end, paste the key and choose **Save key**. Lastdrop reads the service again at once.
 
 OpenCode Go can also use the key OpenCode itself keeps, so it needs no key in Lastdrop if you use
 OpenCode on this PC.
@@ -88,11 +89,12 @@ reads](what-lastdrop-reads.md#what-stays-on-your-pc) says what is in each.
 
 ## The logs
 
-Lastdrop writes two logs in `%LOCALAPPDATA%\Lastdrop\logs`:
+Lastdrop writes three logs in `%LOCALAPPDATA%\Lastdrop\logs`:
 
 - `lastdrop.log`: the tray icon, the readout, the flyout and every reading. Each attempt to read a
   service is logged with its outcome.
 - `settings.log`: the settings, usage history and about windows.
+- `install.log`: installing, updating and uninstalling, also when winget does it quietly.
 
 Each log is rotated at 1 MB, and the two before it are kept (`lastdrop.1.log`, `lastdrop.2.log`).
 Tokens, keys, cookies and e-mail addresses are masked before a line is written. Still, read a log
@@ -128,8 +130,9 @@ compare with.
 ## Lastdrop does not start with Windows
 
 Check that *Start Lastdrop when I sign in to Windows* is on in the settings. If it is on and
-Lastdrop still does not start, turn it off and on again. This can happen after you uninstall and
-install again: uninstalling removes Windows' start-up entry, while the setting stays on.
+Lastdrop still does not start, turn it off and on again: that writes Windows' start-up entry
+again. Uninstalling removes the entry but keeps the setting, and installing again puts the entry
+back while the setting is on.
 
 ## Language
 
