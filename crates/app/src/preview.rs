@@ -53,7 +53,7 @@ const ABOUT_PREVIEW_W: f32 = 420.0;
 /// The usage history window's preview size: its preferred width, tall enough for the page.
 const HISTORY_PREVIEW_W: f32 = 640.0;
 /// See [`HISTORY_PREVIEW_W`].
-const HISTORY_PREVIEW_H: f32 = 1100.0;
+const HISTORY_PREVIEW_H: f32 = 1500.0;
 
 /// The headless platform: software-rendered windows without an OS window or an event loop.
 struct Headless;
@@ -182,6 +182,39 @@ fn render_live_history(language: Option<Language>, scale: f64, out: &Path) -> Re
         strings,
     );
     fill_model(&window, &model);
+    let folders = crate::history_window::log_folders(&settings);
+    if let Some((source, folder)) = found
+        .first()
+        .and_then(|s| folders.get(&s.key).map(|f| (s, f)))
+    {
+        let since = now
+            .checked_sub(jiff::SignedDuration::from_hours(24 * 31))
+            .unwrap_or(now);
+        let started = std::time::Instant::now();
+        let fs = lastdrop_providers::real::RealFs;
+        let log = match source.key.provider {
+            lastdrop_core::model::ProviderId::Claude => {
+                lastdrop_providers::tokens::read_claude(&fs, folder, since)
+            }
+            _ => lastdrop_providers::tokens::read_codex(&fs, folder, since),
+        };
+        log::info!(
+            "preview: {} session logs read in {} ms: {} requests",
+            log.files,
+            started.elapsed().as_millis(),
+            log.requests.len()
+        );
+        let section = lastdrop_core::tokens::build(&lastdrop_core::tokens::TokensInput {
+            log: &log,
+            prices: &crate::history_window::load_prices(&paths.prices),
+            client: source.key.provider.client_name().unwrap_or_default(),
+            range: lastdrop_core::charts::Range::Month,
+            now,
+            locale: &wording.locale,
+            strings,
+        });
+        crate::history_window::fill_tokens(&window, Some(&section));
+    }
     window.show()?;
     snapshot_to_png(
         window.window(),
@@ -409,6 +442,22 @@ fn render_history(world: &demo::Demo, scale: f64, out: &Path) -> Result<(), AppE
         strings,
     );
     fill_model(&window, &model);
+    let first_is_claude = sources
+        .first()
+        .is_some_and(|s| s.key.provider == lastdrop_core::model::ProviderId::Claude);
+    if first_is_claude {
+        let log = demo::claude_tokens(world.now);
+        let section = lastdrop_core::tokens::build(&lastdrop_core::tokens::TokensInput {
+            log: &log,
+            prices: &lastdrop_core::tokens::PriceTable::bundled(),
+            client: "Claude Code",
+            range: lastdrop_core::charts::Range::Month,
+            now: world.now,
+            locale: &world.locale,
+            strings,
+        });
+        crate::history_window::fill_tokens(&window, Some(&section));
+    }
     window.show()?;
     snapshot_to_png(
         window.window(),

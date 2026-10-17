@@ -112,7 +112,6 @@ dialog process holds the samples of one service's meters (90 days of 5-minute sa
 
 ## 9. Later
 
-- **Tokens and cost per day and model:** from Claude Code's and Codex's own session logs on this
-  PC (the usage fields only), with a price table for the cost. It needs a decision on reading
-  those logs and on how the price table stays current.
+- ~~**Tokens and cost per day and model**~~: built, [tokens-spec](tokens-spec.md): the session
+  logs' usage fields only, and a bundled price table that a user's `prices.json` can extend.
 - Hover read-outs on the charts (the value under the pointer).

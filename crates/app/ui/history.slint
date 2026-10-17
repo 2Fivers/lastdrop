@@ -1,5 +1,6 @@
 // The usage history window (docs/design/charts-spec.md): each meter of one service over time, use
-// per day and the active hours, drawn from what Rust computed (`lastdrop_core::charts`). Every
+// per day and the active hours, drawn from what Rust computed (`lastdrop_core::charts`), and the
+// tokens and cost of Claude and Codex (docs/design/tokens-spec.md, `lastdrop_core::tokens`). Every
 // text and every path comes from Rust in the chosen language; nothing here formats a number.
 // Fluent, following the app theme like the settings window.
 
@@ -56,6 +57,14 @@ export struct HourLabel {
     label: string,
 }
 
+// One model of the tokens and cost (tokens-spec §3): its name, its split, its tokens and cost.
+export struct TokenRow {
+    name: string,
+    split: string,
+    tokens: string,
+    cost: string,
+}
+
 // The window's fixed texts (`history.*` strings), from Rust.
 export struct HistoryTexts {
     title: string,
@@ -64,6 +73,7 @@ export struct HistoryTexts {
     over-time: string,
     per-day: string,
     hours: string,
+    tokens: string,
     close: string,
 }
 
@@ -192,6 +202,42 @@ component TimeAxis inherits Rectangle {
     }
 }
 
+// One model's row of the tokens and cost: name and split on the left, tokens and cost on the right.
+component TokenLine inherits HorizontalLayout {
+    in property <TokenRow> data;
+    in property <bool> bold;
+    spacing: 12px;
+    VerticalLayout {
+        horizontal-stretch: 1;
+        Text {
+            text: root.data.name;
+            font-size: 13px;
+            font-weight: root.bold ? 600 : 400;
+            color: Palette.foreground;
+            wrap: word-wrap;
+        }
+        Secondary {
+            text: root.data.split;
+        }
+    }
+    VerticalLayout {
+        alignment: start;
+        Text {
+            text: root.data.tokens;
+            font-size: 13px;
+            font-weight: root.bold ? 600 : 400;
+            color: Palette.foreground;
+            horizontal-alignment: right;
+        }
+        Text {
+            text: root.data.cost;
+            font-size: 12px;
+            color: Palette.foreground.with-alpha(0.62);
+            horizontal-alignment: right;
+        }
+    }
+}
+
 export component HistoryWindow inherits Window {
     title: root.texts.title;
     preferred-width: 640px;
@@ -221,6 +267,17 @@ export component HistoryWindow inherits Window {
     in property <[HourLabel]> hour-labels;
     in property <string> hours-summary;
     in property <string> hours-a11y;
+    // Tokens and cost (tokens-spec §3), for Claude and Codex only.
+    in property <bool> has-tokens;
+    // Reading, no logs or no tokens in the period; empty when there is something to show.
+    in property <string> tokens-message;
+    in property <[DayData]> token-days;
+    in property <string> tokens-top;
+    in property <string> tokens-summary;
+    in property <string> tokens-a11y;
+    in property <[TokenRow]> token-rows;
+    in property <TokenRow> tokens-total;
+    in property <string> tokens-note;
 
     callback service-changed(int);
     callback range-changed(int);
@@ -369,6 +426,60 @@ export component HistoryWindow inherits Window {
                 }
                 if root.has-hours: Secondary {
                     text: root.hours-summary;
+                }
+
+                if root.has-tokens: SectionTitle {
+                    text: root.texts.tokens;
+                }
+                if root.has-tokens && root.tokens-message != "": Secondary {
+                    text: root.tokens-message;
+                }
+                if root.has-tokens && root.tokens-message == "": tdays := Rectangle {
+                    height: 72px;
+                    accessible-role: image;
+                    accessible-label: root.tokens-a11y;
+                    property <length> slot: self.width / max(1, root.token-days.length);
+                    property <length> gap: root.token-days.length > 45 ? 1px : 2px;
+                    Rectangle {
+                        y: 0;
+                        height: 1px;
+                        background: ChartColors.grid;
+                    }
+                    Rectangle {
+                        y: tdays.height - 1px;
+                        height: 1px;
+                        background: ChartColors.hairline;
+                    }
+                    for day[i] in root.token-days: Rectangle {
+                        x: i * tdays.slot + tdays.gap / 2;
+                        width: max(1px, tdays.slot - tdays.gap);
+                        height: day.height > 0 ? max(1px, day.height * (tdays.height - 1px)) : 0;
+                        y: tdays.height - 1px - self.height;
+                        background: day.today ? ChartColors.accent : ChartColors.past;
+                    }
+                    ScaleLabel {
+                        text: root.tokens-top;
+                    }
+                }
+                if root.has-tokens && root.tokens-message == "": Secondary {
+                    text: root.tokens-summary;
+                }
+                if root.has-tokens && root.tokens-message == "": VerticalLayout {
+                    spacing: 6px;
+                    for row in root.token-rows: TokenLine {
+                        data: row;
+                    }
+                    Rectangle {
+                        height: 1px;
+                        background: ChartColors.grid;
+                    }
+                    TokenLine {
+                        data: root.tokens-total;
+                        bold: true;
+                    }
+                }
+                if root.has-tokens && root.tokens-message == "": Secondary {
+                    text: root.tokens-note;
                 }
             }
         }

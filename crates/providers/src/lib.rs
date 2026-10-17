@@ -51,6 +51,7 @@ pub mod meshy;
 pub mod opencode_go;
 pub mod real;
 pub mod sqlite;
+pub mod tokens;
 
 use std::sync::Arc;
 use std::time::Duration;

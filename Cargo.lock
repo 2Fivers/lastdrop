@@ -2513,6 +2513,7 @@ dependencies = [
  "jiff",
  "lastdrop-core",
  "log",
+ "memchr",
  "ruzstd",
  "serde",
  "serde_json",

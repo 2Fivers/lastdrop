@@ -469,6 +469,23 @@ lowercase_names = true
 "history.hours.summary" = "Most use: {day} {time}–{until}"
 "history.empty" = "No history yet. Lastdrop records a reading every 5 minutes while it runs."
 "history.empty.range" = "Nothing was recorded in this period."
+"history.tokens" = "Tokens and cost"
+"history.tokens.reading" = "Reading session logs…"
+# `{client}`: Claude Code or Codex.
+"history.tokens.none" = "No session logs from {client} on this PC for this account."
+"history.tokens.empty" = "No tokens were used in this period."
+# `{tokens}`, `{max}`: compact counts (`history.tokens.count.*`); `{cost}`: an amount with its
+# currency code (`12.40 USD`); `{date}`: a weekday and date.
+"history.tokens.summary" = "{tokens} tokens · ≈ {cost} at API prices · highest {max} on {date}"
+"history.tokens.summary.nocost" = "{tokens} tokens · highest {max} on {date}"
+"history.tokens.split" = "In {input} · out {output} · cache {cache}"
+"history.tokens.cost" = "≈ {cost}"
+"history.tokens.total" = "Total"
+"history.tokens.total.partial" = "Total (the cost leaves out models without a price)"
+"history.tokens.note" = "From {client}'s session logs on this PC. Cost at API list prices, checked {date}; a plan does not pay per token."
+"history.tokens.count.k" = "{n}K"
+"history.tokens.count.m" = "{n}M"
+"history.tokens.count.b" = "{n}B"
 "history.close" = "Close"
 "a11y.history.span" = "the last {n} days"
 "a11y.history.percent" = "{n} percent"
@@ -477,4 +494,5 @@ lowercase_names = true
 "a11y.history.balance" = "{meter}, {span}: now {amount}, highest {max} on {date}."
 "a11y.history.per_day" = "Use per day, {span}: average {avg}, highest {max} on {date}."
 "a11y.history.hours" = "Active hours, {span}: most use on {day} between {time} and {until}."
+"a11y.history.tokens" = "Tokens per day, {span}: {tokens} tokens in all, highest {max} on {date}."
 "a11y.history.used_up" = { one = "Used up {n} time.", other = "Used up {n} times." }

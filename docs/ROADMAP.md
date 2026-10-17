@@ -24,8 +24,8 @@ _researching_ are being verified against primary sources before anything is buil
 
 | Service | What Lastdrop shows | Where the data comes from | Status |
 |---|---|---|---|
-| **Claude Code / Claude plans** | 5-hour session, weekly, per-model weekly, extra usage; tokens and estimated cost per day/model/project | OAuth usage endpoint with Claude Code's token (read-only) → Claude Desktop's last usage response in its HTTP cache (no token) → Claude Desktop's plan-usage history (no token) → Claude Code's cached usage; local transcripts for statistics | 5-hour, weekly and per-model weekly windows built; extra usage and transcript statistics planned |
-| **Codex** | 5-hour / weekly windows (whichever the plan has), credits; tokens per day/model | `codex app-server` `account/rateLimits/read` (official) → session logs offline | Windows built; credits and token statistics planned |
+| **Claude Code / Claude plans** | 5-hour session, weekly, per-model weekly, extra usage; tokens and estimated cost per day/model/project | OAuth usage endpoint with Claude Code's token (read-only) → Claude Desktop's last usage response in its HTTP cache (no token) → Claude Desktop's plan-usage history (no token) → Claude Code's cached usage; local transcripts for statistics | 5-hour, weekly and per-model weekly windows built; tokens and cost per day and model from the transcripts built ([tokens-spec](design/tokens-spec.md)); extra usage planned |
+| **Codex** | 5-hour / weekly windows (whichever the plan has), credits; tokens per day/model | `codex app-server` `account/rateLimits/read` (official) → session logs offline | Windows built; tokens and cost per day and model from the session logs built ([tokens-spec](design/tokens-spec.md)); credits planned |
 | **GitHub Copilot** | Monthly quotas used vs allowance, reset date (premium requests on paid plans; chat messages and code completions on Copilot Free); usage per day/model | `copilot_internal/user` with the `gh auth token`; official billing usage API for statistics. If a paid plan's answer stops giving its allowance (AI Credits since 2026-06-01), the user enters it once | Quotas built (Copilot Free verified live); paid plans from fixtures; statistics planned |
 | **Meshy** | Credit balance, burn rate, days left | Official `GET /openapi/v1/balance` with an API key | Built (balance, burn rate, run-out forecast) |
 | **Cursor** | Included usage (auto / API pools), on-demand spend, billing-cycle reset | Unofficial `cursor.com/api/usage-summary`; session cookie built from the token Cursor stores in `state.vscdb` (read-only, never copied — the file can be 1.6 GB). Teams: official Admin API with an admin key | Built (pools, total, on-demand; the session reader verified live, the endpoint from invented answers); Teams Admin API not used |
@@ -144,8 +144,9 @@ setups.
 - Burn rate and depletion forecast for balance-based services ("≈ 9 days left").
 - Charts: usage per window over time, tokens and cost per day/model, a heatmap of active hours.
   Built ([charts-spec](design/charts-spec.md)): the usage history window with each meter over
-  7, 30 or 90 days, use per day and the active hours. Tokens and cost per day and model are left:
-  they need Claude Code's and Codex's session logs and a price table.
+  7, 30 or 90 days, use per day and the active hours; and tokens and cost per day and model from
+  Claude Code's and Codex's own session logs, priced with a bundled table of API list prices that
+  `%APPDATA%\Lastdrop\prices.json` can extend ([tokens-spec](design/tokens-spec.md)).
 
 ### Themes
 
@@ -162,7 +163,7 @@ Status as of 2026-10-16.
 | M0 | **Stack spike** | Same flyout in Rust + Slint and Rust + Tauri; measure idle/open memory, flyout latency, size and look; pick one. | Done: Rust + Slint with the software renderer ([ADR 0001](adr/0001-rust-and-slint-software-renderer.md)) |
 | M1 | **First useful build** | Core, tray icon, taskbar readout, flyout, settings basics, autostart. Claude Code, Codex and Meshy. | Done, plus hover card, global hotkey, pause, and Settings and About in a dialog process of their own |
 | M2 | **More services** | Copilot, Cursor, Antigravity, OpenCode Go, Grok Build; declarative balance providers; multiple accounts for Claude Code and Codex. | Copilot, Cursor, Antigravity, OpenCode Go and Grok built ([providers-research](design/providers-research.md)); multiple accounts built ([accounts-spec](design/accounts-spec.md): who is signed in to each folder, the same account in two folders shown once, a folder signed in to someone else starts over, found folders, add and create accounts, hide personal info); declarative balance providers built ([custom-services-spec](design/custom-services-spec.md)). Done |
-| M3 | **Statistics** | History store, pace, forecasts, charts, threshold and reset notifications. | History store (90 days, one sample per meter per 5 minutes), pace, forecasts, a 14-day sparkline and notifications (levels, used up, resets, low balances) built; the usage history window built (each meter over time, use per day, active hours, [charts-spec](design/charts-spec.md)); tokens and cost per day and model left |
+| M3 | **Statistics** | History store, pace, forecasts, charts, threshold and reset notifications. | History store (90 days, one sample per meter per 5 minutes), pace, forecasts, a 14-day sparkline and notifications (levels, used up, resets, low balances) built; the usage history window built (each meter over time, use per day, active hours, [charts-spec](design/charts-spec.md)); tokens and cost per day and model built ([tokens-spec](design/tokens-spec.md)). Done |
 | M4 | **Make it yours** | Readout on every taskbar, themes and Theme Studio, languages, adaptive refresh. | Adaptive refresh built; English and Swedish, following Windows' display language or the setting, with numbers and times in the Windows regional format. The settings and about windows switch language too. The readout shows on the primary taskbar only; themes and Theme Studio are left |
 | M5 | **v0.1** | Updates, code signing, installer; decide on distribution and licensing. | Not started |
 

@@ -133,7 +133,7 @@ impl Period {
     }
 
     /// The start of local day `i` of the period.
-    fn day_start(&self, i: usize, tz: &TimeZone) -> Option<Timestamp> {
+    pub(crate) fn day_start(&self, i: usize, tz: &TimeZone) -> Option<Timestamp> {
         let date = self
             .first_day
             .checked_add(Span::new().days(i64::try_from(i).ok()?))
@@ -596,12 +596,12 @@ fn with_unit(amount: String, meter: &ChartMeter, strings: &dyn Strings) -> Strin
 }
 
 /// A full weekday and date for spoken text (`Friday 10 Oct`).
-fn spoken_date(t: Timestamp, locale: &LocaleFormat) -> String {
+pub(crate) fn spoken_date(t: Timestamp, locale: &LocaleFormat) -> String {
     format!("{} {}", weekday_full(t, locale), day_month(t, locale))
 }
 
 /// A weekday and date as shown (`Fri 10 Oct`).
-fn shown_date(t: Timestamp, locale: &LocaleFormat) -> String {
+pub(crate) fn shown_date(t: Timestamp, locale: &LocaleFormat) -> String {
     format!("{} {}", weekday_abbrev(t, locale), day_month(t, locale))
 }
 
