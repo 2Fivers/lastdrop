@@ -117,6 +117,13 @@ fn notify(app: &App, title: &str, body: &str, warning: bool) {
     }
 }
 
+/// Whether an offer of `offer` is announced by a notification: once per version (`announced`,
+/// the version announced last, is kept in the state file, so a restart repeats nothing), and
+/// always after *Check now* (`manual`), which says what it found.
+fn announces(offer: &Version, announced: Option<&Version>, manual: bool) -> bool {
+    manual || announced != Some(offer)
+}
+
 fn on_checked(app: &App, result: Checked, manual: bool) {
     app.rt.update_checking.set(false);
     let strings = app.state.borrow().strings;
@@ -124,8 +131,8 @@ fn on_checked(app: &App, result: Checked, manual: bool) {
         Checked::Offer(offer) => {
             log::info!("update: {} is available", offer.version);
             let version = offer.version.to_string();
-            let new = app.rt.update_announced.borrow().as_ref() != Some(&offer.version);
-            if new || manual {
+            let announced = app.state.borrow().update_announced.clone();
+            if announces(&offer.version, announced.as_ref(), manual) {
                 let title = text(strings, Msg::UpdateAvailable, &[("version", &version)]);
                 notify(
                     app,
@@ -133,7 +140,8 @@ fn on_checked(app: &App, result: Checked, manual: bool) {
                     strings.template(Msg::UpdateAvailableBody),
                     false,
                 );
-                *app.rt.update_announced.borrow_mut() = Some(offer.version.clone());
+                // Kept in the state file by the rebuild below.
+                app.state.borrow_mut().update_announced = Some(offer.version.clone());
             }
             *app.rt.update.borrow_mut() = UpdateState::Available(offer);
         }
@@ -258,5 +266,28 @@ fn on_fetched(app: &App, offer: Offer, result: Result<PathBuf, String>) {
             notify(app, "Lastdrop", &body, true);
             wiring::rebuild(app, jiff::Timestamp::now());
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn each_version_is_announced_once_unless_asked() {
+        let v = |s: &str| Version::parse(s).expect("a version");
+        assert!(announces(&v("0.2.0"), None, false), "the first offer");
+        assert!(
+            !announces(&v("0.2.0"), Some(&v("0.2.0")), false),
+            "announced already (also before a restart)"
+        );
+        assert!(
+            announces(&v("0.2.0"), Some(&v("0.2.0")), true),
+            "Check now says it again"
+        );
+        assert!(
+            announces(&v("0.3.0"), Some(&v("0.2.0")), false),
+            "a newer release"
+        );
     }
 }

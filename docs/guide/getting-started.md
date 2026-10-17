@@ -117,8 +117,8 @@ to Windows* in Settings. It then starts quietly when you sign in, without openin
 ## Updates
 
 Lastdrop asks GitHub for its newest release two minutes after it starts and then once a day. When
-a newer version is out, it shows a notification and the flyout's footer says *Lastdrop x.y.z is
-available · Install*. Nothing is installed until you choose **Install**. Lastdrop then downloads
+a newer version is out, it shows a notification, once for each version (a restart does not repeat
+it), and the flyout's footer says *Lastdrop x.y.z is available · Install*. Nothing is installed until you choose **Install**. Lastdrop then downloads
 the new installer, checks its size and its SHA-256 checksum against the release's `SHA256SUMS`,
 installs it and starts again. Your settings and history stay.
 

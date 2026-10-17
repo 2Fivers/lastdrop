@@ -25,7 +25,9 @@ References: ARCHITECTURE "App", ROADMAP "Principles" (no telemetry).
   64 MB) and `SHA256SUMS`, both on `https://github.com/`. Anything else is no offer (logged).
 - **Telling the user:** one notification per new version (`Lastdrop 0.2.0 is available`; clicking
   it opens the flyout, N§4), and the flyout's footer `Lastdrop 0.2.0 is available · Install`
-  (F§5) while no pause note is there.
+  (F§5) while no pause note is there. The version announced is kept in `state.json`
+  (`update_announced`), so a restart does not announce it again; *Check now* always says what it
+  found.
 
 ## 2. Installing
 
@@ -35,7 +37,9 @@ The release's installer is the app itself: `Lastdrop-Setup.exe`.
   "Install Lastdrop 0.1.0 for this Windows user?" and names the folder. **`--install`** does the
   same without asking. **`--install --quiet`** (what winget runs) shows no message box either:
   the exit code (0 or 1) and the log say how it went, and the installed app starts quietly
-  (`--autostart`, nothing opens).
+  (`--autostart`, nothing opens). The installer and uninstaller log to their own file,
+  `%LOCALAPPDATA%\Lastdrop\logs\install.log` (the app they quit may still be writing
+  `lastdrop.log`).
 - **What it does**, per user, no elevation: asks a running Lastdrop to quit (the settings-changed
   message with `Changes::quit`, again every second: a Lastdrop that has just started holds its
   mutex before it listens) and waits up to 15 s for its mutex; copies itself to
@@ -43,7 +47,9 @@ The release's installer is the app itself: `Lastdrop-Setup.exe`.
   file); writes `Lastdrop.lnk` in the Start menu's Programs folder and the "Installed apps" entry
   (`HKCU\…\Uninstall\Lastdrop`: name, version, publisher 2Fivers (Adinosaur AB in 0.1.0; the
   next install or update rewrites it), icon, folder, size, `UninstallString` =
-  `"…\lastdrop.exe" --uninstall`, `QuietUninstallString` = the same with `--quiet`); points "Start with Windows" at the installed copy when it was on for another copy;
+  `"…\lastdrop.exe" --uninstall`, `QuietUninstallString` = the same with `--quiet`); points "Start with Windows" at the installed copy when it was on for another copy,
+  and writes it again when the Run value is gone but `settings.json` has it on (an uninstall
+  removes the value and keeps the settings, so after a reinstall the switch and Windows agree);
   starts the installed app and says it is done.
 - **`--uninstall`** (from "Installed apps"): asks, quits the app, removes the Run value (if it is
   the installed copy's), the shortcut and the entry, and has a hidden `cmd.exe` delete the
