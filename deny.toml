@@ -1,0 +1,84 @@
+# cargo-deny: the supply-chain half of the quality bar (docs/ARCHITECTURE.md). CI runs
+# `cargo deny --locked check` (.github/workflows/ci.yml); run the same locally before a PR.
+# Reference: https://embarkstudios.github.io/cargo-deny/
+
+[graph]
+# Lastdrop only runs on Windows: check the graph that is actually built there, not the
+# Linux and macOS backends winit and friends pull in elsewhere.
+targets = ["x86_64-pc-windows-msvc"]
+all-features = false
+
+[advisories]
+# Every RustSec vulnerability fails the check (cargo-deny always denies those); so do
+# advisories that a crate is unmaintained or unsound, and yanked versions.
+unmaintained = "all"
+unsound = "all"
+yanked = "deny"
+# No advisory is ignored. If one ever has to be, list it here with its ID, why it does not
+# apply to Lastdrop, and the issue that tracks removing the ignore.
+ignore = []
+
+[licenses]
+# Lastdrop is MIT OR Apache-2.0. Only licences that can be shipped inside a binary under
+# those terms are allowed: the permissive ones below, each of which needs only its notice
+# kept. A crate offering a choice (e.g. "MIT OR Apache-2.0", "Unlicense OR MIT") passes when
+# any one alternative is allowed, so licences only ever offered as an alternative to one of
+# these (Unlicense, 0BSD, CC0-1.0) are not listed. Copyleft (GPL, LGPL, MPL) is not allowed.
+allow = [
+  "MIT",
+  "Apache-2.0",
+  "BSD-2-Clause",
+  "BSD-3-Clause",
+  "Zlib",
+  # The ICU4X crates (icu_*, zerovec, yoke, tinystr, ...) and unicode-ident: the Unicode
+  # data licence, permissive.
+  "Unicode-3.0",
+  # clipboard-win and error-code (through winit).
+  "BSL-1.0",
+  # webpki-root-certs: Mozilla's root certificates as data, brought by ureq's native-tls
+  # feature (Cargo.toml). Permissive data licence; UreqHttp never selects these roots.
+  "CDLA-Permissive-2.0",
+]
+confidence-threshold = 0.93
+unused-allowed-license = "deny"
+
+# Slint is "GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0".
+# Lastdrop uses it under the Royalty-free Desktop, Mobile, and Web Applications License 2.0
+# (ADR 0001): free for a desktop app under any licence of its own, on the conditions that the
+# About window shows `AboutSlint` and that the app does not expose Slint's APIs
+# (docs/ARCHITECTURE.md, "Slint licence rule"). That licence is allowed for the Slint crates
+# only, never elsewhere, so a new dependency under a custom licence still fails the check.
+exceptions = [
+  { crate = "slint", allow = ["LicenseRef-Slint-Royalty-free-2.0"] },
+  { crate = "slint-build", allow = ["LicenseRef-Slint-Royalty-free-2.0"] },
+  { crate = "slint-macros", allow = ["LicenseRef-Slint-Royalty-free-2.0"] },
+  { crate = "i-slint-backend-selector", allow = ["LicenseRef-Slint-Royalty-free-2.0"] },
+  { crate = "i-slint-backend-winit", allow = ["LicenseRef-Slint-Royalty-free-2.0"] },
+  { crate = "i-slint-common", allow = ["LicenseRef-Slint-Royalty-free-2.0"] },
+  { crate = "i-slint-compiler", allow = ["LicenseRef-Slint-Royalty-free-2.0"] },
+  { crate = "i-slint-core", allow = ["LicenseRef-Slint-Royalty-free-2.0"] },
+  { crate = "i-slint-core-macros", allow = ["LicenseRef-Slint-Royalty-free-2.0"] },
+  { crate = "i-slint-renderer-software", allow = ["LicenseRef-Slint-Royalty-free-2.0"] },
+]
+
+[licenses.private]
+# Our own crates are `publish = false` and carry the workspace licence; they are not
+# third-party code and are not checked here.
+ignore = true
+
+[bans]
+# Two versions of one crate cost build time and binary size but are not a supply-chain
+# risk, and they are usually waiting on an upstream release: report them, do not fail.
+multiple-versions = "warn"
+# A `*` version requirement would undo the exact pins in Cargo.toml. Path dependencies
+# between our own (unpublished) crates have no version and are fine.
+wildcards = "deny"
+allow-wildcard-paths = true
+highlight = "all"
+
+[sources]
+# Everything comes from crates.io: no other registry, no git dependencies.
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+allow-git = []

@@ -1,0 +1,42 @@
+# actions/dependency-review-action (.github/workflows/dependency-review.yml). It looks only at
+# the dependencies a pull request adds or changes, crates (Cargo.lock) and GitHub Actions alike.
+# The licence policy mirrors deny.toml: keep the two in step.
+
+# Fail on a new dependency with a known high or critical vulnerability, in any scope (build
+# scripts and test-only crates run on the developer's machine and in CI too).
+fail-on-severity: high
+fail-on-scopes:
+  - runtime
+  - development
+  - unknown
+
+# The permissive licences of deny.toml's `allow`, which can ship inside a binary licensed
+# MIT OR Apache-2.0. A dependency offering a choice passes when any one alternative is listed.
+allow-licenses:
+  - MIT
+  - Apache-2.0
+  - BSD-2-Clause
+  - BSD-3-Clause
+  - Zlib
+  - Unicode-3.0
+  - BSL-1.0
+  - CDLA-Permissive-2.0
+
+# Exempt from the licence check (vulnerabilities are still checked):
+allow-dependencies-licenses:
+  # Slint, "GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0":
+  # used under the Royalty-free License 2.0 (ADR 0001), which the action cannot match by
+  # name. The same crates as deny.toml's `exceptions`.
+  - pkg:cargo/slint
+  - pkg:cargo/slint-build
+  - pkg:cargo/slint-macros
+  - pkg:cargo/i-slint-backend-selector
+  - pkg:cargo/i-slint-backend-winit
+  - pkg:cargo/i-slint-common
+  - pkg:cargo/i-slint-compiler
+  - pkg:cargo/i-slint-core
+  - pkg:cargo/i-slint-core-macros
+  - pkg:cargo/i-slint-renderer-software
+  # Swatinem/rust-cache is LGPL-3.0. It runs in CI and is never part of what Lastdrop
+  # distributes, so its licence places no terms on the app.
+  - pkg:githubactions/Swatinem/rust-cache

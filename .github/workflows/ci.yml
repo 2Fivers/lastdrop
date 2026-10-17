@@ -1,7 +1,9 @@
 name: ci
 
 # The quality bar of docs/ARCHITECTURE.md: fmt, clippy with every warning an error, the whole
-# test suite and the release binary, on Windows (the only platform Lastdrop runs on).
+# test suite and the release binary, on Windows (the only platform Lastdrop runs on), and
+# cargo-deny over the dependency graph (deny.toml). Dependency review and CodeQL have their
+# own workflows (dependency-review.yml, codeql.yml).
 # Dependency updates come from the organisation's shared Renovate preset (renovate.json), not
 # from a bot configured here.
 
@@ -54,3 +56,28 @@ jobs:
 
       - name: Release build
         run: cargo build --release -p lastdrop --locked
+
+  # Supply chain (deny.toml): RustSec advisories, licences, duplicate versions, sources.
+  deny:
+    name: cargo-deny
+    runs-on: windows-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      # cargo-deny reads the graph through `cargo metadata`, which wants the pinned toolchain.
+      - name: Toolchain from rust-toolchain.toml
+        shell: bash
+        run: |
+          rustup toolchain install --profile minimal
+          rustup show active-toolchain
+
+      # A prebuilt, checksum-verified binary of exactly this version.
+      - uses: taiki-e/install-action@8cca0918f8471c33515202b73f56ab27f2bed283 # v2.87.29
+        with:
+          tool: cargo-deny@0.20.2
+
+      - name: cargo deny check
+        run: cargo deny --locked check
