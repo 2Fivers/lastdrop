@@ -1,10 +1,11 @@
-# yaml-language-server: $schema=https://aka.ms/winget-manifest.defaultLocale.1.6.0.schema.json
+# yaml-language-server: $schema=https://aka.ms/winget-manifest.defaultLocale.1.12.0.schema.json
 PackageIdentifier: 2Fivers.Lastdrop
 PackageVersion: {{VERSION}}
 PackageLocale: en-US
 Publisher: 2Fivers
 PublisherUrl: https://github.com/2Fivers
 PublisherSupportUrl: https://github.com/2Fivers/lastdrop/issues
+PrivacyUrl: https://github.com/2Fivers/lastdrop/blob/main/PRIVACY.md
 Author: 2Fivers
 PackageName: Lastdrop
 PackageUrl: https://github.com/2Fivers/lastdrop
@@ -15,8 +16,12 @@ ShortDescription: How much AI is left in the tank, one click away.
 Description: |-
   Lastdrop is a Windows 11 tray app that shows your remaining usage across AI services without
   opening each service's usage page: what is left, when it resets, what you used recently and
-  whether your current pace will last until the next reset. Everything is read and stored
-  locally.
+  whether your current pace will last until the next reset.
+
+  It reuses the sign-ins of the tools you already have (Claude Code, Codex, the GitHub CLI,
+  Cursor and others) and sends each one only to that service's own usage API. Apart from a daily
+  update check against GitHub, which can be turned off, nothing else leaves your PC: no
+  telemetry, and the history and settings stay local.
 Moniker: lastdrop
 Tags:
   - ai
@@ -27,4 +32,4 @@ Tags:
   - taskbar
 ReleaseNotesUrl: https://github.com/2Fivers/lastdrop/releases/tag/v{{VERSION}}
 ManifestType: defaultLocale
-ManifestVersion: 1.6.0
+ManifestVersion: 1.12.0
