@@ -646,6 +646,7 @@ catalogue! {
         AboutTagline = "about.tagline",
         AboutCopyright = "about.copyright",
         AboutCredits = "about.credits",
+        AboutSupport = "about.support",
         AboutClose = "about.close",
     }
 }

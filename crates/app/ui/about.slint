@@ -1,7 +1,8 @@
 // About Lastdrop. Shows Slint's AboutSlint widget: the condition of Slint's Royalty-free License
 // 2.0 for a closed-source desktop app (ADR 0001, ARCHITECTURE "App"). Reachable from the tray
 // menu ("About Lastdrop", R§10). Every text but AboutSlint's own comes from Rust (`texts`, the
-// `about.*` strings) in the chosen language.
+// `about.*` strings) in the chosen language. The "Support Lastdrop" link opens the README's
+// support section in the browser, on the user's click only.
 
 import { AboutSlint, Button, Palette } from "std-widgets.slint";
 
@@ -14,7 +15,67 @@ export struct AboutTexts {
     copyright: string,
     // Third-party credit line (open-source components and their licences).
     credits: string,
+    // The "Support Lastdrop" link (R§10).
+    support: string,
     close: string,
+}
+
+// A small text link (accent colour, 12 px like the credits) with a decorative heart after it,
+// which screen readers skip. Tab reaches it; Enter or Space activates it, like a button.
+component SupportLink inherits Rectangle {
+    in property <string> text;
+    callback clicked();
+    accessible-role: button;
+    accessible-label: root.text;
+    accessible-action-default => {
+        root.clicked();
+    }
+    forward-focus: focus;
+    min-width: row.preferred-width;
+    preferred-width: row.preferred-width;
+    height: 20px;
+
+    property <color> fg: touch.pressed ? Palette.foreground.with-alpha(0.62) : Palette.accent-background;
+
+    row := HorizontalLayout {
+        spacing: 4px;
+        Text {
+            text: root.text;
+            font-size: 12px;
+            color: root.fg;
+            vertical-alignment: center;
+        }
+        Text {
+            text: "♥";
+            font-size: 12px;
+            color: root.fg;
+            vertical-alignment: center;
+            accessible-role: none;
+        }
+    }
+    touch := TouchArea {
+        mouse-cursor: pointer;
+        clicked => {
+            root.clicked();
+        }
+    }
+    focus := FocusScope {
+        focus-on-click: false;
+        key-pressed(event) => {
+            if (event.text == Key.Return || event.text == " ") {
+                root.clicked();
+                return accept;
+            }
+            reject
+        }
+    }
+    if focus.has-focus: Rectangle {
+        x: -3px;
+        width: parent.width + 6px;
+        border-width: 1px;
+        border-radius: 3px;
+        border-color: Palette.foreground;
+    }
 }
 
 export component AboutWindow inherits Window {
@@ -28,6 +89,13 @@ export component AboutWindow inherits Window {
     out property <length> content-height: layout.preferred-height;
     // `close` would shadow Window's builtin close() (Slint 1.18), hence `dismiss`.
     callback dismiss();
+    // The "Support Lastdrop" link: the README's support section in the browser.
+    callback support();
+
+    // The --preview-about render with --dark. The window itself follows Windows' colour mode.
+    public function use-dark-scheme() {
+        Palette.color-scheme = ColorScheme.dark;
+    }
 
     layout := VerticalLayout {
         padding: 24px;
@@ -55,8 +123,20 @@ export component AboutWindow inherits Window {
             color: Palette.foreground.with-alpha(0.62);
             wrap: word-wrap;
         }
+        // The support link on the left, discreet, across from Close.
         HorizontalLayout {
-            alignment: end;
+            VerticalLayout {
+                alignment: center;
+                SupportLink {
+                    text: root.texts.support;
+                    clicked => {
+                        root.support();
+                    }
+                }
+            }
+            Rectangle {
+                horizontal-stretch: 1;
+            }
             Button {
                 text: root.texts.close;
                 clicked => {

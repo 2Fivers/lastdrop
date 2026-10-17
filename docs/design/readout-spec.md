@@ -791,6 +791,11 @@ No fade animation in M1.
 - Context menu (Win32 popup menu, dark-mode aware as in the spike): **Refresh now** · **Pause updates** ▸ (for 1 hour /
   until I resume) · **Taskbar readout** ▸ (Auto / Pinned meters… / Off) · **Settings…** · **About Lastdrop**
   (required by Slint's licence) · **Quit Lastdrop**.
+- About Lastdrop: version, tagline, copyright, Slint's `AboutSlint`, the credits, then a row with a small
+  **Support Lastdrop ♥** link on the left (accent text, 12 px) and **Close** on the right. The link opens
+  `https://github.com/2Fivers/lastdrop#support-lastdrop` (the README's section listing GitHub Sponsors and Buy Me a
+  Coffee) in the default browser, on the user's click only, and leaves the window open. It is a button to
+  UI Automation, named without the heart, reached with Tab before Close and activated with Enter or Space.
 - Opening the flyout hides the hover card. The hover and pressed plates follow the pointer only; the readout has no
   "open" state while the flyout is shown.
 

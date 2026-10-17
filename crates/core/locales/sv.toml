@@ -497,6 +497,7 @@ lowercase_names = true
 "about.copyright" = "© 2026 Adinosaur AB. Öppen källkod under licensen MIT eller Apache-2.0."
 # The licence names stay as their authors wrote them.
 "about.credits" = "Byggt med Slint (Royalty-free License 2.0), jiff, serde, ureq och windows-rs (MIT / Apache-2.0). Ingen telemetri: Lastdrop pratar bara med de tjänster vars användning den läser."
+"about.support" = "Stöd Lastdrop"
 "about.close" = "Stäng"
 
 # ---- Usage history window (charts-spec)

@@ -1,7 +1,7 @@
-//! Handing things to the shell on the user's request: a service's usage page in the default
-//! browser (F§9 "Enter on a card"), and the vendor's own sign-in in a visible console window
-//! (F§4.3 `Open sign-in…`), and the themes folder in File Explorer (themes-spec §4). Lastdrop
-//! never reads what any of them does.
+//! Handing things to the shell on the user's request: a service's usage page or About's support
+//! page in the default browser (F§9 "Enter on a card", R§10), and the vendor's own sign-in in a
+//! visible console window (F§4.3 `Open sign-in…`), and the themes folder in File Explorer
+//! (themes-spec §4). Lastdrop never reads what any of them does.
 //!
 //! Threading: main thread, from a flyout action (which then hides the flyout, F§1.4).
 
@@ -24,9 +24,10 @@ use windows::core::{Error, PCWSTR, w};
 /// Longest URL handed to the shell.
 const MAX_URL_LEN: usize = 2048;
 
-/// Opens `url` in the default browser (`ShellExecuteW` "open"). Only `https://` URLs from
-/// Lastdrop's own provider table are accepted (`Provider::usage_page`); anything else is an
-/// `E_INVALIDARG` error, so nothing user-supplied or read from another tool's files is launched.
+/// Opens `url` in the default browser (`ShellExecuteW` "open"). Only `https://` URLs built into
+/// Lastdrop are passed (its provider table's `Provider::usage_page`, About's support page), and
+/// only well-formed ones are accepted; anything else is an `E_INVALIDARG` error, so nothing
+/// user-supplied or read from another tool's files is launched.
 ///
 /// "Well-formed" here is strict: lower-case `https://`, a host without user info, printable ASCII
 /// only, none of `"`, `<`, `>`, `\`, `^`, `{`, `|`, `}` or a backtick, and no spaces.

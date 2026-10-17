@@ -443,6 +443,7 @@ pub(crate) fn about_texts(strings: &dyn Strings) -> ui::AboutTexts {
         tagline: t(Msg::AboutTagline),
         copyright: t(Msg::AboutCopyright),
         credits: t(Msg::AboutCredits),
+        support: t(Msg::AboutSupport),
         close: t(Msg::AboutClose),
     }
 }
@@ -462,6 +463,7 @@ fn open_about(paths: &Paths) -> Result<(), AppError> {
             let window = wiring::create_window(false, ui::AboutWindow::new)?;
             window.set_texts(about_texts(language.strings()));
             window.on_dismiss(close_about);
+            window.on_support(open_support_page);
             window.window().on_close_requested(|| {
                 close_about();
                 slint::CloseRequestResponse::HideWindow
@@ -476,6 +478,18 @@ fn open_about(paths: &Paths) -> Result<(), AppError> {
     }
     bring_to_front(window.as_weak());
     Ok(())
+}
+
+/// The README's "Support Lastdrop" section (GitHub Sponsors, Buy Me a Coffee): one stable address
+/// for every way to support Lastdrop, whichever of them exist.
+const SUPPORT_URL: &str = "https://github.com/2Fivers/lastdrop#support-lastdrop";
+
+/// About's "Support Lastdrop" link (R§10): the support page in the browser, on the user's click
+/// only. The window stays open.
+fn open_support_page() {
+    if let Err(e) = lastdrop_win::shell::open_url(SUPPORT_URL) {
+        log::warn!("cannot open the support page: {e}");
+    }
 }
 
 /// Closes the about window and releases it ([`release_later`]). The last window closing ends the
