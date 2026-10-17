@@ -1,10 +1,10 @@
 # Releasing Lastdrop
 
-How a version goes from main to users: GitHub's runners build it from a tag, a maintainer tests
-the draft and publishes it, and winget picks it up. The mechanics are in
+How a version goes from main to users, all in the browser: GitHub's runners build it, a
+maintainer tests the draft and publishes it, and winget picks it up. The mechanics are in
 [updates-spec](design/updates-spec.md) §2–5.
 
-## 1. Before the tag
+## 1. Before the release
 
 - The version is bumped in the workspace `Cargo.toml` (`[workspace.package] version`) through a
   pull request, and main is green.
@@ -12,36 +12,33 @@ the draft and publishes it, and winget picks it up. The mechanics are in
   budget, a 24-hour soak with no growth in memory, GDI or USER handles, and the manual
   multi-monitor matrix.
 
-## 2. Tag and build
+## 2. Build the draft
 
-```
-pwsh tools\release\release.ps1 -Version 0.1.0
-```
+On GitHub: **Actions ▸ release ▸ Run workflow**, *Use workflow from* **main**, *Version*
+`0.1.0`, **Run workflow**. [release.yml](../.github/workflows/release.yml):
 
-It checks the version, a clean tree and that main equals origin/main, then pushes the tag
-`v0.1.0` (only repository admins may create `v*` tags). The tag starts
-[release.yml](../.github/workflows/release.yml), which:
-
-1. checks that the tag names the workspace version and a commit on main;
-2. builds `lastdrop.exe` from the tagged sources (no cache) and copies it to
-   `Lastdrop-Setup.exe`, writes `SHA256SUMS`;
+1. checks that the version is the workspace version, that it runs on main and that the tag
+   `v0.1.0` does not exist yet;
+2. builds `lastdrop.exe` from main's commit (no cache) and copies it to `Lastdrop-Setup.exe`,
+   writes `SHA256SUMS`;
 3. runs [install-test.ps1](../tools/release/install-test.ps1) on the runner, which is a clean
    Windows user: `--install --quiet` and the "Installed apps" entry's `QuietUninstallString`,
    exactly what winget runs, with the program, shortcut, registry entry and running app checked
    after each step;
 4. attests the installer's build provenance (`gh attestation verify` checks it);
-5. creates a **draft** release with both files. Running Lastdrops see published releases only.
+5. creates a **draft** release `v0.1.0` with both files, pointing at the commit it built. The
+   tag does not exist yet. Running Lastdrops see published releases only.
 
-The same workflow runs as a dry run (steps 1–3, no attestation, no release) on pull requests
-that touch the installer or the release tooling, and by hand from the Actions tab.
+Run without a version, it is a dry run (steps 1–3, no attestation, no release); pull requests
+that touch the installer or the release tooling run that dry run too.
+
+A draft that turns out bad is deleted on GitHub (the release's *Delete*); run the workflow again
+after the fix is on main.
 
 ## 3. Test the draft
 
-Download the draft's installer (drafts are visible to maintainers only):
-
-```
-gh release download v0.1.0 --repo 2Fivers/lastdrop --pattern Lastdrop-Setup.exe --dir %TEMP%\lastdrop-rc
-```
+Download the draft's `Lastdrop-Setup.exe` from its page under **Releases** (drafts are visible
+to maintainers only).
 
 Windows Sandbox would be the easy clean machine, but it needs Windows 11 Pro or Enterprise. The
 installer is per user, so a second local account is a clean machine for Lastdrop too.
@@ -77,14 +74,17 @@ installer is per user, so a second local account is a clean machine for Lastdrop
 flyout footer offers the new version; *Install* downloads it, checks it and restarts Lastdrop
 on the new version without opening anything.
 
-Then publish the draft on GitHub (*Edit ▸ Publish release*).
+Then publish the draft on GitHub (*Edit ▸ Publish release*). Publishing creates the tag
+`v0.1.0` on the built commit; only repository admins may create `v*` tags (the "release tags"
+ruleset). A published release cannot be changed (release immutability): a fix is a new
+version.
 
 ## 4. winget
 
-Once the release is published:
+The one step outside the browser, for now. Once the release is published:
 
 ```
-pwsh tools\release\release.ps1 -Version 0.1.0 -Winget
+pwsh tools\release\winget.ps1 -Version 0.1.0
 ```
 
 It downloads the published files, checks the checksum and the provenance attestation, and
