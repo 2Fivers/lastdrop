@@ -8,8 +8,8 @@ workflow runs it on a fresh runner. On your own account it would replace your in
 1. `Lastdrop-Setup.exe --install --quiet` exits 0; the program, the Start menu shortcut and the
    "Installed apps" entry (DisplayVersion = -Version, publisher, QuietUninstallString) exist, and
    the installed app is running.
-2. The entry's QuietUninstallString exits 0; the entry and the shortcut are gone, and shortly
-   after the app has quit and the install folder is removed.
+2. The entry's QuietUninstallString exits 0; the entry and the shortcut are gone, the app has
+   quit, and shortly after the install folder is removed.
 
 .EXAMPLE
 pwsh tools\release\install-test.ps1 -Setup dist\Lastdrop-Setup.exe -Version 0.1.0
@@ -74,14 +74,9 @@ if ($quiet) {
     Check ($code -eq 0) "the QuietUninstallString exits 0 (got $code)"
     Check (-not (Test-Path $key)) "the Installed apps entry is gone"
     Check (-not (Test-Path $shortcut)) "the Start menu shortcut is gone"
-    # The uninstaller waits for the app's mutex, which the app closes before its threads end and
-    # its writes reach the disk (wiring::shutdown): the process itself may outlive it a moment.
-    $quit = (Installed-App).Count -eq 0
-    for ($i = 0; $i -lt 30 -and -not $quit; $i++) {
-        Start-Sleep -Milliseconds 500
-        $quit = (Installed-App).Count -eq 0
-    }
-    Check $quit "the app has quit"
+    # The uninstaller waits for the app's mutex and then for its process to end (updates-spec §2),
+    # so nothing runs the installed program any more once it has returned.
+    Check ((Installed-App).Count -eq 0) "the app has quit when the uninstaller returns"
     # A hidden cmd.exe removes the folder two seconds after the uninstaller ends.
     $gone = $false
     for ($i = 0; $i -lt 30 -and -not $gone; $i++) {

@@ -42,7 +42,15 @@ The release's installer is the app itself: `Lastdrop-Setup.exe`.
   `lastdrop.log`).
 - **What it does**, per user, no elevation: asks a running Lastdrop to quit (the settings-changed
   message with `Changes::quit`, again every second: a Lastdrop that has just started holds its
-  mutex before it listens) and waits up to 15 s for its mutex; copies itself to
+  mutex before it listens) and waits up to 15 s in all for its mutex to go and then for every
+  other process that runs the installed `lastdrop.exe` to end (a process snapshot, then a wait on
+  each one's handle): the app closes its mutex at the end of its shutdown, a moment before its
+  process ends, and until then the file cannot be replaced nor its folder removed. While one
+  still runs it checks the mutex again every second, so a Lastdrop that was only starting is
+  asked to quit too. An open Settings, Theme Studio, Usage history or About window (the dialog
+  process) is not asked to quit, so it keeps the installer waiting until the user closes it, and
+  after 15 s the installer stops with "Lastdrop is still running", which says to close those
+  windows. Then it copies itself to
   `%LOCALAPPDATA%\Programs\Lastdrop\lastdrop.exe` (retrying for 10 s while a scanner holds the
   file); writes `Lastdrop.lnk` in the Start menu's Programs folder and the "Installed apps" entry
   (`HKCU\…\Uninstall\Lastdrop`: name, version, publisher 2Fivers (Adinosaur AB in 0.1.0; the
@@ -51,9 +59,10 @@ The release's installer is the app itself: `Lastdrop-Setup.exe`.
   and writes it again when the Run value is gone but `settings.json` has it on (an uninstall
   removes the value and keeps the settings, so after a reinstall the switch and Windows agree);
   starts the installed app and says it is done.
-- **`--uninstall`** (from "Installed apps"): asks, quits the app, removes the Run value (if it is
-  the installed copy's), the shortcut and the entry, and has a hidden `cmd.exe` delete the
-  install folder two seconds after the uninstaller ends. Settings, history, themes and logs in
+- **`--uninstall`** (from "Installed apps"): asks, quits the app and waits for it as above (not
+  for itself: it runs from the installed `lastdrop.exe`), removes the Run value (if it is the
+  installed copy's), the shortcut and the entry, and has a hidden `cmd.exe` delete the install
+  folder two seconds after the uninstaller ends. Settings, history, themes and logs in
   `%APPDATA%\Lastdrop` and `%LOCALAPPDATA%\Lastdrop` stay. **`--uninstall --quiet`** neither
   asks nor tells: only the exit code and the log.
 - Failures are shown in a message box and the folder is left as it was before the failing step.
@@ -69,8 +78,9 @@ The release's installer is the app itself: `Lastdrop-Setup.exe`.
    `Downloading Lastdrop 0.2.0…` meanwhile.
 2. The installer's size must be the release's and its SHA-256 (BCrypt) the one `SHA256SUMS`
    lists; otherwise it is deleted and a notification says why.
-3. The app starts `Lastdrop-Setup.exe --install --update` and quits. The installer waits for it,
-   replaces `lastdrop.exe`, and starts it again with `--autostart` (nothing opens).
+3. The app starts `Lastdrop-Setup.exe --install --update` and quits. The installer waits for its
+   process to end (§2), replaces `lastdrop.exe`, and starts it again with `--autostart` (nothing
+   opens).
 
 The checksum guards against a broken or truncated download, not against a compromised release
 repository; Authenticode signing (§4) is what will. Once releases are signed, the app should also
