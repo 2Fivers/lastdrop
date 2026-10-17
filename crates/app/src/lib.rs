@@ -113,6 +113,9 @@ pub struct Args {
     pub update: bool,
     /// `--uninstall`: ask, then uninstall (the "Installed apps" entry runs this).
     pub uninstall: bool,
+    /// `--quiet` (with `--install` or `--uninstall`): no questions and no message boxes; the exit
+    /// code and the log say how it went. For package managers such as winget (updates-spec §2).
+    pub quiet: bool,
     /// `--theme <id>`: the preview's theme (a built-in id or a user theme's); default: the
     /// settings' (the Windows theme with `--demo`).
     pub theme: Option<String>,
@@ -145,6 +148,7 @@ impl Args {
                 Some("--install") => out.install = true,
                 Some("--update") => out.update = true,
                 Some("--uninstall") => out.uninstall = true,
+                Some("--quiet") => out.quiet = true,
                 Some("--bench") => out.bench = iter.next().map(PathBuf::from),
                 Some("--preview-flyout") => out.preview_flyout = iter.next().map(PathBuf::from),
                 Some("--preview-hovercard") => {
@@ -300,6 +304,17 @@ mod tests {
         let with_autostart = args(&["x", "--autostart", "--settings"]);
         assert!(with_autostart.autostart);
         assert_eq!(with_autostart.dialog, Some(DialogKind::Settings));
+    }
+
+    #[test]
+    fn installer_flags() {
+        // What winget's manifest (packaging/winget) and the "Installed apps" entry run.
+        let install = args(&["Lastdrop-Setup.exe", "--install", "--quiet"]);
+        assert!(install.install && install.quiet && !install.update && !install.uninstall);
+        let uninstall = args(&["lastdrop.exe", "--uninstall", "--quiet"]);
+        assert!(uninstall.uninstall && uninstall.quiet && !uninstall.install);
+        let update = args(&["Lastdrop-Setup.exe", "--install", "--update"]);
+        assert!(update.install && update.update && !update.quiet);
     }
 
     #[test]

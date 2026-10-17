@@ -53,7 +53,8 @@ pub struct UninstallEntry<'a> {
     pub name: &'a str,
     /// `DisplayVersion`.
     pub version: &'a str,
-    /// The installed program: `DisplayIcon`, and `UninstallString` as `"<exe>" --uninstall`.
+    /// The installed program: `DisplayIcon`, `UninstallString` as `"<exe>" --uninstall` and
+    /// `QuietUninstallString` (what winget runs) as `"<exe>" --uninstall --quiet`.
     pub exe: &'a Path,
     /// `InstallLocation`.
     pub folder: &'a Path,
@@ -102,6 +103,8 @@ pub fn write_uninstall_entry(entry: &UninstallEntry<'_>) -> std::io::Result<()> 
     let mut uninstall = std::ffi::OsString::from("\"");
     uninstall.push(entry.exe.as_os_str());
     uninstall.push("\" --uninstall");
+    let mut quiet_uninstall = uninstall.clone();
+    quiet_uninstall.push(" --quiet");
     let result = (|| {
         set_text("DisplayName", entry.name.as_ref())?;
         set_text("DisplayVersion", entry.version.as_ref())?;
@@ -109,6 +112,7 @@ pub fn write_uninstall_entry(entry: &UninstallEntry<'_>) -> std::io::Result<()> 
         set_text("DisplayIcon", entry.exe.as_os_str())?;
         set_text("InstallLocation", entry.folder.as_os_str())?;
         set_text("UninstallString", &uninstall)?;
+        set_text("QuietUninstallString", &quiet_uninstall)?;
         set_dword("NoModify", 1)?;
         set_dword("NoRepair", 1)?;
         set_dword("EstimatedSize", entry.size_kb)

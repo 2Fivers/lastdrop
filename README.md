@@ -19,7 +19,7 @@ current pace will last until the next reset.
 
 ## Status
 
-In development, not yet distributed. Built in Rust with Slint's software renderer, the stack
+In development; the first release (v0.1) is being prepared. Built in Rust with Slint's software renderer, the stack
 the spike picked by measuring idle memory and flyout latency
 ([ADR 0001](docs/adr/0001-rust-and-slint-software-renderer.md)).
 
@@ -32,12 +32,50 @@ accounts, one per config folder. Services with a simple balance or usage API are
 JSON file (DeepSeek, ElevenLabs and OpenRouter come with it). A usage history window charts each
 limit over the last 7, 30 or 90 days, the use per day and the hours of the week with the most use.
 
+## Install
+
+Once the first release is out:
+
+- **winget:** `winget install 2Fivers.Lastdrop`
+- **By hand:** download `Lastdrop-Setup.exe` from [Releases](https://github.com/2Fivers/lastdrop/releases)
+  and run it. It installs for the current Windows user, no administrator rights needed, and
+  updates itself from the same releases. Uninstall it from Settings ▸ Apps ▸ Installed apps.
+
 ## Plan
 
 See [docs/ROADMAP.md](docs/ROADMAP.md) for providers, features, milestones and what is built,
 and [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for how the app is put together.
 
+## Contributing
+
+Issues and pull requests are welcome; read [CONTRIBUTING.md](CONTRIBUTING.md) first. Report
+security problems privately as described in [SECURITY.md](SECURITY.md), not in an issue.
+
+## Support Lastdrop
+
+Lastdrop is free. If it saves you a few clicks a day, you can support its development through
+[GitHub Sponsors](https://github.com/sponsors/2Fivers) or
+[Buy Me a Coffee](https://buymeacoffee.com/2fivers).
+
+## Disclaimer
+
+Lastdrop is an independent project and is not affiliated with, endorsed by or sponsored by
+Anthropic, OpenAI, GitHub, Cursor, Google, xAI or any other service it reads. Product names are
+the trademarks of their owners and are used only to say which service a reading comes from.
+
 ## License
 
-Proprietary. Copyright © 2026 Adinosaur AB, all rights reserved; distribution is not
-permitted. See [LICENSE](LICENSE).
+Copyright © 2026 Adinosaur AB. Licensed under either of
+
+- Apache License, Version 2.0 ([LICENSE-APACHE](LICENSE-APACHE))
+- MIT license ([LICENSE-MIT](LICENSE-MIT))
+
+at your option.
+
+Unless you explicitly state otherwise, any contribution intentionally submitted for inclusion
+in Lastdrop by you, as defined in the Apache-2.0 license, shall be dual licensed as above,
+without any additional terms or conditions.
+
+Lastdrop's user interface is built with [Slint](https://slint.dev), used under the Slint
+Royalty-free License 2.0. A build you distribute, a fork included, must keep the About window's
+`AboutSlint` widget ([ARCHITECTURE](docs/ARCHITECTURE.md), "Slint licence rule").

@@ -45,11 +45,12 @@ fn main() -> ExitCode {
     // Installing and uninstalling (updates-spec §2): the release's Lastdrop-Setup.exe is this
     // program; under that name, or with --install / --uninstall, it installs or uninstalls.
     if args.uninstall {
-        return install::run(install::Mode::Uninstall);
+        return install::run(install::Mode::Uninstall { quiet: args.quiet });
     }
     if args.install {
         return install::run(install::Mode::Install {
             update: args.update,
+            quiet: args.quiet,
         });
     }
     if std::env::current_exe().is_ok_and(|exe| install::is_setup(&exe)) {

@@ -10,6 +10,8 @@ Builds a Lastdrop release and publishes it to the public releases repository
 4. Signs it when a certificate is configured (below); otherwise warns and goes on unsigned.
 5. Writes dist\SHA256SUMS, which the app checks the download against.
 6. Creates the GitHub release v<Version> in -Repo with both files: a draft unless -Publish.
+7. Writes the winget manifests for this release to dist\winget (from packaging\winget), ready
+   for `wingetcreate submit dist\winget` once the release is published.
 
 Signing (Authenticode, SHA-256, RFC 3161 timestamp) uses signtool.exe from the Windows SDK and
 one of these, in this order:
@@ -25,7 +27,7 @@ pwsh tools\release\release.ps1 -Version 0.1.0 -Publish
 [CmdletBinding()]
 param(
     [Parameter(Mandatory)] [string] $Version,
-    [string] $Repo = "2Fivers/lastdrop-releases",
+    [string] $Repo = "2Fivers/lastdrop",
     [string] $NotesFile,
     [switch] $Publish,
     [switch] $SkipChecks
@@ -107,6 +109,18 @@ try {
     } else {
         Write-Host "Draft $tag created in ${Repo}: publish it on GitHub (or run again with -Publish) when it is ready."
     }
+
+    # 7. The winget manifests (packaging\winget, LF line ends). They point at the release's
+    # download URL, so they are submitted only once the release is published.
+    $winget = Join-Path $dist "winget"
+    New-Item -ItemType Directory $winget | Out-Null
+    $date = (Get-Date).ToUniversalTime().ToString("yyyy-MM-dd")
+    foreach ($template in Get-ChildItem (Join-Path $root "packaging\winget") -Filter "*.yaml") {
+        $text = [System.IO.File]::ReadAllText($template.FullName).
+            Replace("{{VERSION}}", $Version).Replace("{{SHA256}}", $hash.ToUpperInvariant()).Replace("{{DATE}}", $date)
+        [System.IO.File]::WriteAllText((Join-Path $winget $template.Name), $text.Replace("`r`n", "`n"))
+    }
+    Write-Host "winget manifests in $winget. Once $tag is published: wingetcreate submit `"$winget`""
 } finally {
     Pop-Location
 }

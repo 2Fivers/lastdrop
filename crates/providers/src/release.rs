@@ -179,7 +179,7 @@ mod tests {
         fn request(&self, request: &HttpRequest) -> Result<HttpResponse, HttpError> {
             assert_eq!(
                 request.url,
-                "https://api.github.com/repos/2Fivers/lastdrop-releases/releases/latest"
+                "https://api.github.com/repos/2Fivers/lastdrop/releases/latest"
             );
             Ok(HttpResponse::new(self.0, self.1))
         }
@@ -187,7 +187,7 @@ mod tests {
 
     #[test]
     fn latest_reads_the_release_or_none() {
-        let repo = "2Fivers/lastdrop-releases";
+        let repo = "2Fivers/lastdrop";
         assert_eq!(
             latest(&Answer(200, "{}"), repo).expect("ok"),
             Latest::Release(b"{}".to_vec())
@@ -202,7 +202,7 @@ mod tests {
     #[test]
     fn downloads_go_to_github_only() {
         assert!(allowed_download_url(
-            "https://github.com/2Fivers/lastdrop-releases/releases/download/v0.2.0/Lastdrop-Setup.exe"
+            "https://github.com/2Fivers/lastdrop/releases/download/v0.2.0/Lastdrop-Setup.exe"
         ));
         assert!(allowed_download_url(
             "https://objects.githubusercontent.com/github-production-release-asset/1?x=y"

@@ -1,0 +1,40 @@
+# Who reviews what. With "Require review from Code Owners" on in main's ruleset, a pull request
+# that touches these paths cannot merge without a code owner's approval. The paths below the
+# catch-all are the ones where a small change can run code on a maintainer's machine, change
+# what CI or a release does, or send a credential somewhere else: review them line by line, and
+# never build such a pull request outside CI before it is reviewed.
+
+*                                   @pRob3
+
+# Build-time code and toolchain: build scripts, cargo config (runner, linker, rustflags), the
+# dependency graph.
+**/build.rs                         @pRob3
+/.cargo/                            @pRob3
+/Cargo.toml                         @pRob3
+/Cargo.lock                         @pRob3
+**/Cargo.toml                       @pRob3
+/rust-toolchain.toml                @pRob3
+/renovate.json                      @pRob3
+
+# CI, repository settings, funding and policy.
+/.github/                           @pRob3
+/SECURITY.md                        @pRob3
+/LICENSE-APACHE                     @pRob3
+/LICENSE-MIT                        @pRob3
+
+# Credentials: where they are read, kept and sent.
+/crates/providers/                  @pRob3
+/crates/app/providers/              @pRob3
+/crates/core/src/secret.rs          @pRob3
+/crates/core/src/custom.rs          @pRob3
+/crates/app/src/custom_services.rs  @pRob3
+/crates/app/src/settings_accounts.rs @pRob3
+/crates/app/src/logger.rs           @pRob3
+
+# Updates, installer and releases.
+/crates/core/src/update.rs          @pRob3
+/crates/app/src/updater.rs          @pRob3
+/crates/app/src/install.rs          @pRob3
+/crates/win/src/install.rs          @pRob3
+/tools/release/                     @pRob3
+/packaging/                         @pRob3
