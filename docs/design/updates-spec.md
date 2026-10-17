@@ -41,10 +41,12 @@ The release's installer is the app itself: `Lastdrop-Setup.exe`.
   mutex before it listens) and waits up to 15 s in all for its mutex to go and then for every
   other process that runs the installed `lastdrop.exe` to end (a process snapshot, then a wait on
   each one's handle): the app closes its mutex at the end of its shutdown, a moment before its
-  process ends, and until then the file cannot be replaced nor its folder removed. An open
-  Settings, Usage history or About window (the dialog process) is not asked to quit, so it keeps
-  the installer waiting until the user closes it, and after 15 s the installer stops with
-  "Lastdrop is still running", which says to close those windows. Then it copies itself to
+  process ends, and until then the file cannot be replaced nor its folder removed. While one
+  still runs it checks the mutex again every second, so a Lastdrop that was only starting is
+  asked to quit too. An open Settings, Theme Studio, Usage history or About window (the dialog
+  process) is not asked to quit, so it keeps the installer waiting until the user closes it, and
+  after 15 s the installer stops with "Lastdrop is still running", which says to close those
+  windows. Then it copies itself to
   `%LOCALAPPDATA%\Programs\Lastdrop\lastdrop.exe` (retrying for 10 s while a scanner holds the
   file); writes `Lastdrop.lnk` in the Start menu's Programs folder and the "Installed apps" entry
   (`HKCU\…\Uninstall\Lastdrop`: name, version, publisher 2Fivers (Adinosaur AB in 0.1.0; the

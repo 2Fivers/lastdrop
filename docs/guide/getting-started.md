@@ -132,8 +132,9 @@ If you installed with winget, `winget upgrade lastdrop` works too.
 
 Uninstall Lastdrop from **Settings ▸ Apps ▸ Installed apps** in Windows. It quits Lastdrop,
 removes the program, the Start menu shortcut and the start-with-Windows entry. Close Lastdrop's
-Settings, Usage history and About windows first: the uninstaller waits for them, and after 15
-seconds it stops and says Lastdrop is still running. Updates wait for them the same way.
+windows first (Settings, Theme Studio, Usage history, About): the uninstaller waits for them,
+and after 15 seconds it stops and says Lastdrop is still running. Updates wait for them the same
+way.
 
 Your settings, history, themes and logs stay, in case you install again. API keys you saved stay
 in Windows Credential Manager. To remove those as well, see

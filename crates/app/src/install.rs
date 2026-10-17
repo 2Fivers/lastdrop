@@ -33,7 +33,8 @@ pub const SETUP_STEM: &str = "lastdrop-setup";
 /// How long the installer waits for a running Lastdrop to quit, its process included.
 const QUIT_WAIT: Duration = Duration::from_secs(15);
 
-/// How often it asks again while it waits ([`mutex_gone`]).
+/// How often it asks again, and looks again for the processes, while it waits
+/// ([`quit_running_app`]).
 const QUIT_RESEND: Duration = Duration::from_secs(1);
 
 /// How long it retries replacing a file another process still holds (an anti-virus scan).
@@ -90,9 +91,24 @@ fn strings() -> &'static dyn Strings {
 /// Asks a running Lastdrop to quit and waits, at most [`QUIT_WAIT`] in all, for its mutex to go
 /// and then for every process that runs `exe` (the program about to be replaced or removed) to
 /// end; `false` when one is still running.
+///
+/// While a process still runs it checks the mutex again every [`QUIT_RESEND`]: a Lastdrop that
+/// was just starting when the mutex was first checked takes it later, and is asked to quit then.
 fn quit_running_app(exe: &Path) -> bool {
     let deadline = Instant::now() + QUIT_WAIT;
-    mutex_gone(deadline) && processes_ended(exe, deadline)
+    while mutex_gone(deadline) {
+        let until = deadline.min(Instant::now() + QUIT_RESEND);
+        let Some(pid) = still_running(exe, until) else {
+            return true;
+        };
+        if Instant::now() >= deadline {
+            log::warn!("install: process {pid} still runs {}", exe.display());
+            return false;
+        }
+        // A failed wait returns at once: look again a moment later, not in a busy loop.
+        std::thread::sleep(until.saturating_duration_since(Instant::now()));
+    }
+    false
 }
 
 /// Asks a running Lastdrop to quit until its mutex is gone, at most until `deadline`; `false`
@@ -129,15 +145,16 @@ fn mutex_gone(deadline: Instant) -> bool {
     false
 }
 
-/// Waits, at most until `deadline`, for every process but this one that runs `exe` to end;
-/// `false` when one still runs.
+/// Waits, at most until `until`, for every process but this one that runs `exe` to end; the id
+/// of one that still runs then, `None` when none does.
 ///
 /// The app closes its mutex at the end of its shutdown, but its process ends a moment later (the
 /// log flushed, the threads and DLLs torn down), and until then `exe` cannot be replaced nor its
-/// folder removed. A settings, usage history or about window started from `exe` (the dialog
-/// process) has a mutex of its own and is not asked to quit, so it keeps the installer waiting
-/// until the user closes it. When the processes cannot be listed, the mutex is all it waits for.
-fn processes_ended(exe: &Path, deadline: Instant) -> bool {
+/// folder removed. A Settings, Theme Studio, Usage history or About window started from `exe`
+/// (the dialog process) has a mutex of its own and is not asked to quit, so it keeps the
+/// installer waiting until the user closes it. When the processes cannot be listed, the mutex is
+/// all the installer waits for.
+fn still_running(exe: &Path, until: Instant) -> Option<u32> {
     let running = match win_install::processes_running(exe) {
         Ok(running) => running,
         Err(e) => {
@@ -145,20 +162,17 @@ fn processes_ended(exe: &Path, deadline: Instant) -> bool {
                 "install: cannot list the processes running {}: {e}",
                 exe.display()
             );
-            return true;
+            return None;
         }
     };
-    running.iter().all(|process| {
+    running.iter().find_map(|process| {
         let pid = process.pid();
-        match process.wait(deadline.saturating_duration_since(Instant::now())) {
-            Ok(true) => true,
-            Ok(false) => {
-                log::warn!("install: process {pid} still runs {}", exe.display());
-                false
-            }
+        match process.wait(until.saturating_duration_since(Instant::now())) {
+            Ok(true) => None,
+            Ok(false) => Some(pid),
             Err(e) => {
                 log::warn!("install: cannot wait for process {pid}: {e}");
-                false
+                Some(pid)
             }
         }
     })
@@ -396,18 +410,15 @@ mod tests {
 
     #[test]
     fn the_installer_never_waits_for_itself() {
-        // The uninstaller runs from the program it removes: it would wait for itself until the
-        // deadline and then fail.
+        // The uninstaller runs from the program it removes. Another run of this test program may
+        // be found; this one never is.
         let me = std::env::current_exe().expect("the test program");
-        assert!(processes_ended(
-            &me,
-            Instant::now() + Duration::from_secs(5)
-        ));
+        assert_ne!(still_running(&me, Instant::now()), Some(std::process::id()));
         // Nothing runs a program that is not there.
         let missing = std::env::temp_dir().join(format!(
             "lastdrop-no-such-program-{}.exe",
             std::process::id()
         ));
-        assert!(processes_ended(&missing, Instant::now()));
+        assert_eq!(still_running(&missing, Instant::now()), None);
     }
 }
