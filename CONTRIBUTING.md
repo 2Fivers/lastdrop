@@ -42,8 +42,10 @@ accounts: `lastdrop.exe --demo --preview-flyout flyout.png` (and `--preview-hove
 previews read your own accounts and history.
 
 The README's screenshots come from the same demo data. `pwsh tools\screenshots\screenshots.ps1`
-builds the app and renders them again into `docs\assets\screenshots`, light and dark; it needs
-[oxipng](https://github.com/shssoichiro/oxipng) (`winget install Shssoichiro.Oxipng`).
+builds the app and renders them again into `docs\assets\screenshots`, light and dark (the first
+run installs a pinned [oxipng](https://github.com/shssoichiro/oxipng) into `target\tools`); with
+`-Check` it only tells whether they are up to date. When a change alters the flyout, the hover
+card, the history window or the demo data, commit the new pictures with it.
 
 ## Rules for changes
 
