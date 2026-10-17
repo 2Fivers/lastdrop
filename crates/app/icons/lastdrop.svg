@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="-8 -8 272 272" width="256" height="256">
+  <title>Lastdrop</title>
+  <defs>
+    <linearGradient id="ring" x1="0" y1="0" x2="0" y2="256" gradientUnits="userSpaceOnUse"><stop offset="0" stop-color="#7479FF"/><stop offset="1" stop-color="#2C23EF"/></linearGradient>
+    <linearGradient id="drop" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#138BF4"/><stop offset="0.55" stop-color="#1CB2FA"/><stop offset="1" stop-color="#62EDF8"/></linearGradient>
+  </defs>
+  <path d="M58.41 50.71A104 104 0 1 0 197.59 50.71" fill="none" stroke="url(#ring)" stroke-width="48" stroke-linecap="round"/>
+  <path transform="translate(24.67 -13.5) scale(12.92)" fill="url(#drop)" d="M8 1.2C8 1.2 3.2 6.9 3.2 10.1A4.8 4.8 0 0 0 12.8 10.1C12.8 6.9 8 1.2 8 1.2Z"/>
+</svg>
