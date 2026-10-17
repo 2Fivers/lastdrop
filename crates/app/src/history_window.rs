@@ -648,7 +648,7 @@ fn with_session(f: impl FnOnce(&Session)) {
 
 /// Closes the window and releases it ([`dialog::release_later`]). The last window closing ends
 /// the dialog process's event loop.
-fn close() {
+pub fn close() {
     let session = SESSION.with(|s| s.borrow_mut().take());
     if let Some(session) = session {
         let _ = session.window.hide();

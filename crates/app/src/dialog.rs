@@ -13,6 +13,8 @@
 //! - Single instance: the `Local\Lastdrop.Dialog` mutex. A second launch posts the dialog it
 //!   wants ([`DialogKind::to_wparam`]) to the running dialog process, which opens it or brings
 //!   it to the front, and exits.
+//! - The installer asks it to close every window and end ([`CLOSE_REQUEST`]) before it replaces
+//!   or removes `lastdrop.exe` (updates-spec §2).
 //! - What the dialog changed reaches the tray process as one posted message ([`notify`],
 //!   [`Changes`]): it re-reads `settings.json` and applies it, or lifts the sign-in stop of a
 //!   service whose API key was saved or removed.
@@ -43,6 +45,12 @@ use crate::{AppError, history_window, logger, settings_window, ui, wiring};
 /// How long a second launch keeps trying to reach a dialog process that is just starting (no
 /// listener yet) or just ending (listener gone, mutex not yet released).
 pub const FORWARD_WAIT: Duration = Duration::from_secs(2);
+
+/// The `WPARAM` that asks the running dialog process to close every window and end, which the
+/// installer posts before it replaces or removes `lastdrop.exe` (updates-spec §2). It is no
+/// dialog's: its low byte is none of theirs, so [`DialogKind::from_wparam`] finds nothing for it,
+/// and a dialog process from before it (0.1.x) logs it as an unknown request and goes on.
+pub const CLOSE_REQUEST: usize = 0xFF;
 
 /// A dialog of the dialog process.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -342,6 +350,11 @@ fn run_dialogs(guard: &InstanceGuard, paths: &Paths, kind: DialogKind) -> Result
         // A window procedure: open on the next turn of the event loop, never re-enter Slint.
         let paths = listen_paths.clone();
         slint::Timer::single_shot(Duration::ZERO, move || {
+            if wparam == CLOSE_REQUEST {
+                log::info!("asked to close (an install or uninstall)");
+                close_all();
+                return;
+            }
             match DialogKind::from_wparam(wparam) {
                 Some(kind) => {
                     log::info!("asked for {}", kind.flag());
@@ -374,6 +387,17 @@ fn open(paths: &Paths, kind: DialogKind) -> Result<(), AppError> {
         DialogKind::About => open_about(paths),
         DialogKind::History(tag) => history_window::open(paths, tag),
     }
+}
+
+/// Closes every window as its ✕ does, for the installer ([`CLOSE_REQUEST`]): the settings window
+/// saves what its fields hold first, and stays open with the InfoBar of a failed close only when
+/// that cannot be written; Theme Studio drops a draft not saved; the usage history and About have
+/// nothing to keep. The last window closing ends the event loop, and with it the process.
+fn close_all() {
+    settings_window::close();
+    crate::theme_studio::close();
+    history_window::close();
+    close_about();
 }
 
 /// Brings a dialog window to the front once winit has created it: gives it the app icon (title
@@ -538,6 +562,20 @@ mod tests {
             "an unreadable tag opens it without one"
         );
         assert_eq!(DialogKind::from_wparam(5), Some(DialogKind::History(None)));
+    }
+
+    #[test]
+    fn the_close_request_is_no_dialog() {
+        // A dialog process ignores a request it does not know. 0.1.x reads requests with the same
+        // `from_wparam`, so an older one leaves its windows open but never opens one for it.
+        assert_eq!(DialogKind::from_wparam(CLOSE_REQUEST), None);
+        assert_ne!(CLOSE_REQUEST, 0, "0 asks for nothing");
+        for kind in [DialogKind::History(Some(0xFF_FFFF))]
+            .into_iter()
+            .chain(DialogKind::ALL)
+        {
+            assert_ne!(kind.to_wparam() & 0xFF, CLOSE_REQUEST & 0xFF, "{kind:?}");
+        }
     }
 
     #[test]

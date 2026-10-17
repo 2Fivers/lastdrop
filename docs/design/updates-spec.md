@@ -41,16 +41,15 @@ The release's installer is the app itself: `Lastdrop-Setup.exe`.
   `%LOCALAPPDATA%\Lastdrop\logs\install.log` (the app they quit may still be writing
   `lastdrop.log`).
 - **What it does**, per user, no elevation: asks a running Lastdrop to quit (the settings-changed
-  message with `Changes::quit`, again every second: a Lastdrop that has just started holds its
-  mutex before it listens) and waits up to 15 s in all for its mutex to go and then for every
-  other process that runs the installed `lastdrop.exe` to end (a process snapshot, then a wait on
-  each one's handle): the app closes its mutex at the end of its shutdown, a moment before its
-  process ends, and until then the file cannot be replaced nor its folder removed. While one
-  still runs it checks the mutex again every second, so a Lastdrop that was only starting is
-  asked to quit too. An open Settings, Theme Studio, Usage history or About window (the dialog
-  process) is not asked to quit, so it keeps the installer waiting until the user closes it, and
-  after 15 s the installer stops with "Lastdrop is still running", which says to close those
-  windows. Then it copies itself to
+  message with `Changes::quit`) and an open dialog process to close its windows and end
+  (`Lastdrop.OpenDialog` with the reserved `WPARAM` `0xFF`, `dialog::CLOSE_REQUEST`), each again
+  every second while its mutex exists (a process that has just started holds its mutex before it
+  listens), and waits up to 15 s in all for the app's mutex to go and then for every other
+  process that runs the installed `lastdrop.exe` to end (a process snapshot, then a wait on each
+  one's handle): the app closes its mutex at the end of its shutdown, a moment before its process
+  ends, and until then the file cannot be replaced nor its folder removed. While one still runs
+  it checks the mutex again every second, so a Lastdrop that was only starting is asked to quit
+  too. Then it copies itself to
   `%LOCALAPPDATA%\Programs\Lastdrop\lastdrop.exe` (retrying for 10 s while a scanner holds the
   file); writes `Lastdrop.lnk` in the Start menu's Programs folder and the "Installed apps" entry
   (`HKCU\…\Uninstall\Lastdrop`: name, version, publisher 2Fivers (Adinosaur AB in 0.1.0; the
@@ -59,13 +58,30 @@ The release's installer is the app itself: `Lastdrop-Setup.exe`.
   and writes it again when the Run value is gone but `settings.json` has it on (an uninstall
   removes the value and keeps the settings, so after a reinstall the switch and Windows agree);
   starts the installed app and says it is done.
+- **Open windows** (Settings, Theme Studio, Usage history, About: the dialog process) close as
+  their ✕ does, without a question (a quiet install or an update has no one to answer it):
+  - Settings saves what its fields hold, as closing it always does (settings-spec §5.5), and
+    closes. Only when `settings.json` cannot be written does it stay open, with the InfoBar of a
+    failed close (Try again, Close without saving); the installer then stops after 15 s with
+    "Lastdrop is still running", which says to close Lastdrop's windows. Every request after the
+    first is a Try again.
+  - Theme Studio drops a draft that was not saved (Save, Save and use), as its Close and ✕ do: a
+    theme file the user never asked for would be worse than a lost draft, and the draft is in
+    the window, never in a file.
+  - Usage history and About have nothing to keep.
+  - A window waiting on a Windows dialog of its own (Settings' folder picker) closes once that
+    dialog does; until then the request waits in the queue.
+  - A dialog process of 0.1.x does not know the request: it logs "unknown dialog request" and
+    goes on (the same `DialogKind::from_wparam`, which finds no dialog for `0xFF`). Before an
+    update from 0.1.x its windows keep the installer waiting until the user closes them.
 - **`--uninstall`** (from "Installed apps"): asks, quits the app and waits for it as above (not
   for itself: it runs from the installed `lastdrop.exe`), removes the Run value (if it is the
   installed copy's), the shortcut and the entry, and has a hidden `cmd.exe` delete the install
   folder two seconds after the uninstaller ends. Settings, history, themes and logs in
   `%APPDATA%\Lastdrop` and `%LOCALAPPDATA%\Lastdrop` stay. **`--uninstall --quiet`** neither
   asks nor tells: only the exit code and the log.
-- Failures are shown in a message box and the folder is left as it was before the failing step.
+- Failures are shown in a message box ("Lastdrop was not installed: …", "Lastdrop was not
+  uninstalled: …") and the folder is left as it was before the failing step.
 
 ## 3. Updating
 

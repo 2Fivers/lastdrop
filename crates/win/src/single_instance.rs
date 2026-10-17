@@ -7,8 +7,9 @@
 //!   `FindWindowExW(HWND_MESSAGE, …)` and posts the registered message [`ACTIVATE_MESSAGE`].
 //! - **Dialogs** (the short-lived dialog process: settings, about): the same pattern with its own
 //!   mutex ([`DIALOG_MUTEX_NAME`]), class ([`DIALOG_LISTENER_CLASS`]) and message
-//!   ([`DIALOG_MESSAGE`]). The message's `WPARAM` says which dialog a second launch wants; the
-//!   app crate defines the values.
+//!   ([`DIALOG_MESSAGE`]). The message's `WPARAM` says which dialog a second launch wants, or
+//!   asks the dialog process to close its windows (the installer, [`post_dialog`]); the app crate
+//!   defines the values.
 //! - **Settings changed**: the tray process listens (class [`SETTINGS_CHANGED_CLASS`]) for
 //!   [`SETTINGS_CHANGED_MESSAGE`], which the dialog process posts after it wrote
 //!   `settings.json` or the Meshy key. The `WPARAM` carries flags the app crate defines.
@@ -89,7 +90,18 @@ pub fn acquire_dialog() -> std::io::Result<Instance> {
 /// Whether the app (the tray process) runs in this session: its mutex exists. For the installer,
 /// which waits for it to quit before replacing `lastdrop.exe` (updates-spec §2).
 pub fn app_running() -> bool {
-    let name = wide(MUTEX_NAME);
+    mutex_exists(MUTEX_NAME)
+}
+
+/// Whether a dialog process runs in this session: its mutex exists. For the installer, which
+/// asks it to close its windows ([`post_dialog`]).
+pub fn dialog_running() -> bool {
+    mutex_exists(DIALOG_MUTEX_NAME)
+}
+
+/// Whether the mutex `name` exists (some process holds a handle to it).
+fn mutex_exists(name: &str) -> bool {
+    let name = wide(name);
     // SAFETY: opening a named mutex for synchronization only; the handle is closed at once.
     match unsafe { OpenMutexW(SYNCHRONIZATION_SYNCHRONIZE, false, PCWSTR(name.as_ptr())) } {
         Ok(handle) => {
@@ -116,6 +128,13 @@ pub fn signal_first() -> std::io::Result<bool> {
 /// to the front. `Ok(false)` when no dialog listener was found.
 pub fn signal_dialog(request: usize) -> std::io::Result<bool> {
     signal_named(DIALOG_LISTENER_CLASS, DIALOG_MESSAGE, request, true)
+}
+
+/// From the installer: posts `request` (its `WPARAM`) to the running dialog process without
+/// passing the foreground right on (nothing is to come to the front). `Ok(false)` when no dialog
+/// listener was found (no dialog process, or one still starting or already ending).
+pub fn post_dialog(request: usize) -> std::io::Result<bool> {
+    signal_named(DIALOG_LISTENER_CLASS, DIALOG_MESSAGE, request, false)
 }
 
 /// From the dialog process: tells the tray process what changed (`flags`, its `WPARAM`). The
@@ -416,6 +435,20 @@ mod tests {
         assert!(matches!(acquire(), Ok(Instance::Second)));
         drop(guard);
         assert!(matches!(acquire(), Ok(Instance::First(_))));
+    }
+
+    #[test]
+    fn a_mutex_exists_while_its_guard_lives() {
+        let name = format!(r"Local\{}", scratch("Running"));
+        assert!(!mutex_exists(&name));
+        let Instance::First(guard) =
+            acquire_named(&name, DIALOG_LISTENER_CLASS, DIALOG_MESSAGE).expect("first")
+        else {
+            panic!("the scratch mutex already existed");
+        };
+        assert!(mutex_exists(&name));
+        drop(guard);
+        assert!(!mutex_exists(&name));
     }
 
     #[test]

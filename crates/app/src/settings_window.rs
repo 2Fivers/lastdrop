@@ -1479,13 +1479,7 @@ fn connect(window: &ui::SettingsWindow) {
         log::info!("settings window: closed without saving");
         close_now();
     });
-    window.on_dismiss(|| {
-        let mut closes = false;
-        with_session(|session| closes = flush_for_close(session));
-        if closes {
-            close_now();
-        }
-    });
+    window.on_dismiss(close);
     window.window().on_close_requested(|| {
         let mut closes = true;
         with_session(|session| closes = flush_for_close(session));
@@ -1888,6 +1882,16 @@ fn flush_for_close(session: &Session) -> bool {
         return false;
     }
     true
+}
+
+/// Closes the open window as ✕ does ([`flush_for_close`]): on Escape, and when the installer asks
+/// the dialog process to close ([`dialog::CLOSE_REQUEST`]). Stays open when the commit fails.
+pub fn close() {
+    let mut closes = false;
+    with_session(|session| closes = flush_for_close(session));
+    if closes {
+        close_now();
+    }
 }
 
 /// Closes the settings window and releases it, not inside the window's own callback

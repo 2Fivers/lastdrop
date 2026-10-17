@@ -465,6 +465,7 @@ lowercase_names = true
 "install.shortcut" = "How much AI is left in the tank"
 "uninstall.ask" = "Uninstall Lastdrop? Your settings, history and themes stay in %APPDATA%\\Lastdrop and %LOCALAPPDATA%\\Lastdrop."
 "uninstall.done" = "Lastdrop is uninstalled."
+"uninstall.failed" = "Lastdrop was not uninstalled: {detail}"
 "update.available" = "Lastdrop {version} is available"
 "update.available_body" = "Open Lastdrop and choose Install. It takes a few seconds."
 "update.install" = "Install"

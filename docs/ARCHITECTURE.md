@@ -106,7 +106,9 @@ Single instance and messages, all per session ("Single instance" below):
 
 - The dialog process has its own mutex (`Local\Lastdrop.Dialog`). A second launch posts the
   dialog it wants (the message's `WPARAM`) to the running dialog process, which opens it or brings
-  it to the front, and exits.
+  it to the front, and exits. The installer posts the same message with a `WPARAM` no dialog has
+  (`0xFF`, `dialog::CLOSE_REQUEST`): the dialog process closes every window as its ✕ does and
+  ends, so it no longer holds `lastdrop.exe` ([updates-spec](design/updates-spec.md) §2).
 - Three writers change `settings.json`: the tray process (pause, pinned meters, readout auto or
   off), the settings window and Theme Studio. Each write is one read-merge-write under the
   `Local\Lastdrop.Settings` mutex: the writer re-reads the file and applies only its own change
@@ -282,8 +284,8 @@ Rules for every provider:
   ([updates-spec](design/updates-spec.md) §2). **Secrets:** Credential Manager, generic credentials
   named `Lastdrop:<provider>:<account>:<name>`. **Single instance:** `Local\Lastdrop` mutex; a
   second launch asks the first to open the flyout. The dialog process has its own mutex,
-  `Local\Lastdrop.Dialog`. Each of the three channels (open the flyout, open a dialog, settings
-  changed) is a message-only listener window of its own class with a registered message, found
+  `Local\Lastdrop.Dialog`. Each of the three channels (open the flyout, open a dialog or close
+  them all, settings changed) is a message-only listener window of its own class with a registered message, found
   with `FindWindowExW(HWND_MESSAGE, …)`.
 
 ## App (`lastdrop`)
