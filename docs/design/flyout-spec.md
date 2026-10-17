@@ -226,8 +226,11 @@ there is no window, so there is no pace to show.
 
 - Right: **Settings** subtle button: height 32, radius 4, padding 0 11, U+E713 16 px + 8 + `Settings` 14/20,
   TextPrimary. Opens the settings window and hides the flyout.
+- Left of Settings, 4 apart: **History** subtle button, 32 × 32, U+E81C 16 px, no label (so the left note keeps its
+  room in every language), tooltip `Usage history (Ctrl+H)`. Opens the usage history window (charts-spec §1) and
+  hides the flyout.
 - Left (only when relevant): `Updates paused · Resume`, or `Update available · Install` (M5), 12/16 TextSecondary
-  with an accent hyperlink.
+  with an accent hyperlink, up to 8 before the History button. A longer note elides; the link stays whole.
 
 ## 6. Sparkline
 
@@ -302,12 +305,13 @@ Digits are tabular (R§5.6). The spike shows `Segoe UI Variable Text` resolves i
 
 | Input | Effect |
 |---|---|
-| Tab / Shift+Tab | Refresh → card 1 → … → card n → Settings (→ footer link if shown) |
+| Tab / Shift+Tab | Refresh → card 1 → … → card n → History → Settings (→ footer link if shown) |
 | Up / Down | previous / next card |
 | Enter on a card | open the service's usage page in the default browser (e.g. Claude: claude.ai settings → usage), hide |
 | Shift+F10, Menu key, right-click on a card | card menu: Open usage page · Refresh {service} · Show in taskbar readout ▸ (meter checklist) |
 | Enter on a hyperlink / button | its action |
 | F5, Ctrl+R | refresh all |
+| Ctrl+H | open the usage history window, hide |
 | Esc | hide |
 
 - Focus visuals only after keyboard use (as WinUI): 2 px FocusStrokeColorOuter outside + 1 px FocusStrokeColorInner,
@@ -317,8 +321,8 @@ Digits are tabular (R§5.6). The spike shows `Segoe UI Variable Text` resolves i
   focus rect (mouse rule above), so Enter or Tab continues from it.
 - Hover on cards: none (cards are not buttons). Buttons: hover SubtleFillColorSecondary, pressed
   SubtleFillColorTertiary with the glyph/label in TextSecondary.
-- No tooltips in M1 except the refresh button (`Refresh (F5)`), shown with the hover-card window class after the
-  system hover time.
+- No tooltips except on the icon-only buttons: refresh (`Refresh (F5)`, below it) and history (`Usage history
+  (Ctrl+H)`, above it, inside the window), shown after the system hover time.
 
 ## 10. Accessibility (Slint `accessible-*`)
 
@@ -331,6 +335,7 @@ Digits are tabular (R§5.6). The spike shows `Segoe UI Variable Text` resolves i
 | Balance body | text | `1,240 credits left, 62 percent of the last top-up used, about 9 days at 136 a day` |
 | Sparkline | image | §6 |
 | Message hyperlink | button | its text |
+| History | button | `Usage history` |
 | Settings | button | `Settings` |
 
 When the flyout is open and a meter's severity rises, announce the new verdict once (Slint accessibility announcement

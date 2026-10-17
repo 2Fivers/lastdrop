@@ -29,6 +29,14 @@ fn press(window: &slint::Window, text: impl Into<slint::SharedString> + Clone) {
     window.dispatch_event(WindowEvent::KeyReleased { text });
 }
 
+/// Presses and releases one key with Ctrl held.
+fn press_ctrl(window: &slint::Window, text: impl Into<slint::SharedString> + Clone) {
+    let ctrl: slint::SharedString = Key::Control.into();
+    window.dispatch_event(WindowEvent::KeyPressed { text: ctrl.clone() });
+    press(window, text);
+    window.dispatch_event(WindowEvent::KeyReleased { text: ctrl });
+}
+
 /// A flyout showing `demo`'s model, sized to its content.
 fn flyout_for(demo: &Demo) -> ui::Flyout {
     let flyout = ui::Flyout::new().expect("flyout");
@@ -93,17 +101,24 @@ fn flyout_heights_and_keyboard() {
     flyout.on_dismiss(record("dismiss"));
     flyout.on_refresh(record("refresh"));
     flyout.on_open_settings(record("settings"));
+    flyout.on_open_history(record("history"));
     {
         let log = log.clone();
         flyout.on_open_service_dashboard(move |i| log.borrow_mut().push(format!("usage {i}")));
     }
     let window = flyout.window();
 
-    // Esc hides, F5 refreshes (F§9), with the window itself focused (opened by mouse).
+    // Esc hides, F5 and Ctrl+R refresh, Ctrl+H opens the usage history (F§9), with the window
+    // itself focused (opened by mouse).
     flyout.invoke_reset_focus();
     press(window, Key::Escape);
     press(window, Key::F5);
-    assert_eq!(log.borrow().as_slice(), ["dismiss", "refresh"]);
+    press_ctrl(window, "r");
+    press_ctrl(window, "h");
+    assert_eq!(
+        log.borrow().as_slice(),
+        ["dismiss", "refresh", "refresh", "history"]
+    );
     log.borrow_mut().clear();
 
     // Opened by keyboard: the first card has focus; Down moves to the next; Enter opens the
@@ -128,19 +143,17 @@ fn flyout_heights_and_keyboard() {
     assert_eq!(log.borrow().as_slice(), ["dismiss"]);
     log.borrow_mut().clear();
 
-    // Tab order (F§9): Refresh → card 1 → … → card n → Settings.
+    // Tab order (F§9): Refresh → card 1 → … → card n → History → Settings.
     flyout.invoke_reset_focus();
-    press(window, Key::Tab);
-    press(window, Key::Return);
-    for _ in 0..3 {
+    for _ in 0..6 {
         press(window, Key::Tab);
         press(window, Key::Return);
     }
-    press(window, Key::Tab);
-    press(window, Key::Return);
     assert_eq!(
         log.borrow().as_slice(),
-        ["refresh", "usage 0", "usage 1", "usage 2", "settings"]
+        [
+            "refresh", "usage 0", "usage 1", "usage 2", "history", "settings"
+        ]
     );
     assert!(
         flyout.global::<ui::Theme>().get_keyboard_focus_visible(),

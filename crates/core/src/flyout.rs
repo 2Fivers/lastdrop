@@ -1135,6 +1135,10 @@ pub struct FlyoutModel {
     pub refresh_tooltip: String,
     /// Cards in the user's service order (F§2.2).
     pub cards: Vec<CardModel>,
+    /// `Usage history` (accessible name of the footer's history button, F§5).
+    pub history_name: String,
+    /// The history button's tooltip, `Usage history (Ctrl+H)`.
+    pub history_tooltip: String,
     /// `Settings` (footer button label).
     pub settings_label: String,
     /// Footer left part.
@@ -1186,6 +1190,8 @@ pub fn build_flyout(
         refresh_name: s.template(Msg::FlyoutRefreshName).to_owned(),
         refresh_tooltip: s.template(Msg::FlyoutRefreshTooltip).to_owned(),
         cards,
+        history_name: s.template(Msg::FlyoutHistoryName).to_owned(),
+        history_tooltip: s.template(Msg::FlyoutHistoryTooltip).to_owned(),
         settings_label: s.template(Msg::FlyoutSettings).to_owned(),
         footer_note,
         focus_card,

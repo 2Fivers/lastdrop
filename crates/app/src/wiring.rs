@@ -1767,6 +1767,7 @@ fn connect_flyout(window: &ui::Flyout) {
     });
     window.on_refresh(|| with_app(|app| refresh_now(app, None)));
     window.on_open_settings(|| with_app(|app| open_dialog(app, DialogKind::Settings)));
+    window.on_open_history(|| with_app(|app| open_dialog(app, DialogKind::History(None))));
     // The footer's link: the pause's `Resume`, else the update's `Install` (F§5).
     window.on_footer_action(|| {
         with_app(|app| {
@@ -2501,6 +2502,8 @@ pub fn set_flyout(window: &ui::Flyout, model: &FlyoutModel, scale: f64, menus: &
     window.set_refreshing(model.refreshing);
     window.set_refresh_name(model.refresh_name.as_str().into());
     window.set_refresh_tooltip(model.refresh_tooltip.as_str().into());
+    window.set_history_name(model.history_name.as_str().into());
+    window.set_history_tooltip(model.history_tooltip.as_str().into());
     window.set_settings_label(model.settings_label.as_str().into());
     let (footer_text, footer_link) = match &model.footer_note {
         Some(note) => (note.text.as_str(), note.link.label.as_str()),

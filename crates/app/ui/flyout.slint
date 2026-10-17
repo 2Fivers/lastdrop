@@ -546,6 +546,32 @@ export component ServiceCard inherits Rectangle {
     }
 }
 
+// An icon button's tooltip (F§9: refresh, history): opaque like a tooltip card, 24 high.
+component Tooltip inherits Rectangle {
+    in property <string> label;
+    width: tip.preferred-width + 16px;
+    height: 24px;
+    border-radius: 4px;
+    border-width: 1px;
+    border-color: Theme.high-contrast ? Theme.hc-window-text : Theme.dark ? #00000033 : #0000000f;
+    background: Theme.high-contrast ? Theme.hc-window : Theme.dark ? #2c2c2c : #f9f9f9;
+    drop-shadow-blur: 6px;
+    drop-shadow-color: #00000026;
+    drop-shadow-offset-y: 2px;
+    accessible-role: text;
+    accessible-label: root.label;
+    tip := Text {
+        text: root.label;
+        font-family: Theme.font-small;
+        letter-spacing: Theme.small-tracking;
+        font-size: 12px;
+        color: Theme.text-primary;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+        accessible-role: none;
+    }
+}
+
 export component Flyout inherits Window {
     title: "Lastdrop";
     no-frame: true;
@@ -574,6 +600,8 @@ export component Flyout inherits Window {
     in property <string> refresh-name: "Refresh all services";
     in property <string> refresh-tooltip: "Refresh (F5)";
     in property <[CardData]> cards;
+    in property <string> history-name: "Usage history";
+    in property <string> history-tooltip: "Usage history (Ctrl+H)";
     in property <string> settings-label: "Settings";
     in property <string> footer-text;
     in property <string> footer-link;
@@ -590,6 +618,7 @@ export component Flyout inherits Window {
     }
 
     callback open-settings();
+    callback open-history();
     callback refresh();
     callback open-service-dashboard(int);
     // `close` would shadow Window's builtin close() (Slint 1.18), hence `dismiss`.
@@ -602,9 +631,11 @@ export component Flyout inherits Window {
 
     property <int> focus-target: -1;
     property <int> focus-token: 0;
-    // F§9: the refresh button's tooltip `Refresh (F5)` after the hover time (Windows' default
-    // SPI_GETMOUSEHOVERTIME, 400 ms); hidden when the pointer leaves or the button is used.
-    property <bool> tooltip-shown: false;
+    // F§9: the refresh button's tooltip `Refresh (F5)` and the history button's `Usage history
+    // (Ctrl+H)` after the hover time (Windows' default SPI_GETMOUSEHOVERTIME, 400 ms); hidden when
+    // the pointer leaves or the button is used.
+    property <bool> refresh-tip-shown: false;
+    property <bool> history-tip-shown: false;
 
     // Focuses card `index` (F§9): with the focus rectangle after a keyboard open, without it for
     // the sign-in card opened by a click. Scrolls it into view. -1 focuses the window itself.
@@ -660,6 +691,10 @@ export component Flyout inherits Window {
             }
             if (event.text == Key.F5 || (event.modifiers.control && (event.text == "r" || event.text == "R"))) {
                 root.refresh();
+                return accept;
+            }
+            if (event.modifiers.control && (event.text == "h" || event.text == "H")) {
+                root.open-history();
                 return accept;
             }
             if (event.text == Key.Tab || event.text == Key.Backtab) {
@@ -727,12 +762,12 @@ export component Flyout inherits Window {
                         enabled: !root.refreshing;
                         busy: root.refreshing;
                         clicked => {
-                            root.tooltip-shown = false;
+                            root.refresh-tip-shown = false;
                             root.refresh();
                         }
                         changed hovered => {
                             if (!self.hovered) {
-                                root.tooltip-shown = false;
+                                root.refresh-tip-shown = false;
                             }
                         }
                     }
@@ -789,8 +824,8 @@ export component Flyout inherits Window {
                 }
             }
 
-            // Footer (F§5): 48 incl. the 1 px divider; FooterFill; padding 0 8. The Settings button
-            // comes first in the tree so Tab reaches it before the footer link (F§9).
+            // Footer (F§5): 48 incl. the 1 px divider; FooterFill; padding 0 8. History, then
+            // Settings, come first in the tree so Tab reaches them before the footer link (F§9).
             Rectangle {
                 height: 1px;
                 background: Theme.divider;
@@ -798,6 +833,22 @@ export component Flyout inherits Window {
             Rectangle {
                 height: 47px;
                 background: Theme.footer-fill;
+                history-button := SubtleButton {
+                    x: settings-button.x - self.width - 4px;
+                    y: (parent.height - self.height) / 2;
+                    width: 32px;
+                    icon: "\u{E81C}";
+                    accessible-name: root.history-name;
+                    clicked => {
+                        root.history-tip-shown = false;
+                        root.open-history();
+                    }
+                    changed hovered => {
+                        if (!self.hovered) {
+                            root.history-tip-shown = false;
+                        }
+                    }
+                }
                 settings-button := SubtleButton {
                     x: parent.width - self.width - 8px;
                     y: (parent.height - self.height) / 2;
@@ -812,15 +863,27 @@ export component Flyout inherits Window {
                     x: 8px;
                     y: (parent.height - 16px) / 2;
                     height: 16px;
-                    width: settings-button.x - 16px;
+                    width: history-button.x - 16px;
                     spacing: 0px;
+                    // A note too long for the room before History elides; the link stays whole.
                     Text {
-                        text: root.footer-text + (root.footer-link != "" ? " · " : "");
+                        text: root.footer-text;
                         font-family: Theme.font-small;
                         letter-spacing: Theme.small-tracking;
                         font-size: 12px;
                         color: Theme.text-secondary;
                         vertical-alignment: center;
+                        overflow: elide;
+                        horizontal-stretch: 0;
+                    }
+                    if root.footer-link != "": Text {
+                        text: " · ";
+                        font-family: Theme.font-small;
+                        letter-spacing: Theme.small-tracking;
+                        font-size: 12px;
+                        color: Theme.text-secondary;
+                        vertical-alignment: center;
+                        min-width: self.preferred-width;
                         horizontal-stretch: 0;
                     }
                     if root.footer-link != "": HyperlinkButton {
@@ -839,35 +902,29 @@ export component Flyout inherits Window {
 
     Timer {
         interval: 400ms;
-        running: refresh-button.hovered && !root.tooltip-shown;
+        running: refresh-button.hovered && !root.refresh-tip-shown;
         triggered => {
-            root.tooltip-shown = true;
+            root.refresh-tip-shown = true;
         }
     }
-    if root.tooltip-shown && root.refresh-tooltip != "": Rectangle {
-        // Below the button, right-aligned with it; opaque like a tooltip card.
+    Timer {
+        interval: 400ms;
+        running: history-button.hovered && !root.history-tip-shown;
+        triggered => {
+            root.history-tip-shown = true;
+        }
+    }
+    // Below the refresh button, right-aligned with it.
+    if root.refresh-tip-shown && root.refresh-tooltip != "": Tooltip {
         x: root.width - 4px - self.width;
         y: 38px;
-        width: tip.preferred-width + 16px;
-        height: 24px;
-        border-radius: 4px;
-        border-width: 1px;
-        border-color: Theme.high-contrast ? Theme.hc-window-text : Theme.dark ? #00000033 : #0000000f;
-        background: Theme.high-contrast ? Theme.hc-window : Theme.dark ? #2c2c2c : #f9f9f9;
-        drop-shadow-blur: 6px;
-        drop-shadow-color: #00000026;
-        drop-shadow-offset-y: 2px;
-        accessible-role: text;
-        accessible-label: root.refresh-tooltip;
-        tip := Text {
-            text: root.refresh-tooltip;
-            font-family: Theme.font-small;
-            letter-spacing: Theme.small-tracking;
-            font-size: 12px;
-            color: Theme.text-primary;
-            horizontal-alignment: center;
-            vertical-alignment: center;
-            accessible-role: none;
-        }
+        label: root.refresh-tooltip;
+    }
+    // Above the history button (it sits at the window's bottom edge), centred on it but inside the
+    // window.
+    if root.history-tip-shown && root.history-tooltip != "": Tooltip {
+        x: min(root.width - 4px - self.width, history-button.x + (history-button.width - self.width) / 2);
+        y: root.height - 47px + history-button.y - self.height - 4px;
+        label: root.history-tooltip;
     }
 }
