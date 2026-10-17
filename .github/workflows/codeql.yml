@@ -2,6 +2,11 @@ name: codeql
 
 # CodeQL code scanning of the Rust workspace and of these workflows. Results go to the
 # repository's Security tab. Weekly as well, so new queries reach code that has not changed.
+#
+# The workflows are scanned on pull requests too (half a minute). The Rust scan takes about 25
+# minutes on Windows, mostly reading the `windows` crate, so it runs on main, weekly and by hand,
+# not on pull requests: it looks for weaknesses in our code, which are found the same after the
+# merge. A finding then shows in the Security tab.
 
 on:
   push:
@@ -19,25 +24,17 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  analyze:
-    name: codeql (${{ matrix.language }})
+  rust:
+    name: codeql (rust)
     # Code scanning in a private repository needs GitHub Advanced Security; the job skips there.
-    if: ${{ !github.event.repository.private }}
-    runs-on: ${{ matrix.os }}
+    if: ${{ !github.event.repository.private && github.event_name != 'pull_request' }}
+    # On Windows, so the analysis sees the cfg(windows) code that is all of Lastdrop.
+    runs-on: windows-latest
     timeout-minutes: 60
     permissions:
       contents: read
       # Upload the results to code scanning.
       security-events: write
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          # On Windows, so the analysis sees the cfg(windows) code that is all of Lastdrop.
-          - language: rust
-            os: windows-latest
-          - language: actions
-            os: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
@@ -46,7 +43,6 @@ jobs:
       # The Rust extractor loads the workspace through cargo and reads the standard library's
       # sources, so it needs the toolchain rust-toolchain.toml pins and its rust-src.
       - name: Toolchain from rust-toolchain.toml
-        if: matrix.language == 'rust'
         shell: bash
         run: |
           rustup toolchain install --profile minimal
@@ -55,11 +51,33 @@ jobs:
 
       - uses: github/codeql-action/init@6f2ac81f5cd81fe351a197ba0b00d91d03cd2aee # v4.39.0
         with:
-          languages: ${{ matrix.language }}
-          # Neither language needs a build: Rust is extracted from the sources and cargo
-          # metadata, the workflows are read as YAML.
+          languages: rust
+          # No build: Rust is extracted from the sources and cargo metadata.
           build-mode: none
 
       - uses: github/codeql-action/analyze@6f2ac81f5cd81fe351a197ba0b00d91d03cd2aee # v4.39.0
         with:
-          category: /language:${{ matrix.language }}
+          category: /language:rust
+
+  actions:
+    name: codeql (actions)
+    if: ${{ !github.event.repository.private }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - uses: github/codeql-action/init@6f2ac81f5cd81fe351a197ba0b00d91d03cd2aee # v4.39.0
+        with:
+          languages: actions
+          # The workflows are read as YAML.
+          build-mode: none
+
+      - uses: github/codeql-action/analyze@6f2ac81f5cd81fe351a197ba0b00d91d03cd2aee # v4.39.0
+        with:
+          category: /language:actions
