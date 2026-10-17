@@ -21,6 +21,8 @@ concurrency:
 jobs:
   analyze:
     name: codeql (${{ matrix.language }})
+    # Code scanning in a private repository needs GitHub Advanced Security; the job skips there.
+    if: ${{ !github.event.repository.private }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 60
     permissions:

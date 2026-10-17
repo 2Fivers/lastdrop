@@ -18,6 +18,8 @@ concurrency:
 jobs:
   review:
     name: dependency review
+    # A private repository needs GitHub Advanced Security for this; the job skips there.
+    if: ${{ !github.event.repository.private }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
