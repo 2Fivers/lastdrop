@@ -38,7 +38,12 @@ cargo build --release -p lastdrop --locked
 
 All four must pass; CI runs the same on every pull request. To see the UI without real
 accounts: `lastdrop.exe --demo --preview-flyout flyout.png` (and `--preview-hovercard`,
-`--preview-settings`, `--preview-about`, `--preview-history`).
+`--preview-settings`, `--preview-about`, `--preview-history`). Keep `--demo`: without it the
+previews read your own accounts and history.
+
+The README's screenshots come from the same demo data. `pwsh tools\screenshots\screenshots.ps1`
+builds the app and renders them again into `docs\assets\screenshots`, light and dark; it needs
+[oxipng](https://github.com/shssoichiro/oxipng) (`winget install Shssoichiro.Oxipng`).
 
 ## Rules for changes
 

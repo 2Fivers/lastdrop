@@ -9,6 +9,13 @@ Claude, Codex, GitHub Copilot, Meshy and more — without opening each service's
 icon and you see what is left, when it resets, what you used recently, and whether your
 current pace will last until the next reset.
 
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/assets/screenshots/flyout-dark.png">
+    <img src="docs/assets/screenshots/flyout-light.png" width="360" alt="The Lastdrop flyout with demo data. Claude: 5-hour session 42% used, resets 14:56; weekly, all models 61%; weekly, Fable 18%. Codex: weekly 5%, resets Friday. Meshy: 1,240 credits, about 9 days left.">
+  </picture>
+</p>
+
 ## Goals
 
 - **One glance.** A native Windows 11 flyout next to the volume and network flyouts.
@@ -33,6 +40,30 @@ display language unless one is picked in settings. Claude Code and Codex can hav
 accounts, one per config folder. Services with a simple balance or usage API are described in a
 JSON file (DeepSeek, ElevenLabs and OpenRouter come with it). A usage history window charts each
 limit over the last 7, 30 or 90 days, the use per day and the hours of the week with the most use.
+
+## Screenshots
+
+Hover over the taskbar readout or the tray icon and a card explains the numbers: how much of each
+window has gone, where your pace ends up at the reset, and what else is tracked.
+
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/assets/screenshots/hovercard-dark.png">
+    <img src="docs/assets/screenshots/hovercard-light.png" width="320" alt="The hover card: You'll make it to both resets. Claude's 5-hour session is 42% used with 55% of its time gone, on course for 62% at the reset. The weekly limit is 61% used, on course for 72%. Also tracked: Claude Fable weekly 18%, Codex weekly 5%, Meshy credits 1,240.">
+  </picture>
+</p>
+
+The usage history window charts each limit over time and the use per day. For Claude and Codex it
+also counts the tokens from the session logs on your PC and what they would cost at API prices.
+
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/assets/screenshots/history-dark.png">
+    <img src="docs/assets/screenshots/history-light.png" width="640" alt="The usage history window for Claude over the last 30 days: a chart for each limit, the use per day, and 224 million tokens split by model, about 183 USD at API prices.">
+  </picture>
+</p>
+
+The screenshots show the app's built-in demo data, not a real account.
 
 ## Install
 
