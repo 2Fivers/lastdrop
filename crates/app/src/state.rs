@@ -26,6 +26,7 @@ use lastdrop_core::stats::{
     EvalInput, EvalMemory, Evaluation, FailureKind, HistoryView, ServiceInput, ServiceStatus,
     evaluate,
 };
+use lastdrop_core::update::Version;
 use lastdrop_providers::real::RealEnv;
 use lastdrop_providers::{AccountSource, FetchError, Provider};
 use lastdrop_win::flyout_pos::MonitorInfo;
@@ -329,6 +330,11 @@ pub struct AppState {
     pub identities: IdentityMap,
     /// The known identities as the state file has them ([`AppState::state_to_save`]).
     pub saved_identities: IdentityMap,
+    /// The release version an update notification announced last (updates-spec §1), kept across
+    /// restarts in the state file so each version is announced once.
+    pub update_announced: Option<Version>,
+    /// `update_announced` as the state file has it ([`AppState::state_to_save`]).
+    pub saved_update_announced: Option<Version>,
 }
 
 /// The providers for `after`: the existing instance of a provider whose options did not change
@@ -616,6 +622,8 @@ impl AppState {
             saved_notified: NotifyMemory::new(),
             identities: IdentityMap::new(),
             saved_identities: IdentityMap::new(),
+            update_announced: None,
+            saved_update_announced: None,
         }
     }
 
@@ -714,9 +722,9 @@ impl AppState {
     /// Restores what earlier runs remembered (the state file): the meters they saw
     /// (`EvalMemory::seen`, so a meter a later reading lacks keeps its room in the readout, R§6.3),
     /// keeping only those the history has a reading of from the last [`IN_MEMORY_SPAN`] (31 days),
-    /// so a meter that no source has reported for a month stops holding room; and what
-    /// notifications announced (N§1). The first evaluation rewrites the file when entries were
-    /// dropped ([`AppState::state_to_save`]).
+    /// so a meter that no source has reported for a month stops holding room; what
+    /// notifications announced (N§1); and the update version announced (updates-spec §1). The
+    /// first evaluation rewrites the file when entries were dropped ([`AppState::state_to_save`]).
     pub fn restore_saved(&mut self, saved: &SavedState, now: Timestamp) {
         let since = now.checked_sub(IN_MEMORY_SPAN).unwrap_or(Timestamp::MIN);
         let all = saved.seen_map();
@@ -737,6 +745,8 @@ impl AppState {
         self.saved_notified = self.notified.clone();
         self.identities = saved.identity_map();
         self.saved_identities = self.identities.clone();
+        self.update_announced = saved.update_announced();
+        self.saved_update_announced = self.update_announced.clone();
         self.restore_identities();
     }
 
@@ -754,14 +764,16 @@ impl AppState {
         out
     }
 
-    /// The state file's new bytes when `EvalMemory::seen` or `notified` changed since the last
-    /// save (or the restore); `None` otherwise. The caller queues them for the writer thread.
+    /// The state file's new bytes when `EvalMemory::seen`, `notified`, the known identities or
+    /// `update_announced` changed since the last save (or the restore); `None` otherwise. The
+    /// caller queues them for the writer thread.
     pub fn state_to_save(&mut self) -> Option<Vec<u8>> {
         let identities = self.known_identities();
         if self.memory.seen == self.saved_seen
             && self.memory.units == self.saved_units
             && self.notified == self.saved_notified
             && identities == self.saved_identities
+            && self.update_announced == self.saved_update_announced
         {
             return None;
         }
@@ -769,12 +781,16 @@ impl AppState {
         self.saved_units = self.memory.units.clone();
         self.saved_notified = self.notified.clone();
         self.saved_identities = identities;
-        let state = SavedState::new(
-            &self.memory.seen,
-            &self.memory.units,
-            &self.notified,
-            &self.saved_identities,
-        );
+        self.saved_update_announced = self.update_announced.clone();
+        let state = SavedState {
+            update_announced: self.update_announced.as_ref().map(ToString::to_string),
+            ..SavedState::new(
+                &self.memory.seen,
+                &self.memory.units,
+                &self.notified,
+                &self.saved_identities,
+            )
+        };
         match persist::state_bytes(&state) {
             Ok(bytes) => Some(bytes),
             Err(e) => {
@@ -1120,6 +1136,8 @@ pub(crate) mod tests {
             saved_notified: NotifyMemory::new(),
             identities: IdentityMap::new(),
             saved_identities: IdentityMap::new(),
+            update_announced: None,
+            saved_update_announced: None,
         }
     }
 
@@ -1272,6 +1290,36 @@ pub(crate) mod tests {
         second.notified.clear();
         assert_eq!(run(&mut second), None);
         assert!(second.notified.is_empty());
+        writer.shutdown();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn the_announced_update_survives_a_restart() {
+        let dir = std::env::temp_dir().join(format!(
+            "lastdrop-update-test-{}-{}",
+            std::process::id(),
+            Timestamp::now().as_nanosecond()
+        ));
+        let writer = crate::writer::Writer::start().expect("writer");
+        let now = ts("2026-10-10T10:42:00Z");
+        let version = Version::parse("0.2.0").expect("a version");
+
+        let history = HistoryStore::open(&dir.join("history"), now, writer.handle()).expect("open");
+        let mut first = app_state(&[ProviderId::Claude], history);
+        let _ = first.state_to_save();
+        first.update_announced = Some(version.clone());
+        let bytes = first.state_to_save().expect("announced changed");
+        assert_eq!(first.state_to_save(), None, "saved once");
+        let saved: SavedState = serde_json::from_slice(&bytes).expect("state json");
+        assert_eq!(saved.update_announced.as_deref(), Some("0.2.0"));
+
+        // Restart with the state file: the version is known, and nothing needs writing.
+        let history = HistoryStore::open(&dir.join("history"), now, writer.handle()).expect("open");
+        let mut second = app_state(&[ProviderId::Claude], history);
+        second.restore_saved(&saved, now);
+        assert_eq!(second.update_announced, Some(version));
+        assert_eq!(second.state_to_save(), None);
         writer.shutdown();
         let _ = std::fs::remove_dir_all(&dir);
     }

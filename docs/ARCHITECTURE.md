@@ -125,7 +125,8 @@ Single instance and messages, all per session ("Single instance" below):
 - Autostart is set by the dialog process. A changed hotkey is tested there (registered and
   released at once) before it is saved; the tray process registers it for real.
 
-The dialog process logs to `settings.log`, the tray process to `lastdrop.log`.
+The dialog process logs to `settings.log`, the tray process to `lastdrop.log`, the installer and
+uninstaller to `install.log`.
 
 ## Threads
 
@@ -276,7 +277,9 @@ Rules for every provider:
 - **Regional format and language:** `GetLocaleInfoEx` for the format and
   `GetUserPreferredUILanguages` for the display languages, read again on `WM_SETTINGCHANGE`
   "intl".
-- **Autostart:** `HKCU\…\Run\Lastdrop`. **Secrets:** Credential Manager, generic credentials
+- **Autostart:** `HKCU\…\Run\Lastdrop`, set by the dialog process; the installer points it at
+  the installed copy and writes it again after a reinstall when `settings.json` has it on
+  ([updates-spec](design/updates-spec.md) §2). **Secrets:** Credential Manager, generic credentials
   named `Lastdrop:<provider>:<account>:<name>`. **Single instance:** `Local\Lastdrop` mutex; a
   second launch asks the first to open the flyout. The dialog process has its own mutex,
   `Local\Lastdrop.Dialog`. Each of the three channels (open the flyout, open a dialog, settings
@@ -307,11 +310,13 @@ Rules for every provider:
   not a setting: the meters a source has reported, so their room in the readout survives a
   restart, what notifications announced, so a restart repeats none, and the hash of who each
   source was last signed in to, so a restart knows the duplicates and notices a folder signed in
-  to someone else meanwhile; meter keys, names, levels, reset times and identity hashes only, no
-  secrets); logs in `%LOCALAPPDATA%\Lastdrop\logs`
+  to someone else meanwhile, and the release version an update notification announced, so a
+  restart does not announce it again; meter keys, names, levels, reset times, identity hashes and
+  a version only, no secrets); logs in `%LOCALAPPDATA%\Lastdrop\logs`
   (rotated, local only; `lastdrop.log` for the tray process, `settings.log` for the dialog
-  process). Start-up reads them on the main thread before the event loop; every later write is
-  queued for the writer thread, so the UI thread never waits on the disk. The one later read is
+  process, `install.log` for the installer and uninstaller). Start-up reads them on the main
+  thread before the event loop; every later write is queued for the writer thread, so the UI
+  thread never waits on the disk. The one later read is
   `settings.json` when the dialog process says it changed (a few kilobytes, read on the writer
   thread at the barrier). The dialog process writes `settings.json` itself, under the settings
   lock; it never writes the state file or history.

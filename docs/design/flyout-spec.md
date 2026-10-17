@@ -126,7 +126,7 @@ tooltip.
 | CRITICAL (runway) | `Claude 5-hour runs out in 12 min` (COUNTDOWN of R§5.3: `Claude weekly runs out in 6 h`) |
 | CRITICAL (level) | `Claude 5-hour is 92% used` |
 | EXHAUSTED | `Claude 5-hour is used up until 16:30` |
-| STALE | `Claude: no reading for 47 min` / `Claude: sign in again` / `Updates paused` |
+| STALE | `Claude: no reading for 47 min` / `Claude: sign in again` (a service read with an API key: `Meshy: API key missing or rejected`) / `Updates paused` |
 | LOADING only | `Reading usage…` |
 
 Refresh: refreshes every service now (respecting each provider's minimum interval and back-off; a service that

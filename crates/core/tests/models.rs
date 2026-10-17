@@ -1825,6 +1825,40 @@ mod flyout {
         );
         assert_eq!(flyout.focus_card, Some(1));
     }
+
+    #[test]
+    fn the_verdict_names_a_missing_api_key_as_the_card_does() {
+        let locale = gb();
+        let read = now() - mins(47);
+        // Read once, then refused: the key (or the sign-in) stopped working.
+        let rejected = |snapshot: Snapshot| {
+            Svc::new(snapshot).status(ServiceStatus {
+                last_failure: Some((now(), FailureKind::Auth)),
+                ..fresh(read)
+            })
+        };
+        let weekly_at =
+            |provider| snapshot(provider, vec![weekly(0.2, Some(at(10, 12, 9, 0)))], read);
+        for (snapshot, verdict) in [
+            (meshy(620.0, read), "Meshy: API key missing or rejected"),
+            (
+                weekly_at(ProviderId::OpenCodeGo),
+                "OpenCode Go: API key missing or rejected",
+            ),
+            (weekly_at(ProviderId::Claude), "Claude: sign in again"),
+        ] {
+            let settings = settings_with(&[snapshot.provider]);
+            let eval = eval_once(&[rejected(snapshot)], &settings, &History::new(), now());
+            let flyout = build_flyout(
+                &eval,
+                &History::new(),
+                false,
+                &build_cx(now(), &locale, &settings),
+            );
+            assert_eq!(flyout.verdict.text, verdict);
+            assert_eq!(flyout.verdict.glyph, Some(SeverityGlyph::Info));
+        }
+    }
 }
 
 // ---- Regressions from the M1 review (spec lens) ------------------------------------------------

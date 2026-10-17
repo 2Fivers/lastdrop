@@ -142,6 +142,7 @@ lowercase_names = true
 "flyout.verdict.exhausted" = "{label} är slut till {time}"
 "flyout.verdict.stale" = "{service}: ingen avläsning på {age}"
 "flyout.verdict.signin" = "{service}: logga in igen"
+"flyout.verdict.apikey" = "{service}: API-nyckeln saknas eller avvisades"
 "flyout.verdict.paused" = "Uppdateringar pausade"
 "flyout.verdict.loading" = "Hämtar användning…"
 "flyout.verdict.more" = " · {n} till"

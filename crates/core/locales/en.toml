@@ -158,6 +158,7 @@ lowercase_names = true
 "flyout.verdict.exhausted" = "{label} is used up until {time}"
 "flyout.verdict.stale" = "{service}: no reading for {age}"
 "flyout.verdict.signin" = "{service}: sign in again"
+"flyout.verdict.apikey" = "{service}: API key missing or rejected"
 "flyout.verdict.paused" = "Updates paused"
 "flyout.verdict.loading" = "Reading usage…"
 "flyout.verdict.more" = " · {n} more"
