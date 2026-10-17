@@ -193,7 +193,7 @@ Messages between threads: workers send results to the main thread with
   history and the state file keep), and the app renames them in the chosen language on every
   evaluation (`grammar::meters`). The Slint windows have no text of their own: Rust passes
   each one its texts (the flyout's labels, the settings window's `SettingsTexts`, the about
-  window's `AboutTexts`), and the settings window switches language when Apply changes it.
+  window's `AboutTexts`), and the settings window switches language when a new language is saved.
 - **Settings** — versioned `serde` schema with defaults; unknown fields are kept.
 
 ## Providers (`lastdrop-providers`)

@@ -128,15 +128,18 @@ settings are written then, so the next start is not a first run again.
 
 ## 7. Settings window
 
-An **Accounts** section after **Services**, with a block for Claude and one for Codex:
+An **Accounts** group on the settings window's **Services** page ([settings-spec](settings-spec.md)
+§4), with an expandable card for Claude Code and one for Codex (`{n} accounts` under the name;
+collapsed until the user, or the first run's deep link, opens it):
 
 - One row per account: its name (§4; `Account {n}` when nothing else, numbered as the tray
   numbers the shown accounts, a duplicate with the number of the account it duplicates), the
   folder, and its state:
   `Signed in as {email}` (or `Signed in` when hidden or unknown), `Not signed in`,
   `Can't tell who is signed in`, or `Same account as {name}`. An **Alias** box (up to 24
-  characters; empty = none) and **Remove**. Removing the last account is not offered: turn the
-  service off instead.
+  characters; empty = none; saved at Enter, when it loses the focus, after 800 ms without a
+  keystroke, when its card closes or the page changes, settings-spec §5.2) and **Remove**.
+  Removing the last account is not offered: turn the service off instead.
 - **Found folders** (§6) not yet used, each with **Add**.
 - **Add folder…**: a folder picker (`IFileOpenDialog`, folders only). A folder already used is
   not added twice.
@@ -145,12 +148,16 @@ An **Accounts** section after **Services**, with a block for Claude and one for 
   it as an account with the name as its alias, and opens the vendor's own sign-in in a terminal
   with the folder set (`Provider::sign_in_command`: `claude` / `codex login`). Lastdrop never
   signs in itself.
-- **Hide personal info** check box.
+- **Hide e-mail addresses** (Services ▸ Privacy): a switch.
+
+Adding and removing an account are saved at once; "Account added." shows only once that save
+worked.
 
 New accounts get the key `f-` and 8 hex digits of the folder's hash (`-2` … on a clash); the
 default account keeps `default`. Keys never change, so history, pins and notifications follow the
 folder entry. The meter list under **Taskbar readout** names the account when its service shows
-two or more (`Claude · Work weekly`) and leaves out the duplicates' meters.
+two or more (`Claude · Work weekly`) and leaves out the duplicates' meters (Display ▸
+Meters).
 
 A source rebuilt during a run (a service turned off and on again, a folder removed and added
 back) gets the identity last known for it, so §3 and §5 hold for it as after a restart.
