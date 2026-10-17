@@ -45,7 +45,9 @@ The README's screenshots come from the same demo data. `pwsh tools\screenshots\s
 builds the app and renders them again into `docs\assets\screenshots`, light and dark (the first
 run installs a pinned [oxipng](https://github.com/shssoichiro/oxipng) into `target\tools`); with
 `-Check` it only tells whether they are up to date. When a change alters the flyout, the hover
-card, the history window or the demo data, commit the new pictures with it.
+card, the history window or the demo data, commit the new pictures with it. The `screenshots`
+check in CI (not a required one) runs `-Check` on pull requests that touch the crates, and
+uploads the pictures it rendered when they differ.
 
 ## Rules for changes
 

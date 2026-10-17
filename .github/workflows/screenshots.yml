@@ -1,0 +1,73 @@
+name: screenshots
+
+# Checks that the README's screenshots (docs/assets/screenshots) still show what the app renders
+# from its demo data: tools/screenshots/screenshots.ps1 -Check. Not a required check: when it
+# fails, run the script on Windows and commit the pictures with the change. The job uploads the
+# pictures it rendered, to compare with, or to commit as they are when they match a local run
+# byte for byte (the fonts on the runner decide that).
+#
+# Read-only: it renders and compares, and never pushes a commit or opens a pull request.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - crates/**
+      - Cargo.lock
+      - rust-toolchain.toml
+      - tools/screenshots/**
+      - docs/assets/screenshots/**
+      - .github/workflows/screenshots.yml
+  pull_request:
+    paths:
+      - crates/**
+      - Cargo.lock
+      - rust-toolchain.toml
+      - tools/screenshots/**
+      - docs/assets/screenshots/**
+      - .github/workflows/screenshots.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: screenshots-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    name: screenshots
+    runs-on: windows-latest
+    timeout-minutes: 40
+    env:
+      CARGO_TERM_COLOR: always
+      CARGO_INCREMENTAL: "0"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: Toolchain from rust-toolchain.toml
+        shell: bash
+        run: |
+          rustup toolchain install --profile minimal
+          rustup show active-toolchain
+
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+
+      # Builds the app (dev profile), installs the pinned oxipng into target\tools, renders the
+      # six pictures with --demo and compares their pixels with docs/assets/screenshots.
+      - name: Check the screenshots
+        run: ./tools/screenshots/screenshots.ps1 -Check -OutDir target/screenshots
+
+      - name: Upload the rendered screenshots
+        if: ${{ failure() }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: screenshots
+          path: target/screenshots/*.png
+          if-no-files-found: ignore
+          retention-days: 14
