@@ -6,8 +6,9 @@ maintainer tests the draft and publishes it, and winget picks it up. The mechani
 
 ## 1. Before the release
 
-- The version is bumped in the workspace `Cargo.toml` (`[workspace.package] version`) through a
-  pull request, and main is green.
+- The version is bumped through a pull request, and main is green: the workspace `Cargo.toml`
+  (`[workspace.package] version`, then `cargo update -w` for `Cargo.lock`) and the
+  `assemblyIdentity` version in `crates/app/app.manifest` (`0.1.1` → `0.1.1.0`).
 - The release checks of [ARCHITECTURE](ARCHITECTURE.md) ("Quality bar"): `tools/measure` within
   budget, a 24-hour soak with no growth in memory, GDI or USER handles, and the manual
   multi-monitor matrix.
