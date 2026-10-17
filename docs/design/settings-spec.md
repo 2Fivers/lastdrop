@@ -403,9 +403,11 @@ writer's change.
   accounts", "Meshy API key").
 - When the row holding the focus goes, the focus moves on in its block: after **Remove** to the
   next account's alias box, after a found folder's **Add** to the next found folder's Add, else to
-  **Add folder…**; after an API key's **Remove** back to its box. The target is named by the row's
-  data (the account key, the folder), not its index, which the rows after it keep until Slint's
-  repeater catches up.
+  **Add folder…** (also when the write failed: the adding stays pending and its row is gone);
+  after an API key's **Remove** back to its box. The target is named by the row's data (the
+  account key, the folder), not its index, which the rows after it keep until Slint's repeater
+  catches up; the found folders, like the accounts, are updated in place (by folder), so the
+  other rows, and the handlers that move the focus, stay.
 - Focus rectangles on the pane and the expander's chevron only after keyboard use.
 - The InfoBar is a live region; the expander's chevron reports expanded or collapsed.
 - Contrast themes: §3.3.
@@ -427,12 +429,14 @@ writer's change.
   keeps the focus; an alias commits after its 800 ms pause, not before; both deep links (page,
   expansion, focus — Space then acts on the focused control —, highlight, choosing; a repeated
   request keeps an edit); an account added and removed at once, "Account added.", the focus
-  moving on; a described service's row (key) expands to its key row from the keyboard (Tab to its
-  chevron, Space, Tab into the box), Enter saves the key, turns the service on and changes its
-  line, Remove takes the key back; the expansion survives a page change; every configured folder
-  listed, a duplicate marked "Same account as …" and its meters left out of the meter list; a
-  failed write on closing keeps the window open with the InfoBar, Try again closes it once the
-  write works, Close without saving discards.
+  moving on (after Remove to Add folder…, where Tab and Space open New account… and Cancel closes
+  it, or into the next alias box, where typing saves an alias; with two found folders Space on the
+  first Add, then Space again, adds both); a described service's row (key) expands to its key
+  row from the keyboard (Tab to its chevron, Space, Tab into the box), Enter saves the key, turns
+  the service on and changes its line, Remove takes the key back; the expansion survives a page
+  change; every configured folder listed, a duplicate marked "Same account as …" and its meters
+  left out of the meter list; a failed write on closing keeps the window open with the InfoBar,
+  Try again closes it once the write works, Close without saving discards.
 - Unit tests: §5.7 and §6.4.
 - **Manual**: keyboard only, Narrator, 100/150/200 % scaling, Windows text size 150 %, a
   contrast theme.

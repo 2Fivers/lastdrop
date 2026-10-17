@@ -536,8 +536,8 @@ fn work_area() -> (f32, f32) {
 
 /// Creates the settings window from `inputs` with `outside` for its commits, fills and wires it
 /// and keeps it as the open window (not shown yet). `native`: a real window (the folder picker,
-/// the sign-in console, Credential Manager, Theme Studio and the tray process are used); tests
-/// and previews pass `false` and an `outside` of their own.
+/// the sign-in console, Theme Studio, File Explorer and the tray process are used); tests and
+/// previews pass `false` and an `outside` of their own, which stores the API keys too.
 pub fn start(
     inputs: Inputs,
     outside: Box<dyn Outside>,
@@ -1050,10 +1050,31 @@ fn sync_accounts(session: &Session, draft: &Settings, strings: &dyn Strings) {
                 block.accounts.set_row_data(i, row);
             }
         }
+        // The found folders in place too, by folder: replacing the model would make every row
+        // anew, so the focus could not move on to the next one after an Add (settings-spec §8).
         let found = settings_accounts::found_rows(draft, &info, block.provider, strings);
-        let current: Vec<ui::FoundFolder> = block.found.iter().collect();
-        if current != found {
-            block.found.set_vec(found);
+        let count = found.len();
+        for i in (0..block.found.row_count()).rev() {
+            let gone = block
+                .found
+                .row_data(i)
+                .is_none_or(|row| !found.iter().any(|f| f.folder == row.folder));
+            if gone {
+                block.found.remove(i);
+            }
+        }
+        for (i, row) in found.into_iter().enumerate() {
+            match block.found.row_data(i) {
+                Some(current) if current.folder == row.folder => {
+                    if current != row {
+                        block.found.set_row_data(i, row);
+                    }
+                }
+                _ => block.found.insert(i, row),
+            }
+        }
+        while block.found.row_count() > count {
+            block.found.remove(count);
         }
     }
 }
@@ -1594,7 +1615,16 @@ fn add_found(session: &Session, block: i32, index: i32) {
     let Some(i) = usize::try_from(index).ok().filter(|i| *i < found.len()) else {
         return;
     };
-    if add_account(session, block, &found[i].folder, None) {
+    add_account(session, block, &found[i].folder, None);
+    // Its row went (also when the write failed: the adding stays pending).
+    let id = settings_accounts::folder_id(&found[i].folder);
+    let still_found = {
+        let info = session.accounts.borrow();
+        settings_accounts::unused(&session.edits.borrow().draft(), &info, provider)
+            .iter()
+            .any(|c| settings_accounts::folder_id(&c.folder) == id)
+    };
+    if !still_found {
         let target = found.get(i + 1).map_or_else(
             || "add-folder".to_owned(),
             |c| format!("found:{}", c.folder.display()),

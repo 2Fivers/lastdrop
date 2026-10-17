@@ -20,6 +20,7 @@ use lastdrop_app::settings_window::{self as sw, Focus, Inputs};
 use lastdrop_app::{custom_services, preview, ui};
 use lastdrop_core::model::{AccountKey, ProviderId};
 use lastdrop_core::settings::{AccountSettings, ReadoutContent, RefreshInterval, SourceSettings};
+use lastdrop_providers::discover::Candidate;
 use slint::platform::software_renderer::{MinimalSoftwareWindow, RepaintBufferType};
 use slint::platform::{Key, Platform, WindowAdapter, WindowEvent};
 use slint::{ComponentHandle, Model};
@@ -65,7 +66,7 @@ fn press(window: &ui::SettingsWindow, text: impl Into<slint::SharedString> + Clo
 }
 
 /// Presses `key` with Ctrl held.
-fn ctrl(window: &ui::SettingsWindow, key: Key) {
+fn ctrl(window: &ui::SettingsWindow, key: impl Into<slint::SharedString> + Clone) {
     let w = window.window();
     w.dispatch_event(WindowEvent::KeyPressed {
         text: Key::Control.into(),
@@ -340,12 +341,22 @@ fn settings_pages_instant_apply_and_deep_links() {
     // Its row went with the focus; the focus goes on to Add folder… (no other found folder).
     assert_eq!(window.get_focus_target(), "add-folder");
 
-    // Removing it commits at once too; the focus goes to the next account (there is none: Add
-    // folder…).
+    // Removing it commits at once too; the focus goes to the next account, here none: Add
+    // folder…, so Tab reaches New account…, which Space opens (its name box takes the focus);
+    // Tab passes Create and sign in (off while the box is empty) to Cancel.
+    let request = window.get_focus_request();
     window.invoke_account_removed(0, 2);
     frame(&window);
     assert_eq!(claude_aliases(&outside.borrow()).len(), 2);
+    assert!(window.get_focus_request() > request);
     assert_eq!(window.get_focus_target(), "add-folder");
+    press(&window, Key::Tab);
+    press(&window, " ");
+    assert_eq!(window.get_new_account_block(), 0, "New account… opened");
+    press(&window, Key::Tab);
+    press(&window, " ");
+    assert_eq!(window.get_new_account_block(), -1, "Cancel closed it");
+    // Removing the first account moves the focus to the next one's alias box: typed there.
     window.invoke_account_removed(0, 0);
     frame(&window);
     assert_eq!(
@@ -354,6 +365,14 @@ fn settings_pages_instant_apply_and_deep_links() {
         "the account after it"
     );
     assert_eq!(claude_aliases(&outside.borrow()), [Some("Work".to_owned())]);
+    ctrl(&window, "a");
+    type_text(&window, "Office");
+    press(&window, Key::Return);
+    wait(&window, 300);
+    assert_eq!(
+        claude_aliases(&outside.borrow()),
+        [Some("Office".to_owned())]
+    );
     assert_eq!(
         services(&window)[0].description,
         "Claude Code's sign-in on this PC · 1 account"
@@ -424,9 +443,18 @@ fn settings_pages_instant_apply_and_deep_links() {
 
     // ---- Every configured folder has its row, a duplicate too (accounts-spec §3, §7): a third
     // Claude folder signed in to the same account as the default one says so and its meters
-    // are left out of the meter list.
+    // are left out of the meter list. A file that can be written again.
+    let outside = Rc::new(RefCell::new(MemoryOutside::default()));
     let mut inputs = demo_inputs();
     let home = std::path::PathBuf::from(r"C:\Users\tester");
+    // A second folder found on this PC besides `.claude-old`.
+    let spare = home.join(".claude-spare");
+    if let Some(found) = inputs.accounts.found.get_mut(&ProviderId::Claude) {
+        found.push(Candidate {
+            folder: spare.clone(),
+            source: SourceSettings::ClaudeConfigDir { path: spare },
+        });
+    }
     let copy = home.join(".claude-copy");
     let same = inputs.accounts.identity(&home.join(".claude")).clone();
     inputs.accounts.identities.insert(folder_id(&copy), same);
@@ -461,6 +489,29 @@ fn settings_pages_instant_apply_and_deep_links() {
         .collect();
     assert!(meters.iter().any(|m| m.contains("Work")), "{meters:?}");
     assert!(!meters.iter().any(|m| m.contains("Copy")), "{meters:?}");
+
+    // ---- Two found folders: the deep link focuses the first one's Add; Space adds it and the
+    // focus moves on to the next one's Add, so Space adds that too.
+    sw::reveal(Focus::Accounts);
+    frame(&window);
+    press(&window, " ");
+    press(&window, " ");
+    let folders: Vec<String> = accounts(&window, 0)
+        .iter()
+        .map(|r| r.folder.to_string())
+        .collect();
+    assert_eq!(folders.len(), 5, "{folders:?}");
+    assert!(folders[3].ends_with(".claude-old") && folders[4].ends_with(".claude-spare"));
+    assert_eq!(window.get_focus_target(), "add-folder");
+    assert_eq!(
+        outside
+            .borrow()
+            .disk
+            .provider(ProviderId::Claude)
+            .map(|p| p.accounts.len()),
+        Some(5),
+        "each saved at once"
+    );
     window.invoke_dismiss();
     assert!(!sw::is_open());
 }
