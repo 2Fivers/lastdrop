@@ -1087,16 +1087,21 @@ export component SettingsWindow inherits Window {
                                     }
                                 }
                                 SettingsCard {
-                                    CardRow {
+                                    // Under its text: "Same as Windows (Svenska)" is too wide to
+                                    // share a line with it at the smallest size.
+                                    StackedRow {
                                         header: root.texts.language;
                                         description: root.texts.language-hint;
-                                        ComboBox {
-                                            min-width: 210px;
-                                            model: root.language-choices;
-                                            current-index <=> root.language-index;
-                                            accessible-label: root.texts.language;
-                                            selected => {
-                                                root.language-selected(self.current-index);
+                                        HorizontalLayout {
+                                            alignment: start;
+                                            ComboBox {
+                                                min-width: 240px;
+                                                model: root.language-choices;
+                                                current-index <=> root.language-index;
+                                                accessible-label: root.texts.language;
+                                                selected => {
+                                                    root.language-selected(self.current-index);
+                                                }
                                             }
                                         }
                                     }
