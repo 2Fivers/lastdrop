@@ -37,7 +37,8 @@ The release's installer is the app itself: `Lastdrop-Setup.exe`.
   the exit code (0 or 1) and the log say how it went, and the installed app starts quietly
   (`--autostart`, nothing opens).
 - **What it does**, per user, no elevation: asks a running Lastdrop to quit (the settings-changed
-  message with `Changes::quit`) and waits up to 15 s for its mutex; copies itself to
+  message with `Changes::quit`, again every second: a Lastdrop that has just started holds its
+  mutex before it listens) and waits up to 15 s for its mutex; copies itself to
   `%LOCALAPPDATA%\Programs\Lastdrop\lastdrop.exe` (retrying for 10 s while a scanner holds the
   file); writes `Lastdrop.lnk` in the Start menu's Programs folder and the "Installed apps" entry
   (`HKCU\…\Uninstall\Lastdrop`: name, version, publisher Adinosaur AB, icon, folder, size,

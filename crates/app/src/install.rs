@@ -32,6 +32,9 @@ pub const SETUP_STEM: &str = "lastdrop-setup";
 /// How long the installer waits for a running Lastdrop to quit.
 const QUIT_WAIT: Duration = Duration::from_secs(15);
 
+/// How often it asks again while it waits ([`quit_running_app`]).
+const QUIT_RESEND: Duration = Duration::from_secs(1);
+
 /// How long it retries replacing a file another process still holds (an anti-virus scan).
 const COPY_WAIT: Duration = Duration::from_secs(10);
 
@@ -84,6 +87,11 @@ fn strings() -> &'static dyn Strings {
 }
 
 /// Asks a running Lastdrop to quit and waits for it; `false` when it is still running.
+///
+/// It asks again every [`QUIT_RESEND`] until the app is gone: a Lastdrop that has just started
+/// holds its mutex before its settings-changed listener exists, and a quit posted in between is
+/// lost (no listener to post to). That happens when an install is followed at once by an
+/// uninstall, as winget's validation and the release workflow's install test do.
 fn quit_running_app() -> bool {
     if !single_instance::app_running() {
         return true;
@@ -91,12 +99,21 @@ fn quit_running_app() -> bool {
     let quit = Changes {
         quit: true,
         ..Changes::default()
-    };
-    let _ = single_instance::signal_settings_changed(quit.to_wparam());
+    }
+    .to_wparam();
     let start = Instant::now();
+    let mut asked: Option<Instant> = None;
     while start.elapsed() < QUIT_WAIT {
         if !single_instance::app_running() {
             return true;
+        }
+        if asked.is_none_or(|at| at.elapsed() >= QUIT_RESEND) {
+            match single_instance::signal_settings_changed(quit) {
+                Ok(true) => {}
+                Ok(false) => log::info!("install: Lastdrop is not listening yet; asking again"),
+                Err(e) => log::warn!("install: cannot ask Lastdrop to quit: {e}"),
+            }
+            asked = Some(Instant::now());
         }
         std::thread::sleep(Duration::from_millis(200));
     }
