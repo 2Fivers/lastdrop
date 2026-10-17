@@ -6,11 +6,19 @@ name: ci
 # own workflows (dependency-review.yml, codeql.yml).
 # Dependency updates come from the organisation's shared Renovate preset (renovate.json), not
 # from a bot configured here.
+#
+# Pull requests get the quick checks (fmt, clippy, test, cargo-deny). The release build (fat
+# LTO, one codegen unit: about 9 minutes) runs on main, weekly and by hand. The weekly run also
+# catches new RustSec advisories in an unchanged tree and keeps main's caches from expiring
+# (GitHub evicts a cache that has not been read for 7 days). Only main saves caches; pull
+# requests restore main's.
 
 on:
   push:
     branches: [main]
   pull_request:
+  schedule:
+    - cron: "41 3 * * 1"
   workflow_dispatch:
 
 permissions:
@@ -22,7 +30,7 @@ concurrency:
 
 jobs:
   check:
-    name: fmt, clippy, test, release build
+    name: fmt, clippy, test
     runs-on: windows-latest
     timeout-minutes: 60
     env:
@@ -43,6 +51,8 @@ jobs:
           cargo --version
 
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - name: Format
         run: cargo fmt --all -- --check
@@ -53,6 +63,30 @@ jobs:
       # Live smoke tests (a real codex app-server) are #[ignore]d and do not run here.
       - name: Test
         run: cargo test --workspace --locked
+
+  release:
+    name: release build
+    if: ${{ github.event_name != 'pull_request' }}
+    runs-on: windows-latest
+    timeout-minutes: 60
+    env:
+      CARGO_TERM_COLOR: always
+      CARGO_INCREMENTAL: "0"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: Toolchain from rust-toolchain.toml
+        shell: bash
+        run: |
+          rustup toolchain install --profile minimal
+          rustup show active-toolchain
+
+      # A cache of its own (the job id is part of the key): release artefacts only.
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - name: Release build
         run: cargo build --release -p lastdrop --locked
