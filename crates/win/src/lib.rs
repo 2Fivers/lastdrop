@@ -61,6 +61,7 @@ pub mod folder_picker;
 pub mod geom;
 pub mod hotkey;
 pub mod idle;
+pub mod install;
 pub mod locale;
 pub mod network;
 pub mod occupancy;

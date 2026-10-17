@@ -46,6 +46,7 @@ pub mod settings;
 pub mod stats;
 pub mod theme;
 pub mod tokens;
+pub mod update;
 mod util;
 
 /// The time crate every Lastdrop crate uses, re-exported so versions cannot drift.

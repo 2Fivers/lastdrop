@@ -50,6 +50,7 @@ mod lenient;
 pub mod meshy;
 pub mod opencode_go;
 pub mod real;
+pub mod release;
 pub mod sqlite;
 pub mod tokens;
 

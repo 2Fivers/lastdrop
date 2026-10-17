@@ -144,6 +144,11 @@ pub struct Changes {
     /// hash of its file id, since the two processes may have loaded different files (one added
     /// since the tray process started); `None` in the tray process when it has no such service.
     pub custom_key: Option<ProviderId>,
+    /// "Check now" in Settings ▸ Updates: check for an update now and say what was found
+    /// (updates-spec §1).
+    pub check_updates: bool,
+    /// The installer is about to replace `lastdrop.exe`: quit (updates-spec §2).
+    pub quit: bool,
 }
 
 impl Changes {
@@ -156,6 +161,10 @@ impl Changes {
     /// The flag of [`Changes::custom_key`]; the service's [`Changes::custom_hash`] is in bits
     /// 8–31.
     const CUSTOM_KEY: usize = 8;
+    /// The flag of [`Changes::check_updates`].
+    const CHECK_UPDATES: usize = 16;
+    /// The flag of [`Changes::quit`].
+    const QUIT: usize = 32;
     /// Where the hash of [`Changes::custom_key`] starts.
     const CUSTOM_SHIFT: u32 = 8;
 
@@ -199,6 +208,12 @@ impl Changes {
         if self.opencode_go_key {
             flags |= Changes::OPENCODE_GO_KEY;
         }
+        if self.check_updates {
+            flags |= Changes::CHECK_UPDATES;
+        }
+        if self.quit {
+            flags |= Changes::QUIT;
+        }
         if let Some(provider) = self.custom_key {
             flags |= Changes::CUSTOM_KEY
                 | Changes::custom_hash(provider.as_str()) << Changes::CUSTOM_SHIFT;
@@ -223,6 +238,8 @@ impl Changes {
             meshy_key: wparam & Changes::MESHY_KEY != 0,
             opencode_go_key: wparam & Changes::OPENCODE_GO_KEY != 0,
             custom_key,
+            check_updates: wparam & Changes::CHECK_UPDATES != 0,
+            quit: wparam & Changes::QUIT != 0,
         }
     }
 }
@@ -514,13 +531,15 @@ mod tests {
                     meshy_key,
                     opencode_go_key: !meshy_key,
                     custom_key: None,
+                    check_updates: settings,
+                    quit: !settings,
                 };
                 assert_eq!(Changes::from_wparam(changes.to_wparam()), changes);
             }
         }
         assert_eq!(Changes::default().to_wparam(), 0);
         assert_eq!(
-            Changes::from_wparam(1 | 16),
+            Changes::from_wparam(1 | 64),
             Changes {
                 settings: true,
                 ..Changes::default()

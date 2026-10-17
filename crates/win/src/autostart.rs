@@ -35,6 +35,12 @@ pub fn enable(exe: &Path) -> std::io::Result<()> {
     enable_at(RUN_KEY, VALUE_NAME, exe)
 }
 
+/// Whether the Run value exists, whatever program it names (the installer moves it to the
+/// installed copy, updates-spec §2).
+pub fn is_set() -> std::io::Result<bool> {
+    Ok(read_string(RUN_KEY, VALUE_NAME)?.is_some())
+}
+
 /// Deletes the Run value (not an error when it does not exist).
 pub fn disable() -> std::io::Result<()> {
     disable_at(RUN_KEY, VALUE_NAME)

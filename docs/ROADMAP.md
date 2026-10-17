@@ -10,7 +10,8 @@ _researching_ are being verified against primary sources before anything is buil
 - **Native Windows 11 by default.** The flyout sits next to the volume and network flyouts and
   should look like it belongs there. Other looks come from themes, not from the default.
 - **No analytics, no telemetry.** Nothing about the user or their usage leaves the machine,
-  except the requests to the service whose usage is being read.
+  except the requests to the service whose usage is being read. The one other request is the
+  daily update check to GitHub, which sends nothing about the user and can be turned off.
 - **Data stays local.** Settings, history and secrets live on the user's machine; secrets in
   Windows Credential Manager or DPAPI, never in plain files.
 - **Never break the user's other tools.** Read other tools' tokens; never refresh or rewrite
@@ -136,8 +137,9 @@ setups.
   only Slint's own "Made with Slint" badge in the about window stays English. Another language
   is one TOML file in `crates/core/locales`, checked and compiled in by the build, with CLDR
   plural rules for whole numbers ([how](../crates/core/locales/README.md)).
-- Updates: check, download and apply in place (channel to be decided while the app is not
-  publicly distributed).
+- Updates: check, download and apply in place. Built ([updates-spec](design/updates-spec.md)):
+  GitHub Releases of a public releases repository, checked once a day (can be turned off),
+  downloaded, checked against `SHA256SUMS` and installed by the new version's own installer.
 
 ### Statistics
 
@@ -171,13 +173,18 @@ Status as of 2026-10-16.
 | M2 | **More services** | Copilot, Cursor, Antigravity, OpenCode Go, Grok Build; declarative balance providers; multiple accounts for Claude Code and Codex. | Copilot, Cursor, Antigravity, OpenCode Go and Grok built ([providers-research](design/providers-research.md)); multiple accounts built ([accounts-spec](design/accounts-spec.md): who is signed in to each folder, the same account in two folders shown once, a folder signed in to someone else starts over, found folders, add and create accounts, hide personal info); declarative balance providers built ([custom-services-spec](design/custom-services-spec.md)). Done |
 | M3 | **Statistics** | History store, pace, forecasts, charts, threshold and reset notifications. | History store (90 days, one sample per meter per 5 minutes), pace, forecasts, a 14-day sparkline and notifications (levels, used up, resets, low balances) built; the usage history window built (each meter over time, use per day, active hours, [charts-spec](design/charts-spec.md)); tokens and cost per day and model built ([tokens-spec](design/tokens-spec.md)). Done |
 | M4 | **Make it yours** | Readout on every taskbar, themes and Theme Studio, languages, adaptive refresh. | Adaptive refresh built; English and Swedish, following Windows' display language or the setting, with numbers and times in the Windows regional format. The settings and about windows switch language too. The readout shows on every taskbar when chosen ([every-taskbar-spec](design/every-taskbar-spec.md); the multi-monitor matrix is a release check); themes and Theme Studio built ([themes-spec](design/themes-spec.md)). Done |
-| M5 | **v0.1** | Updates, code signing, installer; decide on distribution and licensing. | Not started |
+| M5 | **v0.1** | Updates, code signing, installer; decide on distribution and licensing. | Installer (the app installs itself per user as `Lastdrop-Setup.exe`, with an "Installed apps" entry and `--uninstall`), updates and the release script built ([updates-spec](design/updates-spec.md)); unsigned until a certificate exists (the script signs once one is configured); the public releases repository and licensing are left |
 
 ## Open questions
 
-- Update and distribution channel while the app is proprietary and the repository private.
+- Licensing and an end-user licence text for the installer.
+- A code-signing certificate: Azure Trusted Signing or an OV/EV certificate.
 
 ## Settled
+
+- **Distribution and updates** (M5, 2026-10-16): GitHub Releases, from a public repository of
+  its own (`2Fivers/lastdrop-releases`) since the source repository is private; releases are
+  unsigned until a certificate exists ([updates-spec](design/updates-spec.md)).
 
 - **Theme Studio scope** (M4, 2026-10-16): colours and widget layout, no free-form placement
   ([themes-spec](design/themes-spec.md)).
