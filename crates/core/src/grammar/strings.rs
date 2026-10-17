@@ -20,7 +20,8 @@
 //! never `{pct}`; `{pct}`, `{e}`,
 //! `{p}`, `{left}` formatted percents (R§5.6, sign included: `42%`, sv-SE `42 %`); `{meter}` a
 //! meter's `short_name` as it is, except in `a11y.*`, where it is the spoken name
-//! ([`super::a11y`]); `{service}` the service
+//! ([`super::a11y`]), and in `settings.meter.*.a11y`, the settings window's meter row label;
+//! `{service}` the service
 //! name with alias (R§6.4); `{client}` [`crate::model::ProviderId::client_name`]; `{label}` =
 //! `card.also.line`; `{short_name}` the meter's `short_name`; `{amount}`, `{ref}`, `{burn}`
 //! grouped numbers; `{unit}` a unit word; `{window}` `card.window.*`; `{other}` the other
@@ -446,8 +447,15 @@ catalogue! {
 
         // ---- Settings window (ROADMAP M1 "settings basics"; out of both specs, F§12)
         SettingsTitle = "settings.title",
-        SettingsHeading = "settings.heading",
-        SettingsServices = "settings.services",
+        SettingsPageServices = "settings.page.services",
+        SettingsPageServicesDescription = "settings.page.services.description",
+        SettingsPageDisplay = "settings.page.display",
+        SettingsPageDisplayDescription = "settings.page.display.description",
+        SettingsPageNotifications = "settings.page.notifications",
+        SettingsPageGeneral = "settings.page.general",
+        SettingsNotSavedTitle = "settings.notsaved.title",
+        SettingsRetry = "settings.retry",
+        SettingsDiscard = "settings.discard",
         SettingsServicesHint = "settings.services.hint",
         SettingsKey = "settings.key",
         SettingsKeyPaste = "settings.key.paste",
@@ -517,6 +525,7 @@ catalogue! {
         SettingsTheme = "settings.theme",
         SettingsThemeStudio = "settings.theme.studio",
         SettingsThemeHint = "settings.theme.hint",
+        SettingsAppearance = "settings.appearance",
         InstallAsk = "install.ask",
         InstallDone = "install.done",
         InstallFailed = "install.failed",
@@ -536,23 +545,29 @@ catalogue! {
         SettingsUpdatesNow = "settings.updates.now",
         SettingsUpdatesHint = "settings.updates.hint",
         SettingsUpdatesAsked = "settings.updates.asked",
+        SettingsVersion = "settings.version",
         SettingsReadout = "settings.readout",
         SettingsReadoutShow = "settings.readout.show",
         SettingsReadoutEvery = "settings.readout.every",
         SettingsReadoutRows = "settings.readout.rows",
         SettingsReadoutAuto = "settings.readout.auto",
         SettingsReadoutPinned = "settings.readout.pinned",
+        SettingsReadoutChoosing = "settings.readout.choosing",
         SettingsReadoutTimes = "settings.readout.times",
         SettingsReadoutClock = "settings.readout.clock",
         SettingsReadoutRelative = "settings.readout.relative",
         SettingsMetersHint = "settings.meters.hint",
+        SettingsMeters = "settings.meters",
+        SettingsMetersEmpty = "settings.meters.empty",
         SettingsMeter = "settings.meter",
         SettingsMeterShow = "settings.meter.show",
         SettingsMeterPin = "settings.meter.pin",
-        SettingsNotify = "settings.notify",
+        SettingsMeterShowA11y = "settings.meter.show.a11y",
+        SettingsMeterPinA11y = "settings.meter.pin.a11y",
         SettingsNotifyOn = "settings.notify.on",
         SettingsNotifyLevels = "settings.notify.levels",
         SettingsNotifyAnd = "settings.notify.and",
+        SettingsNotifyAlso = "settings.notify.also",
         SettingsNotifyOff = "settings.notify.off",
         SettingsNotifyUsedUp = "settings.notify.usedup",
         SettingsNotifyResets = "settings.notify.resets",
@@ -571,14 +586,10 @@ catalogue! {
         SettingsLanguage = "settings.language",
         SettingsLanguageWindows = "settings.language.windows",
         SettingsLanguageHint = "settings.language.hint",
-        SettingsStartup = "settings.startup",
         SettingsStartupOn = "settings.startup.on",
-        SettingsApply = "settings.apply",
-        SettingsClose = "settings.close",
-        SettingsSaved = "settings.saved",
-        SettingsSavedNoShortcut = "settings.saved.noshortcut",
-        SettingsSavedNoStartup = "settings.saved.nostartup",
-        SettingsSavedNeither = "settings.saved.neither",
+        SettingsStartupNotChanged = "settings.startup.notchanged",
+        SettingsStartupStuckOn = "settings.startup.stuck.on",
+        SettingsStartupStuckOff = "settings.startup.stuck.off",
         SettingsNotSaved = "settings.notsaved",
 
         // ---- Accounts (accounts-spec §4, §7)
@@ -592,6 +603,8 @@ catalogue! {
         SettingsAccountsSame = "settings.accounts.same",
         SettingsAccountsAlias = "settings.accounts.alias",
         SettingsAccountsAliasNone = "settings.accounts.alias.none",
+        SettingsAccountsAliasA11y = "settings.accounts.alias.a11y",
+        SettingsAccountsRemoveA11y = "settings.accounts.remove.a11y",
         SettingsAccountsRemove = "settings.accounts.remove",
         SettingsAccountsFound = "settings.accounts.found",
         SettingsAccountsAdd = "settings.accounts.add",
@@ -606,6 +619,8 @@ catalogue! {
         SettingsAccountsNotCreated = "settings.accounts.notcreated",
         SettingsAccountsNoSignIn = "settings.accounts.nosignin",
         SettingsPrivacyHide = "settings.privacy.hide",
+        SettingsPrivacy = "settings.privacy",
+        SettingsPrivacyHideDescription = "settings.privacy.hide.description",
 
         // ---- Usage history window (charts-spec)
         HistoryTitle = "history.title",
@@ -664,6 +679,8 @@ catalogue! {
         // ---- Usage history window (charts-spec §5)
         A11yHistoryUsedUp = "a11y.history.used_up",
         UnitWeek = "unit.week",
+        // ---- Settings window (settings-spec §4)
+        SettingsAccountsCount = "settings.accounts.count",
     }
 }
 

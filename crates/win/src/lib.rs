@@ -16,6 +16,8 @@
 //! - [`occupancy`]: the UI Automation thread that measures the taskbar's app buttons.
 //! - [`flyout_pos`]: flyout and hover-card rectangles from an anchor (F§1.3, R§8.1).
 //! - [`backdrop`]: DWM backdrop, corners, dark mode, tool-window and no-activate show/hide.
+//! - [`named_lock`]: the named mutex around every read-merge-write of `settings.json`
+//!   ([`named_lock::SETTINGS_LOCK`], settings-spec §6).
 //! - [`autostart`], [`credentials`], [`single_instance`], [`locale`], [`network`], [`hotkey`]
 //!   (optional global hotkey, R§10), [`shell`] (usage page in the browser, vendor sign-in in a
 //!   console, F§4.3, F§9), [`idle`] (time since the last input, for the adaptive refresh),
@@ -64,6 +66,7 @@ pub mod hotkey;
 pub mod idle;
 pub mod install;
 pub mod locale;
+pub mod named_lock;
 pub mod network;
 pub mod occupancy;
 pub mod palette;

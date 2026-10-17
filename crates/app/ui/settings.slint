@@ -1,11 +1,21 @@
-// Settings window: M1 "settings basics" (ROADMAP M1). The settings design is out of scope of both
-// specs (F§12); this is a plain Windows 11 (fluent) window following the app theme. API keys
-// (Meshy, OpenCode Go) are passed to Rust once and stored in Credential Manager, never kept in a
-// property, never shown again and never written to settings.json. Every text comes from Rust
-// (`texts`, the `settings.*` strings) in the chosen language.
+// The settings window (settings-spec): a navigation pane and four pages of settings cards —
+// Services, Display, Notifications, General — with instant apply (settings-spec §5): every change
+// is reported to Rust at once (switches, check boxes, combo boxes) or at its commit point
+// (aliases, the shortcut), and Rust commits it. There is no Apply and no footer. Every text comes
+// from Rust (`texts`, the `settings.*` strings) in the chosen language. API keys (Meshy,
+// OpenCode Go, described services) are passed to Rust once and stored in Credential Manager,
+// never kept in a property, never shown again and never written to settings.json.
+//
+// Every editable value lives in Rust or in a property of this window, never only inside a page:
+// all four pages stay instantiated (the inactive ones invisible, so out of the Tab order and the
+// accessibility tree) and keep their scroll position.
 
-import { Button, CheckBox, LineEdit, ComboBox, ScrollView, Switch, GroupBox, Palette } from "std-widgets.slint";
+import { Button, CheckBox, LineEdit, ComboBox, ScrollView, Switch, Palette } from "std-widgets.slint";
+import { SettingsTheme, SettingsFocusRect, NavItem, GroupHeading, PageNote, CardRow, StackedRow, SettingsCard, ExpanderHeader, InfoBar } from "settings_controls.slint";
 
+export { SettingsTheme }
+
+// One service of the service list: on or off.
 export struct ProviderRow {
     id: string,
     name: string,
@@ -14,30 +24,38 @@ export struct ProviderRow {
 
 // One meter of an enabled service (settings `hidden_meters`, F§2.2; readout pins, R§4.3).
 // label: the meter with its service (`settings.meter`: `Claude weekly`, `Veckogränsen för
-// Claude`); pinned: one of the 1–2 readout pins (Rust keeps at most two, in the order picked).
+// Claude`); pinned: one of the 1–2 readout pins (Rust keeps at most two, in the order picked);
+// show-label / pin-label: the check boxes' accessible names (`Show Claude weekly`).
 export struct MeterChoice {
     label: string,
     shown: bool,
     pinned: bool,
+    show-label: string,
+    pin-label: string,
 }
 
-// The API key of one service (Meshy, OpenCode Go): its name, the box's placeholder, and whether
-// a key is stored. The key itself is never shown or kept here.
+// The API key of one service: its name, the box's placeholder, whether a key is stored and what
+// the last Save or Remove did. The key itself is never shown or kept here.
 export struct ApiKeyRow {
     title: string,
     placeholder: string,
     stored: bool,
+    status: string,
 }
 
 // One account of Claude Code or Codex (accounts-spec §7): its name (alias, e-mail or
-// `Account 2`), its folder, who is signed in there, its alias as typed, and whether it may be
-// removed (not the last one of its service).
+// `Account 2`), its folder, who is signed in there, its alias, whether it may be removed (not the
+// last one of its service) and the alias box's accessible name. Rust updates rows in place;
+// `revision` changes when Rust sets the alias box's text (after its edit committed).
 export struct AccountRow {
     name: string,
     folder: string,
     status: string,
     alias: string,
+    alias-label: string,
+    remove-label: string,
     removable: bool,
+    revision: int,
 }
 
 // A folder found on this PC that is not an account yet (accounts-spec §6).
@@ -46,7 +64,8 @@ export struct FoundFolder {
     status: string,
 }
 
-// The accounts of one service, with its folders found on this PC.
+// The accounts of one service, with its folders found on this PC. Set once; its rows change in
+// place, and what changes about the block itself is in the window's `block-*` lists.
 export struct AccountBlock {
     title: string,
     accounts: [AccountRow],
@@ -56,8 +75,12 @@ export struct AccountBlock {
 // The window's fixed texts (`settings.*` strings), from Rust.
 export struct SettingsTexts {
     title: string,
-    heading: string,
-    services: string,
+    page-services: string,
+    page-services-description: string,
+    page-display: string,
+    page-display-description: string,
+    page-notifications: string,
+    page-general: string,
     services-hint: string,
     accounts: string,
     accounts-hint: string,
@@ -70,13 +93,16 @@ export struct SettingsTexts {
     accounts-new: string,
     accounts-new-name: string,
     accounts-new-create: string,
+    privacy: string,
     privacy-hide: string,
+    privacy-hide-description: string,
     key: string,
     key-save: string,
     key-remove: string,
     key-hint: string,
     refresh: string,
     refresh-check: string,
+    appearance: string,
     theme: string,
     theme-studio: string,
     theme-hint: string,
@@ -84,22 +110,26 @@ export struct SettingsTexts {
     updates-check: string,
     updates-now: string,
     updates-hint: string,
+    version: string,
     readout: string,
     readout-show: string,
     readout-every: string,
     readout-rows: string,
     readout-auto: string,
     readout-pinned: string,
+    readout-choosing: string,
     readout-times: string,
     readout-clock: string,
     readout-relative: string,
+    meters: string,
     meters-hint: string,
+    meters-empty: string,
     meter-show: string,
     meter-pin: string,
-    notify: string,
     notify-on: string,
     notify-levels: string,
     notify-and: string,
+    notify-also: string,
     notify-used-up: string,
     notify-resets: string,
     notify-low: string,
@@ -113,50 +143,121 @@ export struct SettingsTexts {
     shortcut-key: string,
     language: string,
     language-hint: string,
-    startup: string,
     startup-on: string,
-    apply: string,
-    close: string,
+    retry: string,
+    discard: string,
+    not-saved-title: string,
 }
 
-component SectionTitle inherits Text {
-    font-size: 14px;
-    font-weight: 600;
-    color: Palette.foreground;
-}
-
-component Hint inherits Text {
+// A line saying what went wrong in a card.
+component ErrorNote inherits Text {
     font-size: 12px;
-    color: Palette.foreground.with-alpha(0.62);
+    color: SettingsTheme.critical;
     wrap: word-wrap;
+}
+
+// A row of a grouped card holding one check box with its own label.
+component CheckRow inherits Rectangle {
+    in property <bool> divider;
+    min-height: 44px;
+    if root.divider: Rectangle {
+        y: 0px;
+        height: 1px;
+        background: SettingsTheme.divider;
+    }
+    HorizontalLayout {
+        padding-left: 16px;
+        padding-right: 16px;
+        padding-top: 8px;
+        padding-bottom: 8px;
+        alignment: start;
+        @children
+    }
+}
+
+// A page's title (28 px semibold, Display) and its one-line description.
+component PageHeader inherits VerticalLayout {
+    in property <string> title;
+    in property <string> description;
+    padding-top: 28px;
+    padding-bottom: 12px;
+    spacing: 4px;
+    Text {
+        text: root.title;
+        font-family: SettingsTheme.font-display;
+        font-size: 28px;
+        font-weight: 600;
+        color: SettingsTheme.text-primary;
+        wrap: word-wrap;
+        accessible-role: text;
+    }
+    if root.description != "": Text {
+        text: root.description;
+        font-size: 14px;
+        color: SettingsTheme.text-secondary;
+        wrap: word-wrap;
+    }
+}
+
+// A group heading with 24 px above it and 8 px below (with the page's 4 px spacing).
+component GroupHeader inherits VerticalLayout {
+    in property <string> text;
+    in property <string> description;
+    padding-top: 20px;
+    padding-bottom: 4px;
+    spacing: 2px;
+    GroupHeading {
+        text: root.text;
+    }
+    if root.description != "": PageNote {
+        text: root.description;
+    }
 }
 
 export component SettingsWindow inherits Window {
     title: root.texts.title;
-    preferred-width: 480px;
-    preferred-height: 640px;
-    min-width: 400px;
-    min-height: 360px;
+    preferred-width: 880px;
+    preferred-height: 680px;
+    min-width: 680px;
+    min-height: 520px;
+    background: SettingsTheme.page-fill;
+    default-font-family: "Segoe UI Variable Text";
 
     in property <SettingsTexts> texts;
-    in-out property <[ProviderRow]> providers;
-    // Claude Code's and Codex's accounts (accounts-spec §7), one block per service.
+    // The page shown: 0 Services, 1 Display, 2 Notifications, 3 General.
+    in-out property <int> page: 0;
+
+    // ---- Services
+    in property <[ProviderRow]> providers;
+    // Claude Code's and Codex's accounts (accounts-spec §7), one block per service, and per block
+    // whether it is expanded, its summary (`2 accounts`) and what the last action did.
     in property <[AccountBlock]> account-blocks;
-    // Hide personal info (accounts-spec §4); Rust renames the accounts when it is toggled.
-    in property <bool> hide-personal-info;
-    // Refresh interval: index into interval-choices ("Manual", "1 min", …), localized by Rust.
-    in property <[string]> interval-choices;
-    in-out property <int> interval-index;
-    in-out property <bool> readout-enabled;
-    in-out property <bool> readout-every;
-    // Readout content (R§4.3): 0 auto, 1 pinned meters.
-    in-out property <int> readout-content-index;
+    in property <[bool]> block-expanded;
+    in property <[string]> block-summary;
+    in property <[string]> block-status;
+    in-out property <bool> hide-personal-info;
+    in property <[ApiKeyRow]> api-keys;
+
+    // ---- Display
+    // The themes (themes-spec §3): built-in ones first, then the user's, and the one in use.
+    in property <[string]> themes;
+    in-out property <int> theme-index;
     // "Show times as" (R§5.2): 0 clock times, 1 time remaining.
     in-out property <int> time-style-index;
+    in-out property <bool> readout-enabled;
+    in-out property <bool> readout-every;
+    // Readout content (R§4.3): 0 auto, 1 pinned meters (or choosing them).
+    in-out property <int> readout-content-index;
+    // "Meters I pin" without a pin yet: the taskbar stays automatic.
+    in property <bool> choosing-pins;
     in property <[MeterChoice]> meters;
-    // Scroll to and highlight the pins (tray menu "Taskbar readout ▸ Pinned meters…", R§10).
-    in property <bool> focus-pins;
-    // Notifications (N§2): on/off, two levels (indices into level-choices: "Off", "50%", …),
+    // The tray menu's "Pinned meters…" (R§10): an accent outline around the readout's content and
+    // the meters.
+    in property <bool> highlight-pins;
+    // The meter row whose Pin box a deep link focuses.
+    in property <int> pin-focus-row: 0;
+
+    // ---- Notifications (N§2): on/off, two levels (indices into level-choices: "Off", "50%", …),
     // used up, resets and low balances.
     in-out property <bool> notify-enabled;
     in property <[string]> level-choices;
@@ -165,597 +266,962 @@ export component SettingsWindow inherits Window {
     in-out property <bool> notify-used-up;
     in-out property <bool> notify-resets;
     in-out property <bool> notify-low-balance;
+
+    // ---- General
     in-out property <bool> start-with-windows;
+    // Why start with Windows is not what was asked.
+    in property <string> startup-error;
     // The language of Lastdrop's texts: index into language-choices ("Same as Windows (…)", then
     // each language by its own name), from Rust.
     in property <[string]> language-choices;
     in-out property <int> language-index;
-    // The services read with an API key the user stores here.
-    in property <[ApiKeyRow]> api-keys;
+    // Refresh interval: index into interval-choices ("Manual", "1 min", …), localized by Rust.
+    in property <[string]> interval-choices;
+    in-out property <int> interval-index;
     // The global hotkey (R§10, off by default): modifiers and one key (a letter, a digit or
-    // F1…F24).
+    // F1…F24), the problem to show under it and whether Try again is offered (it was refused).
     in-out property <bool> hotkey-enabled;
     in-out property <bool> hotkey-ctrl;
     in-out property <bool> hotkey-alt;
     in-out property <bool> hotkey-shift;
     in-out property <bool> hotkey-win;
     in-out property <string> hotkey-key;
-    // A problem to show under the hotkey (`the shortcut is already in use`).
     in property <string> hotkey-error;
-    // One line under the buttons: what Apply did or why it could not.
-    in property <string> status-text;
+    in property <bool> hotkey-retry;
+    // Updates (updates-spec §1): the daily check, and what "Check now" did.
+    in-out property <bool> updates-check;
+    in property <string> updates-status;
 
+    // ---- The InfoBar (settings-spec §2): the settings could not be saved. `info-closing`: the
+    // window was being closed, so "Close without saving" is offered too.
+    in property <string> info-text;
+    in property <bool> info-closing;
+
+    // Deep link to the accounts (Focus::Accounts): focus the first found folder's Add of
+    // `reveal-block` once it is shown.
+    in-out property <bool> reveal-found;
+    in property <int> reveal-block;
+
+    callback page-changed(int);
     callback provider-toggled(int, bool);
-    // Accounts: (block, row) of an account or a found folder; a block for the folder picker and
-    // for a new account with its name.
+    // Accounts: (block, row) of an account or a found folder; a block for the folder picker, for a
+    // new account with its name and for expanding or collapsing.
+    callback block-toggled(int, bool);
     callback account-alias-edited(int, int, string);
+    callback account-alias-done(int, int);
     callback account-removed(int, int);
     callback found-added(int, int);
     callback add-folder(int);
     callback new-account(int, string);
     callback privacy-toggled(bool);
-    callback meter-shown-toggled(int, bool);
-    callback meter-pinned-toggled(int, bool);
     // Store (row, key) and remove (row) an API key.
     callback set-api-key(int, string);
     callback clear-api-key(int);
-    // The themes (themes-spec §3): built-in ones first, then the user's, and the one in use.
-    in property <[string]> themes;
-    in-out property <int> theme-index;
+    callback theme-selected(int);
     // Theme Studio, starting from the theme at that index.
     callback open-studio(int);
-    // Updates (updates-spec §1): the daily check, and what "Check now" did.
-    in-out property <bool> updates-check;
-    in property <string> updates-status;
+    callback time-style-selected(int);
+    callback readout-enabled-toggled(bool);
+    callback readout-every-toggled(bool);
+    callback readout-mode-selected(int);
+    callback meter-shown-toggled(int, bool);
+    callback meter-pinned-toggled(int, bool);
+    callback notify-enabled-toggled(bool);
+    callback levels-selected(int, int);
+    callback notify-used-up-toggled(bool);
+    callback notify-resets-toggled(bool);
+    callback notify-low-toggled(bool);
+    callback startup-toggled(bool);
+    callback language-selected(int);
+    callback interval-selected(int);
+    // The shortcut editor changed (Rust reads the hotkey-* properties); Try again.
+    callback hotkey-edited();
+    callback hotkey-retry-clicked();
+    callback updates-toggled(bool);
     callback check-updates();
-    callback apply();
-    // `close` would shadow Window's builtin close() (Slint 1.18), hence `dismiss`.
+    // The InfoBar's Try again and Close without saving.
+    callback info-retry();
+    callback info-discard();
+    // `close` would shadow Window's builtin close() (Slint 1.18), hence `dismiss`: Escape.
     callback dismiss();
 
-    // Scrolls the readout section into view (focus-pins).
-    public function show-pins() {
-        sv.content-y = -readout-section.y;
+    // Bumped by a deep link to the pins; the meter row `pin-focus-row` takes the focus.
+    property <int> pins-request;
+    // Bumped by a deep link to the accounts.
+    property <int> reveal-request;
+
+    // The --preview-settings render with --dark. The window itself follows Windows' app mode.
+    public function use-dark-scheme() {
+        Palette.color-scheme = ColorScheme.dark;
     }
 
-    // Scrolls the accounts section into view (first run, accounts-spec §6).
-    public function show-accounts() {
-        sv.content-y = -accounts-section.y;
+    // A contrast theme: the standard controls draw on its window colour, so their scheme follows
+    // it (white text on a dark contrast theme), whatever the app mode says.
+    public function use-scheme-for-contrast(dark: bool) {
+        Palette.color-scheme = dark ? ColorScheme.dark : ColorScheme.light;
     }
 
-    VerticalLayout {
-        sv := ScrollView {
-            vertical-stretch: 1;
-            content-width: self.visible-width;
-            content-height: page.preferred-height;
-            page := VerticalLayout {
-                width: sv.visible-width;
-                padding: 24px;
-                spacing: 16px;
+    // Shows page `index` (the navigation pane, Ctrl+Tab, a deep link).
+    public function select-page(index: int) {
+        if (index != root.page && index >= 0 && index < 4) {
+            root.page = index;
+            root.page-changed(index);
+        }
+    }
 
-                Text {
-                    text: root.texts.heading;
-                    font-size: 20px;
-                    font-weight: 600;
-                    color: Palette.foreground;
+    // Deep link to the readout's pins (tray menu "Taskbar readout ▸ Pinned meters…", R§10):
+    // the Display page, scrolled to the taskbar readout, the first Pin box focused.
+    public function reveal-pins() {
+        root.select-page(1);
+        display-sv.content-y = max(
+            min(0px, 12px - (readout-heading.absolute-position.y - display-page.absolute-position.y)),
+            display-sv.visible-height - display-page.preferred-height);
+        root.pins-request += 1;
+    }
+
+    // Deep link to the accounts (the first run found more folders, accounts-spec §6): the
+    // Services page, scrolled to the accounts; the first found folder's Add takes the focus once
+    // its block is expanded.
+    public function reveal-accounts(focus-found: bool) {
+        root.select-page(0);
+        services-sv.content-y = max(
+            min(0px, 12px - (accounts-heading.absolute-position.y - services-page.absolute-position.y)),
+            services-sv.visible-height - services-page.preferred-height);
+        root.reveal-found = focus-found;
+        root.reveal-request += 1;
+    }
+
+    // The content column's side padding (its width is at most 720 px).
+    property <length> side: content.width < 560px ? 24px : 32px;
+
+    keys := FocusScope {
+        focus-on-click: false;
+        focus-on-tab-navigation: false;
+        capture-key-pressed(event) => {
+            SettingsTheme.keyboard-focus-visible = true;
+            if (event.text == Key.Tab && event.modifiers.control) {
+                root.select-page(event.modifiers.shift ? mod(root.page + 3, 4) : mod(root.page + 1, 4));
+                // The focus may have been on the page that is hidden now: the pane takes it.
+                nav.by-keyboard = true;
+                nav.focus();
+                return accept;
+            }
+            reject
+        }
+        key-pressed(event) => {
+            if (event.text == Key.Escape) {
+                root.dismiss();
+                return accept;
+            }
+            reject
+        }
+
+        HorizontalLayout {
+            // ---- Navigation pane: labelled items, one Tab stop; the arrow keys, Home and End move
+            // the selection.
+            nav := FocusScope {
+                width: 220px;
+                property <bool> by-keyboard;
+                accessible-role: tab-list;
+                accessible-label: root.texts.title;
+                focus-changed-event(reason) => {
+                    self.by-keyboard = reason == FocusReason.tab-navigation;
                 }
-
-                // Services: on/off; Meshy needs an API key.
+                key-pressed(event) => {
+                    if (event.text == Key.UpArrow) {
+                        root.select-page(max(0, root.page - 1));
+                    } else if (event.text == Key.DownArrow) {
+                        root.select-page(min(3, root.page + 1));
+                    } else if (event.text == Key.Home) {
+                        root.select-page(0);
+                    } else if (event.text == Key.End) {
+                        root.select-page(3);
+                    } else {
+                        return reject;
+                    }
+                    self.by-keyboard = true;
+                    accept
+                }
                 VerticalLayout {
-                    spacing: 8px;
-                    SectionTitle {
-                        text: root.texts.services;
-                    }
-                    for row[i] in root.providers: CheckBox {
-                        text: row.name;
-                        checked: row.enabled;
-                        toggled => {
-                            root.provider-toggled(i, self.checked);
+                    padding-left: 8px;
+                    padding-right: 8px;
+                    padding-top: 12px;
+                    spacing: 4px;
+                    alignment: start;
+                    for item[i] in [
+                        { icon: "\u{E753}", label: root.texts.page-services },
+                        { icon: "\u{E7F4}", label: root.texts.page-display },
+                        { icon: "\u{EA8F}", label: root.texts.page-notifications },
+                        { icon: "\u{E713}", label: root.texts.page-general },
+                    ]: NavItem {
+                        icon: item.icon;
+                        label: item.label;
+                        index: i;
+                        count: 4;
+                        selected: root.page == i;
+                        focused: nav.has-focus && nav.by-keyboard && root.page == i;
+                        clicked => {
+                            root.select-page(i);
+                            SettingsTheme.keyboard-focus-visible = false;
+                            nav.by-keyboard = false;
+                            nav.focus();
                         }
-                    }
-                    Hint {
-                        text: root.texts.services-hint;
                     }
                 }
+            }
 
-                // Accounts of Claude Code and Codex (accounts-spec §7).
-                accounts-section := VerticalLayout {
-                    spacing: 8px;
-                    SectionTitle {
-                        text: root.texts.accounts;
-                    }
-                    Hint {
-                        text: root.texts.accounts-hint;
-                    }
-                    for block[b] in root.account-blocks: VerticalLayout {
-                        spacing: 6px;
-                        padding-top: 4px;
-                        Text {
-                            text: block.title;
-                            font-weight: 600;
-                            color: Palette.foreground;
+            // ---- Content pane: the InfoBar slot, then the page. Placed by hand, not by a layout,
+            // so the side padding (which follows the pane's width) never feeds the window's size.
+            content := Rectangle {
+                horizontal-stretch: 1;
+                property <length> info-height: info.visible ? info.preferred-height + 16px : 0px;
+                info := InfoBar {
+                    x: root.side;
+                    y: 16px;
+                    width: parent.width - 2 * root.side;
+                    height: self.visible ? self.preferred-height : 0px;
+                    visible: root.info-text != "";
+                    title: root.texts.not-saved-title;
+                    message: root.info-text;
+                    has-actions: true;
+                    Button {
+                        text: root.texts.retry;
+                        primary: true;
+                        clicked => {
+                            root.info-retry();
                         }
-                        for account[a] in block.accounts: Rectangle {
-                            border-radius: 4px;
-                            background: Palette.alternate-background;
+                    }
+                    if root.info-closing: Button {
+                        text: root.texts.discard;
+                        clicked => {
+                            root.info-discard();
+                        }
+                    }
+                }
+                pages := Rectangle {
+                    y: content.info-height;
+                    width: parent.width;
+                    height: parent.height - content.info-height;
+
+                    // ---- Services
+                    services-sv := ScrollView {
+                        width: parent.width;
+                        height: parent.height;
+                        visible: root.page == 0;
+                        accessible-role: tab-panel;
+                        accessible-label: root.texts.page-services;
+                        content-width: self.visible-width;
+                        content-height: services-page.preferred-height;
+                        services-page := HorizontalLayout {
+                            width: services-sv.visible-width;
+                            padding-left: root.side;
+                            padding-right: root.side;
+                            padding-bottom: 32px;
+                            alignment: start;
                             VerticalLayout {
-                                padding: 8px;
+                                max-width: 720px;
+                                horizontal-stretch: 1;
                                 spacing: 4px;
-                                HorizontalLayout {
-                                    spacing: 8px;
-                                    VerticalLayout {
-                                        horizontal-stretch: 1;
-                                        spacing: 2px;
-                                        Text {
-                                            text: account.name;
-                                            color: Palette.foreground;
-                                            overflow: elide;
+                                alignment: start;
+                                PageHeader {
+                                    title: root.texts.page-services;
+                                    description: root.texts.page-services-description;
+                                }
+                                SettingsCard {
+                                    for row[i] in root.providers: CardRow {
+                                        header: row.name;
+                                        divider: i > 0;
+                                        property <bool> on: row.enabled;
+                                        changed on => {
+                                            provider-switch.checked = self.on;
                                         }
-                                        Hint {
-                                            text: account.folder;
-                                            wrap: no-wrap;
-                                            overflow: elide;
-                                        }
-                                        Hint {
-                                            text: account.status;
-                                        }
-                                    }
-                                    if account.removable: VerticalLayout {
-                                        alignment: start;
-                                        Button {
-                                            text: root.texts.accounts-remove;
-                                            clicked => {
-                                                root.account-removed(b, a);
+                                        provider-switch := Switch {
+                                            checked: row.enabled;
+                                            accessible-label: row.name;
+                                            toggled => {
+                                                root.provider-toggled(i, self.checked);
                                             }
                                         }
                                     }
                                 }
-                                HorizontalLayout {
-                                    spacing: 8px;
-                                    Text {
-                                        text: root.texts.accounts-alias;
-                                        vertical-alignment: center;
-                                        color: Palette.foreground;
+                                PageNote {
+                                    text: root.texts.services-hint;
+                                }
+
+                                accounts-heading := GroupHeader {
+                                    text: root.texts.accounts;
+                                    description: root.texts.accounts-hint;
+                                }
+                                for block[b] in root.account-blocks: SettingsCard {
+                                    ExpanderHeader {
+                                        header: block.title;
+                                        description: root.block-summary[b];
+                                        expanded: root.block-expanded[b];
+                                        toggled(on) => {
+                                            SettingsTheme.keyboard-focus-visible = false;
+                                            root.block-toggled(b, on);
+                                        }
                                     }
-                                    LineEdit {
-                                        text: account.alias;
-                                        placeholder-text: root.texts.accounts-alias-none;
-                                        horizontal-stretch: 1;
-                                        edited(text) => {
-                                            root.account-alias-edited(b, a, text);
+                                    if root.block-expanded[b]: VerticalLayout {
+                                        for account[a] in block.accounts: StackedRow {
+                                            header: account.name;
+                                            description: account.status;
+                                            divider: true;
+                                            indent: 24px;
+                                            property <int> revision: account.revision;
+                                            changed revision => {
+                                                alias-box.text = account.alias;
+                                            }
+                                            PageNote {
+                                                text: account.folder;
+                                                wrap: no-wrap;
+                                                overflow: elide;
+                                            }
+                                            HorizontalLayout {
+                                                spacing: 8px;
+                                                Text {
+                                                    text: root.texts.accounts-alias;
+                                                    font-size: 14px;
+                                                    color: SettingsTheme.text-primary;
+                                                    vertical-alignment: center;
+                                                    accessible-role: none;
+                                                }
+                                                alias-box := LineEdit {
+                                                    text: account.alias;
+                                                    placeholder-text: root.texts.accounts-alias-none;
+                                                    accessible-label: account.alias-label;
+                                                    horizontal-stretch: 1;
+                                                    max-width: 280px;
+                                                    edited(text) => {
+                                                        root.account-alias-edited(b, a, text);
+                                                    }
+                                                    accepted(text) => {
+                                                        root.account-alias-done(b, a);
+                                                    }
+                                                    changed has-focus => {
+                                                        if (!self.has-focus) {
+                                                            root.account-alias-done(b, a);
+                                                        }
+                                                    }
+                                                }
+                                                if account.removable: Button {
+                                                    text: root.texts.accounts-remove;
+                                                    accessible-label: account.remove-label;
+                                                    clicked => {
+                                                        root.account-removed(b, a);
+                                                    }
+                                                }
+                                                Rectangle {
+                                                    horizontal-stretch: 0.01;
+                                                }
+                                            }
+                                        }
+                                        if block.found.length > 0: StackedRow {
+                                            header: root.texts.accounts-found;
+                                            divider: true;
+                                            indent: 24px;
+                                        }
+                                        for found[f] in block.found: CardRow {
+                                            header: found.folder;
+                                            description: found.status;
+                                            indent: 24px;
+                                            property <int> request: root.reveal-request;
+                                            function take-reveal() {
+                                                if (root.reveal-found && root.reveal-block == b && f == 0) {
+                                                    root.reveal-found = false;
+                                                    add-found.focus();
+                                                }
+                                            }
+                                            changed request => {
+                                                self.take-reveal();
+                                            }
+                                            init => {
+                                                self.take-reveal();
+                                            }
+                                            add-found := Button {
+                                                text: root.texts.accounts-add;
+                                                accessible-label: root.texts.accounts-add + " " + found.folder;
+                                                clicked => {
+                                                    root.found-added(b, f);
+                                                }
+                                            }
+                                        }
+                                        StackedRow {
+                                            divider: true;
+                                            indent: 24px;
+                                            header: root.texts.accounts-new;
+                                            HorizontalLayout {
+                                                spacing: 8px;
+                                                new-name := LineEdit {
+                                                    placeholder-text: root.texts.accounts-new-name;
+                                                    accessible-label: root.texts.accounts-new;
+                                                    horizontal-stretch: 1;
+                                                    max-width: 280px;
+                                                    accepted(text) => {
+                                                        if (text != "") {
+                                                            root.new-account(b, text);
+                                                            self.text = "";
+                                                        }
+                                                    }
+                                                }
+                                                Button {
+                                                    text: root.texts.accounts-new-create;
+                                                    enabled: new-name.text != "";
+                                                    clicked => {
+                                                        root.new-account(b, new-name.text);
+                                                        new-name.text = "";
+                                                    }
+                                                }
+                                                Rectangle {
+                                                    horizontal-stretch: 0.01;
+                                                }
+                                            }
+                                            HorizontalLayout {
+                                                alignment: start;
+                                                Button {
+                                                    text: root.texts.accounts-add-folder;
+                                                    clicked => {
+                                                        root.add-folder(b);
+                                                    }
+                                                }
+                                            }
+                                            if root.block-status[b] != "": PageNote {
+                                                text: root.block-status[b];
+                                            }
+                                        }
+                                    }
+                                }
+
+                                GroupHeader {
+                                    text: root.texts.key;
+                                    description: root.texts.key-hint;
+                                }
+                                SettingsCard {
+                                    for row[i] in root.api-keys: StackedRow {
+                                        header: row.title;
+                                        divider: i > 0;
+                                        // A key typed but not saved is not kept when the page changes.
+                                        property <int> shown-page: root.page;
+                                        changed shown-page => {
+                                            key-box.text = "";
+                                        }
+                                        HorizontalLayout {
+                                            spacing: 8px;
+                                            key-box := LineEdit {
+                                                placeholder-text: row.placeholder;
+                                                accessible-label: row.placeholder;
+                                                input-type: password;
+                                                horizontal-stretch: 1;
+                                                accepted => {
+                                                    if (self.text != "") {
+                                                        root.set-api-key(i, self.text);
+                                                        self.text = "";
+                                                    }
+                                                }
+                                            }
+                                            Button {
+                                                text: root.texts.key-save;
+                                                enabled: key-box.text != "";
+                                                clicked => {
+                                                    root.set-api-key(i, key-box.text);
+                                                    key-box.text = "";
+                                                }
+                                            }
+                                            if row.stored: Button {
+                                                text: root.texts.key-remove;
+                                                clicked => {
+                                                    root.clear-api-key(i);
+                                                }
+                                            }
+                                        }
+                                        if row.status != "": PageNote {
+                                            text: row.status;
+                                        }
+                                    }
+                                }
+
+                                GroupHeader {
+                                    text: root.texts.privacy;
+                                }
+                                SettingsCard {
+                                    CardRow {
+                                        header: root.texts.privacy-hide;
+                                        description: root.texts.privacy-hide-description;
+                                        Switch {
+                                            checked <=> root.hide-personal-info;
+                                            accessible-label: root.texts.privacy-hide;
+                                            toggled => {
+                                                root.privacy-toggled(self.checked);
+                                            }
                                         }
                                     }
                                 }
                             }
                         }
-                        if block.found.length > 0: Hint {
-                            text: root.texts.accounts-found;
-                        }
-                        for found[f] in block.found: HorizontalLayout {
-                            spacing: 8px;
+                    }
+
+                    // ---- Display
+                    display-sv := ScrollView {
+                        width: parent.width;
+                        height: parent.height;
+                        visible: root.page == 1;
+                        accessible-role: tab-panel;
+                        accessible-label: root.texts.page-display;
+                        content-width: self.visible-width;
+                        content-height: display-page.preferred-height;
+                        display-page := HorizontalLayout {
+                            width: display-sv.visible-width;
+                            padding-left: root.side;
+                            padding-right: root.side;
+                            padding-bottom: 32px;
+                            alignment: start;
                             VerticalLayout {
+                                max-width: 720px;
                                 horizontal-stretch: 1;
-                                spacing: 2px;
-                                Text {
-                                    text: found.folder;
-                                    color: Palette.foreground;
-                                    overflow: elide;
+                                spacing: 4px;
+                                alignment: start;
+                                PageHeader {
+                                    title: root.texts.page-display;
+                                    description: root.texts.page-display-description;
                                 }
-                                Hint {
-                                    text: found.status;
+                                GroupHeader {
+                                    text: root.texts.appearance;
                                 }
-                            }
-                            Button {
-                                text: root.texts.accounts-add;
-                                clicked => {
-                                    root.found-added(b, f);
-                                }
-                            }
-                        }
-                        HorizontalLayout {
-                            spacing: 8px;
-                            Button {
-                                text: root.texts.accounts-add-folder;
-                                clicked => {
-                                    root.add-folder(b);
-                                }
-                            }
-                            Rectangle {
-                                horizontal-stretch: 1;
-                            }
-                        }
-                        HorizontalLayout {
-                            spacing: 8px;
-                            Text {
-                                text: root.texts.accounts-new;
-                                vertical-alignment: center;
-                                color: Palette.foreground;
-                            }
-                            new-name := LineEdit {
-                                placeholder-text: root.texts.accounts-new-name;
-                                horizontal-stretch: 1;
-                            }
-                            Button {
-                                text: root.texts.accounts-new-create;
-                                enabled: new-name.text != "";
-                                clicked => {
-                                    root.new-account(b, new-name.text);
-                                    new-name.text = "";
-                                }
-                            }
-                        }
-                    }
-                    CheckBox {
-                        text: root.texts.privacy-hide;
-                        checked: root.hide-personal-info;
-                        toggled => {
-                            root.privacy-toggled(self.checked);
-                        }
-                    }
-                }
-
-                VerticalLayout {
-                    spacing: 8px;
-                    SectionTitle {
-                        text: root.texts.key;
-                    }
-                    for row[i] in root.api-keys: VerticalLayout {
-                        spacing: 4px;
-                        Text {
-                            text: row.title;
-                            color: Palette.foreground;
-                        }
-                        HorizontalLayout {
-                            spacing: 8px;
-                            key := LineEdit {
-                                placeholder-text: row.placeholder;
-                                input-type: password;
-                                horizontal-stretch: 1;
-                                accepted => {
-                                    if (self.text != "") {
-                                        root.set-api-key(i, self.text);
-                                        self.text = "";
+                                SettingsCard {
+                                    StackedRow {
+                                        header: root.texts.theme;
+                                        description: root.texts.theme-hint;
+                                        HorizontalLayout {
+                                            spacing: 8px;
+                                            ComboBox {
+                                                horizontal-stretch: 1;
+                                                max-width: 320px;
+                                                model: root.themes;
+                                                current-index <=> root.theme-index;
+                                                accessible-label: root.texts.theme;
+                                                selected => {
+                                                    root.theme-selected(self.current-index);
+                                                }
+                                            }
+                                            Button {
+                                                text: root.texts.theme-studio;
+                                                clicked => {
+                                                    root.open-studio(root.theme-index);
+                                                }
+                                            }
+                                            Rectangle {
+                                                horizontal-stretch: 0.01;
+                                            }
+                                        }
                                     }
                                 }
-                            }
-                            Button {
-                                text: root.texts.key-save;
-                                enabled: key.text != "";
-                                clicked => {
-                                    root.set-api-key(i, key.text);
-                                    key.text = "";
-                                }
-                            }
-                            if row.stored: Button {
-                                text: root.texts.key-remove;
-                                clicked => {
-                                    root.clear-api-key(i);
-                                }
-                            }
-                        }
-                    }
-                    Hint {
-                        text: root.texts.key-hint;
-                    }
-                }
-
-                VerticalLayout {
-                    spacing: 8px;
-                    SectionTitle {
-                        text: root.texts.refresh;
-                    }
-                    HorizontalLayout {
-                        spacing: 12px;
-                        Text {
-                            text: root.texts.refresh-check;
-                            vertical-alignment: center;
-                            color: Palette.foreground;
-                        }
-                        ComboBox {
-                            model: root.interval-choices;
-                            current-index <=> root.interval-index;
-                        }
-                        Rectangle {
-                            horizontal-stretch: 1;
-                        }
-                    }
-                }
-
-                VerticalLayout {
-                    spacing: 8px;
-                    SectionTitle {
-                        text: root.texts.theme;
-                    }
-                    HorizontalLayout {
-                        spacing: 12px;
-                        ComboBox {
-                            horizontal-stretch: 1;
-                            model: root.themes;
-                            current-index <=> root.theme-index;
-                        }
-                        Button {
-                            text: root.texts.theme-studio;
-                            clicked => {
-                                root.open-studio(root.theme-index);
-                            }
-                        }
-                    }
-                    Hint {
-                        text: root.texts.theme-hint;
-                    }
-                }
-
-                VerticalLayout {
-                    spacing: 8px;
-                    SectionTitle {
-                        text: root.texts.updates;
-                    }
-                    HorizontalLayout {
-                        spacing: 12px;
-                        Switch {
-                            horizontal-stretch: 1;
-                            text: root.texts.updates-check;
-                            checked <=> root.updates-check;
-                        }
-                        Button {
-                            text: root.texts.updates-now;
-                            clicked => {
-                                root.check-updates();
-                            }
-                        }
-                    }
-                    if root.updates-status != "": Hint {
-                        text: root.updates-status;
-                    }
-                    Hint {
-                        text: root.texts.updates-hint;
-                    }
-                }
-
-                readout-section := VerticalLayout {
-                    spacing: 8px;
-                    SectionTitle {
-                        text: root.texts.readout;
-                    }
-                    Switch {
-                        text: root.texts.readout-show;
-                        checked <=> root.readout-enabled;
-                    }
-                    Switch {
-                        text: root.texts.readout-every;
-                        checked <=> root.readout-every;
-                        enabled: root.readout-enabled;
-                    }
-                    HorizontalLayout {
-                        spacing: 12px;
-                        Text {
-                            text: root.texts.readout-rows;
-                            vertical-alignment: center;
-                            color: Palette.foreground;
-                        }
-                        ComboBox {
-                            model: [root.texts.readout-auto, root.texts.readout-pinned];
-                            current-index <=> root.readout-content-index;
-                            enabled: root.readout-enabled;
-                        }
-                        Rectangle {
-                            horizontal-stretch: 1;
-                        }
-                    }
-                    HorizontalLayout {
-                        spacing: 12px;
-                        Text {
-                            text: root.texts.readout-times;
-                            vertical-alignment: center;
-                            color: Palette.foreground;
-                        }
-                        ComboBox {
-                            model: [root.texts.readout-clock, root.texts.readout-relative];
-                            current-index <=> root.time-style-index;
-                        }
-                        Rectangle {
-                            horizontal-stretch: 1;
-                        }
-                    }
-                    Rectangle {
-                        border-radius: 4px;
-                        border-width: root.focus-pins ? 1px : 0px;
-                        border-color: Palette.accent-background;
-                        VerticalLayout {
-                            padding: root.focus-pins ? 8px : 0px;
-                            spacing: 4px;
-                            Hint {
-                                text: root.texts.meters-hint;
-                            }
-                            for meter[i] in root.meters: HorizontalLayout {
-                                spacing: 12px;
-                                Text {
-                                    text: meter.label;
-                                    vertical-alignment: center;
-                                    color: Palette.foreground;
-                                    horizontal-stretch: 1;
-                                    overflow: elide;
-                                }
-                                CheckBox {
-                                    text: root.texts.meter-show;
-                                    checked: meter.shown;
-                                    toggled => {
-                                        root.meter-shown-toggled(i, self.checked);
+                                SettingsCard {
+                                    CardRow {
+                                        header: root.texts.readout-times;
+                                        ComboBox {
+                                            model: [root.texts.readout-clock, root.texts.readout-relative];
+                                            current-index <=> root.time-style-index;
+                                            accessible-label: root.texts.readout-times;
+                                            selected => {
+                                                root.time-style-selected(self.current-index);
+                                            }
+                                        }
                                     }
                                 }
-                                CheckBox {
-                                    text: root.texts.meter-pin;
-                                    checked: meter.pinned;
-                                    enabled: meter.shown && root.readout-content-index == 1;
-                                    toggled => {
-                                        root.meter-pinned-toggled(i, self.checked);
+
+                                readout-heading := GroupHeader {
+                                    text: root.texts.readout;
+                                }
+                                SettingsCard {
+                                    CardRow {
+                                        header: root.texts.readout-show;
+                                        Switch {
+                                            checked <=> root.readout-enabled;
+                                            accessible-label: root.texts.readout-show;
+                                            toggled => {
+                                                root.readout-enabled-toggled(self.checked);
+                                            }
+                                        }
+                                    }
+                                }
+                                SettingsCard {
+                                    CardRow {
+                                        header: root.texts.readout-every;
+                                        enabled: root.readout-enabled;
+                                        Switch {
+                                            checked <=> root.readout-every;
+                                            enabled: root.readout-enabled;
+                                            accessible-label: root.texts.readout-every;
+                                            toggled => {
+                                                root.readout-every-toggled(self.checked);
+                                            }
+                                        }
+                                    }
+                                }
+                                SettingsCard {
+                                    highlighted: root.highlight-pins;
+                                    StackedRow {
+                                        header: root.texts.readout-rows;
+                                        enabled: root.readout-enabled;
+                                        HorizontalLayout {
+                                            alignment: start;
+                                            ComboBox {
+                                                model: [root.texts.readout-auto, root.texts.readout-pinned];
+                                                current-index <=> root.readout-content-index;
+                                                enabled: root.readout-enabled;
+                                                accessible-label: root.texts.readout-rows;
+                                                selected => {
+                                                    root.readout-mode-selected(self.current-index);
+                                                }
+                                            }
+                                        }
+                                        if root.choosing-pins: PageNote {
+                                            text: root.texts.readout-choosing;
+                                        }
+                                    }
+                                }
+
+                                GroupHeader {
+                                    text: root.texts.meters;
+                                    description: root.texts.meters-hint;
+                                }
+                                SettingsCard {
+                                    highlighted: root.highlight-pins;
+                                    if root.meters.length == 0: CardRow {
+                                        header: root.texts.meters-empty;
+                                    }
+                                    for meter[i] in root.meters: CardRow {
+                                        header: meter.label;
+                                        divider: i > 0;
+                                        property <bool> shown: meter.shown;
+                                        property <bool> pinned: meter.pinned;
+                                        property <int> request: root.pins-request;
+                                        changed shown => {
+                                            show-box.checked = self.shown;
+                                        }
+                                        changed pinned => {
+                                            pin-box.checked = self.pinned;
+                                        }
+                                        changed request => {
+                                            if (i == root.pin-focus-row) {
+                                                pin-box.focus();
+                                            }
+                                        }
+                                        show-box := CheckBox {
+                                            text: root.texts.meter-show;
+                                            checked: meter.shown;
+                                            accessible-label: meter.show-label;
+                                            toggled => {
+                                                root.meter-shown-toggled(i, self.checked);
+                                            }
+                                        }
+                                        pin-box := CheckBox {
+                                            text: root.texts.meter-pin;
+                                            checked: meter.pinned;
+                                            enabled: meter.shown && root.readout-content-index == 1 && root.readout-enabled;
+                                            accessible-label: meter.pin-label;
+                                            toggled => {
+                                                root.meter-pinned-toggled(i, self.checked);
+                                            }
+                                        }
                                     }
                                 }
                             }
                         }
                     }
-                }
 
-                VerticalLayout {
-                    spacing: 8px;
-                    SectionTitle {
-                        text: root.texts.notify;
-                    }
-                    Switch {
-                        text: root.texts.notify-on;
-                        checked <=> root.notify-enabled;
-                    }
-                    HorizontalLayout {
-                        spacing: 12px;
-                        Text {
-                            text: root.texts.notify-levels;
-                            vertical-alignment: center;
-                            color: Palette.foreground;
+                    // ---- Notifications (no expander: everything is visible)
+                    notifications-sv := ScrollView {
+                        width: parent.width;
+                        height: parent.height;
+                        visible: root.page == 2;
+                        accessible-role: tab-panel;
+                        accessible-label: root.texts.page-notifications;
+                        content-width: self.visible-width;
+                        content-height: notifications-page.preferred-height;
+                        notifications-page := HorizontalLayout {
+                            width: notifications-sv.visible-width;
+                            padding-left: root.side;
+                            padding-right: root.side;
+                            padding-bottom: 32px;
+                            alignment: start;
+                            VerticalLayout {
+                                max-width: 720px;
+                                horizontal-stretch: 1;
+                                spacing: 4px;
+                                alignment: start;
+                                PageHeader {
+                                    title: root.texts.page-notifications;
+                                }
+                                SettingsCard {
+                                    CardRow {
+                                        header: root.texts.notify-on;
+                                        description: root.texts.notify-hint;
+                                        Switch {
+                                            checked <=> root.notify-enabled;
+                                            accessible-label: root.texts.notify-on;
+                                            toggled => {
+                                                root.notify-enabled-toggled(self.checked);
+                                            }
+                                        }
+                                    }
+                                }
+                                SettingsCard {
+                                    StackedRow {
+                                        header: root.texts.notify-levels;
+                                        enabled: root.notify-enabled;
+                                        HorizontalLayout {
+                                            alignment: start;
+                                            spacing: 8px;
+                                            ComboBox {
+                                                width: 112px;
+                                                model: root.level-choices;
+                                                current-index <=> root.notify-first-index;
+                                                enabled: root.notify-enabled;
+                                                accessible-label: root.texts.notify-levels;
+                                                selected => {
+                                                    root.levels-selected(root.notify-first-index, root.notify-second-index);
+                                                }
+                                            }
+                                            Text {
+                                                text: root.texts.notify-and;
+                                                font-size: 14px;
+                                                color: root.notify-enabled ? SettingsTheme.text-primary : SettingsTheme.text-disabled;
+                                                vertical-alignment: center;
+                                            }
+                                            ComboBox {
+                                                width: 112px;
+                                                model: root.level-choices;
+                                                current-index <=> root.notify-second-index;
+                                                enabled: root.notify-enabled;
+                                                accessible-label: root.texts.notify-levels + " " + root.texts.notify-and;
+                                                selected => {
+                                                    root.levels-selected(root.notify-first-index, root.notify-second-index);
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                                GroupHeader {
+                                    text: root.texts.notify-also;
+                                }
+                                SettingsCard {
+                                    CheckRow {
+                                        CheckBox {
+                                            text: root.texts.notify-used-up;
+                                            checked <=> root.notify-used-up;
+                                            enabled: root.notify-enabled;
+                                            toggled => {
+                                                root.notify-used-up-toggled(self.checked);
+                                            }
+                                        }
+                                    }
+                                    CheckRow {
+                                        divider: true;
+                                        CheckBox {
+                                            text: root.texts.notify-resets;
+                                            checked <=> root.notify-resets;
+                                            enabled: root.notify-enabled;
+                                            toggled => {
+                                                root.notify-resets-toggled(self.checked);
+                                            }
+                                        }
+                                    }
+                                    CheckRow {
+                                        divider: true;
+                                        CheckBox {
+                                            text: root.texts.notify-low;
+                                            checked <=> root.notify-low-balance;
+                                            enabled: root.notify-enabled;
+                                            toggled => {
+                                                root.notify-low-toggled(self.checked);
+                                            }
+                                        }
+                                    }
+                                }
+                            }
                         }
-                        ComboBox {
-                            width: 96px;
-                            model: root.level-choices;
-                            current-index <=> root.notify-first-index;
-                            enabled: root.notify-enabled;
-                        }
-                        Text {
-                            text: root.texts.notify-and;
-                            vertical-alignment: center;
-                            color: Palette.foreground;
-                        }
-                        ComboBox {
-                            width: 96px;
-                            model: root.level-choices;
-                            current-index <=> root.notify-second-index;
-                            enabled: root.notify-enabled;
-                        }
-                        Rectangle {
-                            horizontal-stretch: 1;
-                        }
                     }
-                    CheckBox {
-                        text: root.texts.notify-used-up;
-                        checked <=> root.notify-used-up;
-                        enabled: root.notify-enabled;
-                    }
-                    CheckBox {
-                        text: root.texts.notify-resets;
-                        checked <=> root.notify-resets;
-                        enabled: root.notify-enabled;
-                    }
-                    CheckBox {
-                        text: root.texts.notify-low;
-                        checked <=> root.notify-low-balance;
-                        enabled: root.notify-enabled;
-                    }
-                    Hint {
-                        text: root.texts.notify-hint;
-                    }
-                }
 
-                VerticalLayout {
-                    spacing: 8px;
-                    SectionTitle {
-                        text: root.texts.shortcut;
-                    }
-                    Switch {
-                        text: root.texts.shortcut-on;
-                        checked <=> root.hotkey-enabled;
-                    }
-                    HorizontalLayout {
-                        spacing: 8px;
-                        CheckBox {
-                            text: root.texts.shortcut-ctrl;
-                            checked <=> root.hotkey-ctrl;
-                            enabled: root.hotkey-enabled;
+                    // ---- General
+                    general-sv := ScrollView {
+                        width: parent.width;
+                        height: parent.height;
+                        visible: root.page == 3;
+                        accessible-role: tab-panel;
+                        accessible-label: root.texts.page-general;
+                        content-width: self.visible-width;
+                        content-height: general-page.preferred-height;
+                        general-page := HorizontalLayout {
+                            width: general-sv.visible-width;
+                            padding-left: root.side;
+                            padding-right: root.side;
+                            padding-bottom: 32px;
+                            alignment: start;
+                            VerticalLayout {
+                                max-width: 720px;
+                                horizontal-stretch: 1;
+                                spacing: 4px;
+                                alignment: start;
+                                PageHeader {
+                                    title: root.texts.page-general;
+                                }
+                                SettingsCard {
+                                    CardRow {
+                                        header: root.texts.startup-on;
+                                        Switch {
+                                            checked <=> root.start-with-windows;
+                                            accessible-label: root.texts.startup-on;
+                                            toggled => {
+                                                root.startup-toggled(self.checked);
+                                            }
+                                        }
+                                    }
+                                    if root.startup-error != "": HorizontalLayout {
+                                        padding-left: 16px;
+                                        padding-right: 16px;
+                                        padding-bottom: 12px;
+                                        ErrorNote {
+                                            text: root.startup-error;
+                                        }
+                                    }
+                                }
+                                SettingsCard {
+                                    // Under its text: "Same as Windows (Svenska)" is too wide to
+                                    // share a line with it at the smallest size.
+                                    StackedRow {
+                                        header: root.texts.language;
+                                        description: root.texts.language-hint;
+                                        HorizontalLayout {
+                                            alignment: start;
+                                            ComboBox {
+                                                min-width: 240px;
+                                                model: root.language-choices;
+                                                current-index <=> root.language-index;
+                                                accessible-label: root.texts.language;
+                                                selected => {
+                                                    root.language-selected(self.current-index);
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                                SettingsCard {
+                                    CardRow {
+                                        header: root.texts.refresh;
+                                        description: root.texts.refresh-check;
+                                        ComboBox {
+                                            model: root.interval-choices;
+                                            current-index <=> root.interval-index;
+                                            accessible-label: root.texts.refresh;
+                                            selected => {
+                                                root.interval-selected(self.current-index);
+                                            }
+                                        }
+                                    }
+                                }
+                                SettingsCard {
+                                    CardRow {
+                                        header: root.texts.shortcut;
+                                        description: root.texts.shortcut-on;
+                                        Switch {
+                                            checked <=> root.hotkey-enabled;
+                                            accessible-label: root.texts.shortcut;
+                                            toggled => {
+                                                root.hotkey-edited();
+                                            }
+                                        }
+                                    }
+                                    if root.hotkey-enabled: StackedRow {
+                                        divider: true;
+                                        HorizontalLayout {
+                                            alignment: start;
+                                            spacing: 12px;
+                                            CheckBox {
+                                                text: root.texts.shortcut-ctrl;
+                                                checked <=> root.hotkey-ctrl;
+                                                toggled => {
+                                                    root.hotkey-edited();
+                                                }
+                                            }
+                                            CheckBox {
+                                                text: root.texts.shortcut-alt;
+                                                checked <=> root.hotkey-alt;
+                                                toggled => {
+                                                    root.hotkey-edited();
+                                                }
+                                            }
+                                            CheckBox {
+                                                text: root.texts.shortcut-shift;
+                                                checked <=> root.hotkey-shift;
+                                                toggled => {
+                                                    root.hotkey-edited();
+                                                }
+                                            }
+                                            CheckBox {
+                                                text: root.texts.shortcut-win;
+                                                checked <=> root.hotkey-win;
+                                                toggled => {
+                                                    root.hotkey-edited();
+                                                }
+                                            }
+                                            LineEdit {
+                                                width: 72px;
+                                                placeholder-text: root.texts.shortcut-key;
+                                                accessible-label: root.texts.shortcut-key;
+                                                text <=> root.hotkey-key;
+                                                edited => {
+                                                    root.hotkey-edited();
+                                                }
+                                            }
+                                        }
+                                        if root.hotkey-error != "": HorizontalLayout {
+                                            spacing: 12px;
+                                            ErrorNote {
+                                                horizontal-stretch: 1;
+                                                vertical-alignment: center;
+                                                text: root.hotkey-error;
+                                            }
+                                            if root.hotkey-retry: Button {
+                                                text: root.texts.retry;
+                                                clicked => {
+                                                    root.hotkey-retry-clicked();
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                                GroupHeader {
+                                    text: root.texts.updates;
+                                }
+                                SettingsCard {
+                                    CardRow {
+                                        header: root.texts.updates-check;
+                                        description: root.texts.updates-hint;
+                                        Switch {
+                                            checked <=> root.updates-check;
+                                            accessible-label: root.texts.updates-check;
+                                            toggled => {
+                                                root.updates-toggled(self.checked);
+                                            }
+                                        }
+                                    }
+                                }
+                                SettingsCard {
+                                    CardRow {
+                                        header: root.texts.version;
+                                        description: root.updates-status;
+                                        Button {
+                                            text: root.texts.updates-now;
+                                            clicked => {
+                                                root.check-updates();
+                                            }
+                                        }
+                                    }
+                                }
+                            }
                         }
-                        CheckBox {
-                            text: root.texts.shortcut-alt;
-                            checked <=> root.hotkey-alt;
-                            enabled: root.hotkey-enabled;
-                        }
-                        CheckBox {
-                            text: root.texts.shortcut-shift;
-                            checked <=> root.hotkey-shift;
-                            enabled: root.hotkey-enabled;
-                        }
-                        CheckBox {
-                            text: root.texts.shortcut-win;
-                            checked <=> root.hotkey-win;
-                            enabled: root.hotkey-enabled;
-                        }
-                        LineEdit {
-                            width: 72px;
-                            placeholder-text: root.texts.shortcut-key;
-                            text <=> root.hotkey-key;
-                            enabled: root.hotkey-enabled;
-                        }
-                        Rectangle {
-                            horizontal-stretch: 1;
-                        }
                     }
-                    if root.hotkey-error != "": Hint {
-                        text: root.hotkey-error;
-                        color: Palette.foreground;
-                    }
-                }
-
-                VerticalLayout {
-                    spacing: 8px;
-                    SectionTitle {
-                        text: root.texts.language;
-                    }
-                    HorizontalLayout {
-                        spacing: 12px;
-                        ComboBox {
-                            model: root.language-choices;
-                            current-index <=> root.language-index;
-                        }
-                        Rectangle {
-                            horizontal-stretch: 1;
-                        }
-                    }
-                    Hint {
-                        text: root.texts.language-hint;
-                    }
-                }
-
-                VerticalLayout {
-                    spacing: 8px;
-                    SectionTitle {
-                        text: root.texts.startup;
-                    }
-                    Switch {
-                        text: root.texts.startup-on;
-                        checked <=> root.start-with-windows;
-                    }
-                }
-            }
-        }
-        Rectangle {
-            height: 1px;
-            background: Palette.border;
-        }
-        HorizontalLayout {
-            padding: 16px;
-            spacing: 8px;
-            Text {
-                text: root.status-text;
-                vertical-alignment: center;
-                color: Palette.foreground;
-                overflow: elide;
-                horizontal-stretch: 1;
-            }
-            Button {
-                text: root.texts.apply;
-                primary: true;
-                clicked => {
-                    root.apply();
-                }
-            }
-            Button {
-                text: root.texts.close;
-                clicked => {
-                    root.dismiss();
                 }
             }
         }

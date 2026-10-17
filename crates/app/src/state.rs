@@ -314,7 +314,7 @@ pub struct AppState {
     pub refreshing: bool,
     /// The provider instances in use. Kept across settings changes that leave a provider's
     /// options alone ([`reuse_providers`]): their memory (the Claude OAuth source's 401 stop,
-    /// 5-minute rest and `Retry-After` back-off) must not reset on every Apply.
+    /// 5-minute rest and `Retry-After` back-off) must not reset on every settings change.
     pub providers: Vec<Arc<dyn Provider>>,
     /// `memory.seen` as the state file has it ([`AppState::state_to_save`]).
     pub saved_seen: SeenMap,

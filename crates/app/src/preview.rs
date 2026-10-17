@@ -3,7 +3,9 @@
 //! UI can be compared with `docs/design/final/flyout-100.png` and `readout-100.png` §5.
 //! `--preview-settings <png>` and `--preview-about <png>` (with `--demo` only) and
 //! `--preview-history <png>` (the demo's history, or without `--demo` the user's) render the
-//! dialog process's windows the same way.
+//! dialog process's windows the same way. The settings window renders each page's viewport, and a
+//! few states, at its preferred and its smallest size into `<stem>-<page>-<w>x<h>.png`
+//! (settings-spec §9); `--contrast` renders it in a contrast theme.
 //!
 //! The render uses Slint's software renderer through a headless platform
 //! (`MinimalSoftwareWindow`s): no window is created, nothing appears on the desktop and nothing
@@ -44,10 +46,11 @@ use crate::{AppError, Args, demo, persist, png, ui};
 
 /// The hover card's tallest preview (it is as tall as its content; R§8.1 fits it on screen).
 const CARD_MAX_PREVIEW_H: f32 = 2000.0;
-/// The settings window's preview size: its preferred width, tall enough for the whole page.
-const SETTINGS_PREVIEW_W: f32 = 480.0;
-/// See [`SETTINGS_PREVIEW_W`].
-const SETTINGS_PREVIEW_H: f32 = 1500.0;
+/// The settings window's preview sizes, logical px: its preferred size and its smallest.
+const SETTINGS_SIZES: [(f32, f32); 2] = [
+    crate::settings_window::PREFERRED_SIZE,
+    crate::settings_window::MIN_SIZE,
+];
 /// The about window's preferred width.
 const ABOUT_PREVIEW_W: f32 = 420.0;
 /// The usage history window's preview size: its preferred width, tall enough for the page.
@@ -121,7 +124,7 @@ pub fn run(args: &Args) -> Result<(), AppError> {
             render_hover_card(&world.hover_card(), &world.theme, scale, out)?;
         }
         if let Some(out) = args.preview_settings.as_deref() {
-            render_settings(&world, scale, out)?;
+            render_settings(&world, args.contrast, scale, out)?;
         }
         if let Some(out) = args.preview_about.as_deref() {
             render_about(strings, args.dark, scale, out)?;
@@ -350,11 +353,60 @@ pub fn render_hover_card(
     Ok(())
 }
 
-/// Renders the settings window with the demo's settings and invented accounts
-/// ([`demo::Demo::accounts`]), in the demo's language and regional format (Windows' display
-/// language is the demo's language too).
-fn render_settings(world: &demo::Demo, scale: f64, out: &Path) -> Result<(), AppError> {
-    let window = ui::SettingsWindow::new()?;
+/// What a settings window preview shows.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SettingsView {
+    /// A page, as it opens.
+    Page(i32),
+    /// The first run's deep link: the accounts with the found folders.
+    Accounts,
+    /// The tray menu's "Pinned meters…": the readout's pins, choosing.
+    Pins,
+    /// General with a refused shortcut, and the InfoBar of a write that failed on closing.
+    Errors,
+}
+
+/// The settings window's previews: each page, then the states, at both sizes.
+const SETTINGS_VIEWS: [(&str, SettingsView); 7] = [
+    (
+        "services",
+        SettingsView::Page(crate::settings_window::PAGE_SERVICES),
+    ),
+    (
+        "display",
+        SettingsView::Page(crate::settings_window::PAGE_DISPLAY),
+    ),
+    (
+        "notifications",
+        SettingsView::Page(crate::settings_window::PAGE_NOTIFICATIONS),
+    ),
+    (
+        "general",
+        SettingsView::Page(crate::settings_window::PAGE_GENERAL),
+    ),
+    ("accounts", SettingsView::Accounts),
+    ("pins", SettingsView::Pins),
+    ("errors", SettingsView::Errors),
+];
+
+/// Windows' "Night sky" contrast colours (the `--contrast` preview).
+fn night_sky() -> lastdrop_win::theme::HighContrastColors {
+    let rgb = |r, g, b| lastdrop_win::palette::Argb::new(0xFF, r, g, b);
+    lastdrop_win::theme::HighContrastColors {
+        window_text: rgb(0xFF, 0xFF, 0xFF),
+        window: rgb(0x00, 0x00, 0x00),
+        highlight: rgb(0xD6, 0xB4, 0xFD),
+        highlight_text: rgb(0x2B, 0x2B, 0x2B),
+        gray_text: rgb(0xA6, 0xA6, 0xA6),
+        hotlight: rgb(0x80, 0x80, 0xFF),
+    }
+}
+
+/// What the settings window shows for the demo: its settings and invented accounts
+/// ([`demo::Demo::accounts`]), the meters its services report, a stored Meshy key, in the demo's
+/// language and regional format (Windows' display language is the demo's language too), and no
+/// files: the themes are the built-in ones.
+pub fn demo_settings_inputs(world: &demo::Demo, contrast: bool) -> crate::settings_window::Inputs {
     let reported: Vec<(MeterKey, MeterNames)> = world
         .services
         .iter()
@@ -371,32 +423,87 @@ fn render_settings(world: &demo::Demo, scale: f64, out: &Path) -> Result<(), App
             })
         })
         .collect();
-    let wording = Wording {
-        language: world.language,
-        ui_languages: vec![world.language.tag().to_owned()],
-        locale: world.locale.clone(),
-    };
     let (settings, accounts) = world.accounts();
-    let duplicates =
-        crate::settings_accounts::meter_accounts(&settings, &accounts, wording.strings())
-            .duplicates;
-    let draft = crate::settings_window::draft_with(settings, &reported, &duplicates);
-    let keys = [
-        (lastdrop_core::model::ProviderId::Meshy, true),
-        (lastdrop_core::model::ProviderId::OpenCodeGo, false),
-    ];
-    crate::settings_window::fill(&window, &draft, &reported, &keys, &wording, &accounts);
-    window.show()?;
-    snapshot_to_png(
-        window.window(),
-        scale,
-        SETTINGS_PREVIEW_W,
-        SETTINGS_PREVIEW_H,
-        &|| SETTINGS_PREVIEW_H,
-        &|_| {},
-        out,
-    )?;
-    window.hide()?;
+    let mut theme = world.theme;
+    theme.apps_dark = theme.taskbar_dark;
+    if contrast {
+        theme.high_contrast = Some(night_sky());
+    }
+    crate::settings_window::Inputs {
+        settings,
+        reported,
+        accounts,
+        keys: vec![
+            (lastdrop_core::model::ProviderId::Meshy, true),
+            (lastdrop_core::model::ProviderId::OpenCodeGo, false),
+        ],
+        wording: Wording {
+            language: world.language,
+            ui_languages: vec![world.language.tag().to_owned()],
+            locale: world.locale.clone(),
+        },
+        theme,
+        paths: persist::Paths::under(
+            r"C:\Users\tester\AppData\Roaming",
+            r"C:\Users\tester\AppData\Local",
+        ),
+    }
+}
+
+/// Renders the settings window for the demo ([`demo_settings_inputs`]): every page and state of
+/// [`SETTINGS_VIEWS`] at both [`SETTINGS_SIZES`], next to `out` as `<stem>-<view>-<w>x<h>.png`.
+fn render_settings(
+    world: &demo::Demo,
+    contrast: bool,
+    scale: f64,
+    out: &Path,
+) -> Result<(), AppError> {
+    use crate::settings_edits::MemoryOutside;
+    use crate::settings_window::{self as sw, Focus};
+    let stem = out
+        .file_stem()
+        .map(|s| s.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "settings".to_owned());
+    let dir = out.parent().unwrap_or_else(|| Path::new("."));
+    for (name, view) in SETTINGS_VIEWS {
+        for (w, h) in SETTINGS_SIZES {
+            let inputs = demo_settings_inputs(world, contrast);
+            let mut outside = MemoryOutside {
+                disk: inputs.settings.clone(),
+                ..MemoryOutside::default()
+            };
+            if view == SettingsView::Errors {
+                outside.fail_write = Some("The disk is full.".to_owned());
+                outside.refuse_hotkey = Some(lastdrop_win::hotkey::HotkeyError::InUse);
+            }
+            let window = sw::start(inputs, Box::new(outside), false)?;
+            if world.theme.taskbar_dark && !contrast {
+                window.invoke_use_dark_scheme();
+            }
+            window.show()?;
+            window.window().set_size(slint::LogicalSize::new(w, h));
+            match view {
+                SettingsView::Page(page) => window.set_page(page),
+                SettingsView::Accounts => sw::reveal(Focus::Accounts),
+                SettingsView::Pins => sw::reveal(Focus::Pins),
+                SettingsView::Errors => {
+                    window.set_page(sw::PAGE_GENERAL);
+                    window.set_hotkey_enabled(true);
+                    window.set_hotkey_key("K".into());
+                    window.invoke_hotkey_edited();
+                    window.set_interval_index(1);
+                    window.invoke_interval_selected(1);
+                    // Closing commits at once: the shortcut is refused, the write fails.
+                    window.invoke_dismiss();
+                }
+            }
+            slint::platform::update_timers_and_animations();
+            let file = dir.join(format!("{stem}-{name}-{w}x{h}.png"));
+            snapshot_to_png(window.window(), scale, w, h, &|| h, &|_| {}, &file)?;
+            window.hide()?;
+            sw::release();
+        }
+    }
     Ok(())
 }
 

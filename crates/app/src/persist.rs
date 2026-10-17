@@ -2,8 +2,9 @@
 //! `%APPDATA%\Lastdrop\settings.json` (atomic write, no secrets); data in
 //! `%LOCALAPPDATA%\Lastdrop\` (history, logs, `state.json`).
 //!
-//! Threading: loading runs on the main thread at start-up; saves are encoded on the main thread
-//! and written by the writer thread ([`crate::writer`], [`write_atomic`]).
+//! Threading: loading runs on the main thread at start-up; the tray process's saves are written by
+//! the writer thread ([`crate::writer`], [`write_atomic`]; settings rebased onto the file under the
+//! settings lock, [`crate::settings_sync`]).
 
 use std::collections::BTreeMap;
 use std::ffi::OsString;
@@ -197,15 +198,15 @@ pub fn migrate(document: serde_json::Value) -> Result<Settings, serde_json::Erro
     Ok(settings)
 }
 
-/// The settings file's bytes (pretty JSON), for the writer thread.
+/// The settings file's bytes (pretty JSON).
 pub fn settings_bytes(settings: &Settings) -> std::io::Result<Vec<u8>> {
     let mut bytes = serde_json::to_vec_pretty(settings).map_err(std::io::Error::other)?;
     bytes.push(b'\n');
     Ok(bytes)
 }
 
-/// Saves settings atomically ([`write_atomic`], pretty JSON) on the calling thread (the dialog
-/// process's Apply; the tray process queues its saves for the writer thread instead).
+/// Saves settings atomically ([`write_atomic`], pretty JSON) on the calling thread; callers hold
+/// the settings lock ([`crate::settings_sync::SettingsFile::update`]).
 pub fn save_settings(path: &Path, settings: &Settings) -> std::io::Result<()> {
     write_atomic(path, &settings_bytes(settings)?)
 }

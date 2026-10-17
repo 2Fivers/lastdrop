@@ -1,8 +1,12 @@
 //! The file writer thread (ARCHITECTURE "Threads", "Persistence"): every file write the running
 //! app makes — history appends and the daily history compaction, settings saves and the state
 //! file — happens here, one job at a time **in the order the main thread queued them**. So an
-//! append queued after a compaction lands in the compacted file, an append queued before it is
-//! compacted with the rest, and a later settings save always replaces an earlier one.
+//! append queued after a compaction lands in the compacted file and an append queued before it is
+//! compacted with the rest. A settings save carries the tray's change (the settings it started
+//! from and the new ones) and is rebased onto the file when it runs, under the settings lock
+//! (settings-spec §6, [`crate::settings_sync`]), so a change the settings window wrote meanwhile
+//! survives it. A barrier runs its callback once every job queued before it is done, without
+//! anyone waiting for it.
 //!
 //! The main thread only formats and enqueues (an unbounded `std::sync::mpsc` channel: no lock,
 //! no wait), so a slow or stuck disk never stalls the UI. Start-up reads (settings, state,
@@ -26,6 +30,9 @@ use std::thread::JoinHandle;
 use std::time::Duration;
 
 use jiff::Timestamp;
+use lastdrop_core::settings::Settings;
+
+use crate::settings_sync::SettingsFile;
 
 /// Failed history appends kept per file, bytes (about a day of 5-minute samples).
 pub const MAX_PENDING: usize = 64 * 1024;
@@ -50,6 +57,15 @@ enum Job {
         bytes: Vec<u8>,
         what: &'static str,
     },
+    /// Write what `new` changed from `base` onto the settings file as it is now
+    /// ([`SettingsFile::rebase_write`]).
+    Settings {
+        file: SettingsFile,
+        base: Box<Settings>,
+        new: Box<Settings>,
+    },
+    /// Run the callback once every earlier job is done (it posts to the main thread).
+    Barrier(Box<dyn FnOnce() + Send>),
     /// Answer once every earlier job is done.
     Flush(Sender<()>),
     /// Hold the thread until the sender is dropped or sends (tests: a busy disk).
@@ -73,6 +89,8 @@ impl std::fmt::Debug for Job {
             Job::Compact { .. } => "Compact",
             Job::Retire { .. } => "Retire",
             Job::Replace { .. } => "Replace",
+            Job::Settings { .. } => "Settings",
+            Job::Barrier(_) => "Barrier",
             Job::Flush(_) => "Flush",
             #[cfg(test)]
             Job::Block(_) => "Block",
@@ -105,6 +123,29 @@ impl WriterHandle {
     /// in the log when it fails.
     pub fn replace(&self, path: PathBuf, bytes: Vec<u8>, what: &'static str) {
         self.send(Job::Replace { path, bytes, what });
+    }
+
+    /// Queues a settings save: what `new` changed from `base` (the settings the change started
+    /// from), written onto `file` as it is when the job runs (settings-spec §6).
+    pub fn save_settings(&self, file: SettingsFile, base: Settings, new: Settings) {
+        self.send(Job::Settings {
+            file,
+            base: Box::new(base),
+            new: Box::new(new),
+        });
+    }
+
+    /// Queues a barrier: `done` runs on the writer thread once every job queued before it is
+    /// done. Nothing waits for it; `done` posts what it has to the main thread. Dropped (never
+    /// run) when the thread stopped.
+    pub fn barrier(&self, done: Box<dyn FnOnce() + Send>) {
+        self.send(Job::Barrier(done));
+    }
+
+    /// Holds the thread until `until`'s sender sends or is dropped (tests: a busy disk).
+    #[cfg(test)]
+    pub(crate) fn block(&self, until: Receiver<()>) {
+        self.send(Job::Block(until));
     }
 
     /// Waits until every job queued so far is done (tests and shutdown; never on the UI path).
@@ -225,6 +266,12 @@ fn run(rx: &Receiver<Job>) {
                     log::error!("cannot save {what}: {e}");
                 }
             }
+            Job::Settings { file, base, new } => {
+                if let Err(e) = file.rebase_write(&base, &new) {
+                    log::error!("cannot save settings: {e}");
+                }
+            }
+            Job::Barrier(done) => done(),
             Job::Flush(ack) => {
                 let _ = ack.send(());
             }

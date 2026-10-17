@@ -22,9 +22,12 @@
 //! - [`dialog`]: the dialog process, the requests between it and the tray process.
 //! - [`custom_services`]: the services described in JSON, read at start-up.
 //! - [`settings_window`]: the settings window's draft and callbacks (dialog process);
-//!   [`settings_accounts`]: its Accounts section (accounts-spec §6–§7).
+//!   [`settings_accounts`]: its Accounts section (accounts-spec §6–§7); [`settings_edits`]: its
+//!   change model (pending edits by field, commit, settings-spec §5).
 //! - [`writer`]: the file writer thread (history appends and compaction, settings and state
 //!   saves, in queue order).
+//! - [`settings_sync`]: the read-merge-write of `settings.json` under the settings lock, shared
+//!   by the tray process, the settings window and Theme Studio (settings-spec §6).
 //!
 //! Threads of the tray process (ARCHITECTURE "Threads"): **main** owns the Slint event loop, the
 //! flyout and the hover card, the tray icon and [`state::AppState`], and never blocks on I/O; the **readout** and **occupancy**
@@ -56,6 +59,8 @@ pub mod preview;
 pub mod scheduler;
 pub mod secondary;
 pub mod settings_accounts;
+pub mod settings_edits;
+pub mod settings_sync;
 pub mod settings_window;
 pub mod state;
 pub mod theme_studio;
@@ -101,6 +106,9 @@ pub struct Args {
     pub scale: Option<f64>,
     /// `--dark`: the preview in the dark Windows mode.
     pub dark: bool,
+    /// `--contrast`: the settings window's preview in a contrast theme (Windows' "Night sky"
+    /// colours).
+    pub contrast: bool,
     /// `--language <tag>`: the preview's language (`en`, `sv`); default: the settings' and
     /// `--preview-theme-studio <png>`: render Theme Studio (themes-spec §4), starting from
     /// `--theme` (else the settings' theme), and exit.
@@ -165,6 +173,7 @@ impl Args {
                     out.demo_scenario = iter.next().and_then(|v| v.to_str().map(str::to_owned));
                 }
                 Some("--dark") => out.dark = true,
+                Some("--contrast") => out.contrast = true,
                 Some("--language") => {
                     out.language = iter.next().and_then(|v| v.to_str().map(str::to_owned));
                 }
