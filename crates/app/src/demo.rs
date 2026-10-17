@@ -646,6 +646,7 @@ mod tests {
             "Alla gränser räcker till återställningen"
         );
         assert_eq!(flyout.settings_label, "Inställningar");
+        assert_eq!(flyout.history_name, "Användningshistorik");
         let claude = &flyout.cards[0];
         assert_eq!(claude.age, "för 1 min sedan");
         let CardBody::Meters(rows) = &claude.body else {

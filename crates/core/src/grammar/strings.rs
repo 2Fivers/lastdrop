@@ -266,6 +266,8 @@ catalogue! {
         FlyoutVerdictMore = "flyout.verdict.more",
         FlyoutRefreshName = "flyout.refresh.a11y",
         FlyoutRefreshTooltip = "flyout.refresh.tooltip",
+        FlyoutHistoryName = "flyout.history.a11y",
+        FlyoutHistoryTooltip = "flyout.history.tooltip",
         FlyoutSettings = "flyout.settings",
         FlyoutAgeNow = "flyout.age.now",
         FlyoutAgeMin = "flyout.age.min",

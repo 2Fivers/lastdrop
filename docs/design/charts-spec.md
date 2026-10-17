@@ -10,6 +10,7 @@ References: flyout-spec (F§), readout-spec (R§), ARCHITECTURE "Persistence".
 
 - Tray menu: **Usage history…**, above Settings….
 - Card menu (F§9): **Usage history…**, after Open usage page. It opens at that card's service.
+- Flyout footer (F§5): the **History** button left of Settings, or Ctrl+H in the flyout.
 - The window runs in the dialog process, like Settings and About (`lastdrop.exe --history`, or
   `--history=<tag>` for one service, where the tag is 24 bits of the FNV-1a hash of the service id
   and account key as 6 hex digits). A second request reaches the running dialog process like the
@@ -102,7 +103,8 @@ a 1 px outline of the disabled text colour.
 `history.title`, `history.service`, `history.range`, `history.range.week`, `history.range.month`,
 `history.range.quarter`, `history.over_time`, `history.per_day`, `history.hours`,
 `history.per_day.summary`, `history.hours.summary`, `history.empty`, `history.empty.range`,
-`history.close`, `menu.history`, `menu.card.history`, and the `a11y.history.*` labels.
+`history.close`, `menu.history`, `menu.card.history`, `flyout.history.a11y`, `flyout.history.tooltip`, and the
+`a11y.history.*` labels.
 
 ## 8. Memory and time
 
