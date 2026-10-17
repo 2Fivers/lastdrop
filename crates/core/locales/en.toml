@@ -456,7 +456,9 @@ lowercase_names = true
 "studio.not_saved" = "Not saved: {detail}"
 "settings.theme" = "Theme"
 "settings.theme.studio" = "Theme Studio…"
-"settings.theme.hint" = "Colours and layout of the taskbar readout and the flyout. Themes are JSON files in %APPDATA%\\Lastdrop\\themes: copy one there to use it."
+"settings.theme.hint" = "Colours and layout of the taskbar readout and the flyout."
+# A link under the theme list: %APPDATA%\\Lastdrop\\themes in File Explorer.
+"settings.theme.folder" = "Open themes folder"
 "settings.appearance" = "Appearance"
 "install.ask" = "Install Lastdrop {version} for this Windows user?\n\nIt goes to {folder}, with a shortcut in the Start menu. No administrator rights are needed."
 "install.done" = "Lastdrop is installed and running. Its icon is in the notification area of the taskbar."
@@ -484,22 +486,32 @@ lowercase_names = true
 "settings.readout.every" = "Show it on every taskbar"
 "settings.readout.rows" = "Taskbar content"
 "settings.readout.auto" = "The most constrained meters (auto)"
-"settings.readout.pinned" = "Meters I pin"
-"settings.readout.choosing" = "The taskbar stays automatic until you pin a meter below."
+"settings.readout.pinned" = "Meters I choose"
+"settings.readout.choosing" = "The taskbar stays automatic until you choose a meter."
+# The two pin slots under "Meters I choose" (R§4.3) and what they list.
+"settings.pins.first" = "First meter"
+"settings.pins.second" = "Second meter (optional)"
+"settings.pins.none" = "None"
+# A pin whose meter is not listed now (its service is off): `{meter}` is its choice's label.
+"settings.pins.unavailable" = "{meter} (not available)"
+# Under the slots after a pinned meter was hidden. `{meter}`: `settings.meter`.
+"settings.pins.hidden" = "{meter} is hidden, so it was taken off the taskbar."
 "settings.readout.times" = "Show times as"
 # The examples are the readout's tokens (R§5.2).
 "settings.readout.clock" = "Clock times (14:56)"
 "settings.readout.relative" = "Time remaining (2h)"
-"settings.meters.hint" = "Show them in the flyout, and pin up to two to the taskbar."
+"settings.meters.hint" = "Meters you turn off are hidden in the flyout and the taskbar."
 "settings.meters" = "Meters"
-"settings.meters.empty" = "No meters yet. Turn on a service."
-# A meter row: the meter's `short_name` with its service, capitalised.
+"settings.meters.empty" = "No meters yet."
+# A link after `settings.meters.empty` to the Services page.
+"settings.meters.empty.link" = "Turn on a service"
+# A limit by its `short_name` (`5-hour limit`, `Fable weekly limit`): a meter type's check box,
+# capitalised; a balance goes by its `short_name` alone.
+"settings.meter.limit" = "{short_name} limit"
+# A meter with its service, `{short_name}` being `settings.meter.limit`: `Claude weekly limit`.
 "settings.meter" = "{service} {short_name}"
-"settings.meter.show" = "Show"
-"settings.meter.pin" = "Pin"
-# The check boxes' accessible names. `{meter}`: the row's label (`settings.meter`).
+# A meter type's check box's accessible name. `{meter}`: `settings.meter`.
 "settings.meter.show.a11y" = "Show {meter}"
-"settings.meter.pin.a11y" = "Pin {meter} to the taskbar"
 "settings.notify.on" = "Notify me about my limits"
 # "When a limit reaches [80%] and [95%]".
 "settings.notify.levels" = "When a limit reaches"

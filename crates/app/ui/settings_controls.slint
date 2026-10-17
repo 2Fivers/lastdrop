@@ -42,6 +42,8 @@ export global SettingsTheme {
     // InfoBar error: SystemFillColorCriticalBackground.
     out property <color> critical-fill: high-contrast ? hc-window : dark ? #442726 : #fde7e9;
     out property <color> on-accent: high-contrast ? hc-highlight-text : dark ? #000000 : #ffffff;
+    // A text link (AccentTextFillColorPrimary; HotLight in contrast).
+    out property <brush> link: high-contrast ? hc-hotlight : Palette.accent-background;
     out property <color> focus-outer: high-contrast ? hc-highlight : dark ? #ffffff : #000000e4;
     out property <color> focus-inner: high-contrast ? hc-window : dark ? #000000b3 : #ffffffb3;
     out property <string> font-icons: "Segoe Fluent Icons";
@@ -433,6 +435,54 @@ export component ExpanderHeader inherits Rectangle {
                 }
             }
         }
+    }
+}
+
+// A text link (settings-spec §3.1: "Open themes folder", the Meters list's way to the
+// Services page): accent text, 14 px, a button to UI Automation; Tab reaches it, Enter or Space
+// activates it. Its focus rectangle shows after keyboard use.
+export component SettingsLink inherits Rectangle {
+    in property <string> text;
+    callback clicked();
+    accessible-role: button;
+    accessible-label: root.text;
+    accessible-action-default => {
+        root.clicked();
+    }
+    forward-focus: focus;
+    width: label.preferred-width;
+    height: 20px;
+
+    label := Text {
+        text: root.text;
+        font-size: 14px;
+        color: touch.pressed ? SettingsTheme.text-secondary : SettingsTheme.link;
+        vertical-alignment: center;
+        accessible-role: none;
+    }
+    touch := TouchArea {
+        mouse-cursor: pointer;
+        clicked => {
+            SettingsTheme.keyboard-focus-visible = false;
+            root.clicked();
+        }
+    }
+    focus := FocusScope {
+        focus-on-click: false;
+        key-pressed(event) => {
+            if (event.text == Key.Return || event.text == " ") {
+                root.clicked();
+                return accept;
+            }
+            reject
+        }
+    }
+    if focus.has-focus && SettingsTheme.keyboard-focus-visible: SettingsFocusRect {
+        x: -2px;
+        y: -2px;
+        width: parent.width + 4px;
+        height: parent.height + 4px;
+        radius: 2px;
     }
 }
 

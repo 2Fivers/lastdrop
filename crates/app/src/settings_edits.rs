@@ -694,7 +694,7 @@ pub struct Edits {
     /// Alias editors holding an edit, by account: the text as typed.
     aliases: BTreeMap<SourceKey, String>,
     shortcut: ShortcutEditor,
-    /// "Meters I pin" is chosen but no meter yet (settings-spec §4): the saved mode stays auto.
+    /// "Meters I choose" is chosen but no meter yet (settings-spec §4): the saved mode stays auto.
     choosing_pins: bool,
 }
 
@@ -812,7 +812,7 @@ impl Edits {
         self.set(Edit::Levels(levels));
     }
 
-    /// "The most constrained meters" (`pinned` false) or "Meters I pin". Pinned without a pin
+    /// "The most constrained meters" (`pinned` false) or "Meters I choose". Pinned without a pin
     /// yet is the choosing state: nothing changes until a meter is picked.
     pub fn set_readout_mode(&mut self, pinned: bool) {
         if pinned {
@@ -831,38 +831,60 @@ impl Edits {
         i32::from(pinned || self.choosing_pins)
     }
 
-    /// "Meters I pin" is chosen but no meter is pinned yet.
+    /// "Meters I choose" is chosen but no meter is pinned yet (a meter pinned meanwhile, by the
+    /// tray, ends it).
     pub fn choosing_pins(&self) -> bool {
-        self.choosing_pins
+        self.choosing_pins && pins(&self.draft()).is_empty()
     }
 
-    /// Pins (`on`) or unpins a meter (R§4.3: at most two, in the order picked).
-    pub fn set_pinned(&mut self, key: MeterKey, on: bool) {
-        let mut current = pins(&self.draft());
-        if on != current.contains(&key) {
-            crate::wiring::toggle_in(&mut current, key);
-        }
-        self.choosing_pins = current.is_empty();
-        self.set(Edit::Pins(content_of(current)));
-    }
-
-    /// Shows or hides a meter (for its whole service). A hidden meter is unpinned, for every
-    /// account of the service.
-    pub fn set_meter_shown(&mut self, key: &MeterKey, shown: bool) {
-        self.set(Edit::HiddenMeter(key.provider, key.meter.clone(), !shown));
-        if shown {
+    /// Pin slot `slot` (0 "First meter", 1 "Second meter") picked `key` (`None`: empty it)
+    /// (settings-spec §4; R§4.3: at most two, in the user's order). A meter is never in both
+    /// slots: picking the second slot's meter in the first empties the second. Emptying the
+    /// first slot promotes the second; emptying both is the choosing state (saved: auto). A slot
+    /// the first is empty for takes the first's place.
+    pub fn set_pin_slot(&mut self, slot: usize, key: Option<MeterKey>) {
+        let current = pins(&self.draft());
+        let first = current.first().cloned();
+        let second = current.get(1).cloned();
+        let pinned: Vec<MeterKey> = match (slot, key) {
+            (0, Some(key)) => std::iter::once(key.clone())
+                .chain(second.filter(|s| *s != key))
+                .collect(),
+            (0, None) => second.into_iter().collect(),
+            (_, Some(key)) => match first {
+                Some(first) if first == key => return,
+                Some(first) => vec![first, key],
+                None => vec![key],
+            },
+            (_, None) => first.into_iter().collect(),
+        };
+        if pinned == current {
             return;
+        }
+        self.choosing_pins = pinned.is_empty();
+        self.set(Edit::Pins(content_of(pinned)));
+    }
+
+    /// Shows or hides the meter `meter` of `provider` (for the whole service, as
+    /// `hidden_meters` is). A hidden meter is unpinned, for every account of the service.
+    /// Returns whether hiding it unpinned it.
+    pub fn set_meter_shown(&mut self, provider: ProviderId, meter: &MeterId, shown: bool) -> bool {
+        self.set(Edit::HiddenMeter(provider, meter.clone(), !shown));
+        if shown {
+            return false;
         }
         let current = pins(&self.draft());
         let kept: Vec<MeterKey> = current
             .iter()
-            .filter(|k| !(k.provider == key.provider && k.meter == key.meter))
+            .filter(|k| !(k.provider == provider && k.meter == *meter))
             .cloned()
             .collect();
-        if kept.len() != current.len() {
-            self.choosing_pins = kept.is_empty();
-            self.set(Edit::Pins(content_of(kept)));
+        if kept.len() == current.len() {
+            return false;
         }
+        self.choosing_pins = kept.is_empty();
+        self.set(Edit::Pins(content_of(kept)));
+        true
     }
 
     /// Removes an account (not its service's last one). Returns whether it was removed. An
@@ -890,6 +912,16 @@ impl Edits {
         match added {
             Some(field) => {
                 self.pending.remove(&field);
+                // Its pins go with it, as a removal takes them (accounts-spec §7).
+                let current = pins(&self.draft());
+                let kept: Vec<MeterKey> = current
+                    .iter()
+                    .filter(|k| k.source() != *key)
+                    .cloned()
+                    .collect();
+                if kept.len() != current.len() {
+                    self.set(Edit::Pins(content_of(kept)));
+                }
             }
             None => self.set(Edit::AccountRemoved(key.clone())),
         }
@@ -1667,27 +1699,48 @@ mod tests {
         let weekly = meter(ProviderId::Claude, "default", MeterId::WEEKLY);
         let work_weekly = meter(ProviderId::Claude, "f-work", MeterId::WEEKLY);
         let five = meter(ProviderId::Claude, "default", MeterId::FIVE_HOUR);
-        // Choosing: "Meters I pin" without a pin changes nothing yet.
+        // Choosing: "Meters I choose" without a pin changes nothing yet.
         edits.set_readout_mode(true);
         assert!(edits.choosing_pins());
         assert_eq!(edits.readout_mode_index(), 1);
         assert!(!edits.has_pending());
-        edits.set_pinned(five.clone(), true);
-        edits.set_pinned(work_weekly.clone(), true);
+        edits.set_pin_slot(0, Some(five.clone()));
+        edits.set_pin_slot(1, Some(work_weekly.clone()));
         assert!(!edits.choosing_pins());
         assert_eq!(pins(&edits.draft()), [five.clone(), work_weekly.clone()]);
-        // Hiding the weekly limit unpins it for every account of the service.
-        edits.set_pinned(weekly.clone(), true);
-        assert_eq!(pins(&edits.draft()), [work_weekly.clone(), weekly.clone()]);
-        edits.set_meter_shown(&weekly, false);
-        assert_eq!(pins(&edits.draft()), Vec::<MeterKey>::new());
+        // Never twice: the first slot's meter is not taken by the second, and the second's
+        // picked in the first empties the second.
+        edits.set_pin_slot(1, Some(five.clone()));
+        assert_eq!(pins(&edits.draft()), [five.clone(), work_weekly.clone()]);
+        edits.set_pin_slot(0, Some(work_weekly.clone()));
+        assert_eq!(pins(&edits.draft()), std::slice::from_ref(&work_weekly));
+        // Emptying the first slot promotes the second; emptying both is choosing again.
+        edits.set_pin_slot(1, Some(five.clone()));
+        edits.set_pin_slot(0, None);
+        assert_eq!(pins(&edits.draft()), std::slice::from_ref(&five));
+        edits.set_pin_slot(0, None);
         assert!(edits.choosing_pins(), "both gone: choosing again");
         assert_eq!(edits.readout_mode_index(), 1);
         assert_eq!(edits.draft().readout.content, ReadoutContent::Auto);
-        // Removing an account drops its pins, even from a pending pin edit.
-        edits.set_meter_shown(&weekly, true);
-        edits.set_pinned(work_weekly.clone(), true);
-        edits.set_pinned(five.clone(), true);
+        // Hiding the weekly limit unpins it for every account of the service and promotes what
+        // is left.
+        edits.set_pin_slot(0, Some(weekly.clone()));
+        edits.set_pin_slot(1, Some(five.clone()));
+        assert!(
+            edits.set_meter_shown(ProviderId::Claude, &work_weekly.meter, false),
+            "unpinned"
+        );
+        assert_eq!(pins(&edits.draft()), std::slice::from_ref(&five));
+        assert!(!edits.set_meter_shown(ProviderId::Claude, &work_weekly.meter, true));
+        assert!(
+            !edits.set_meter_shown(ProviderId::Claude, &weekly.meter, false),
+            "not pinned any more"
+        );
+        edits.set_meter_shown(ProviderId::Claude, &weekly.meter, true);
+        // Removing an account drops its pins, even from a pending pin edit; the second slot
+        // moves up.
+        edits.set_pin_slot(0, Some(work_weekly.clone()));
+        edits.set_pin_slot(1, Some(five.clone()));
         assert!(edits.remove_account(&key(ProviderId::Claude, "f-work")));
         assert_eq!(pins(&edits.draft()), std::slice::from_ref(&five));
         let mut out = fake(&base);
@@ -1697,10 +1750,45 @@ mod tests {
             !edits.remove_account(&key(ProviderId::Claude, "default")),
             "the last one"
         );
+        // A meter the tray pinned meanwhile ends the choosing state when a commit brings it in.
+        edits.set_pin_slot(0, None);
+        edits.commit(&mut out);
+        assert!(edits.choosing_pins());
+        assert_eq!(out.disk.readout.content, ReadoutContent::Auto);
+        out.disk.readout.content = ReadoutContent::Pinned(vec![weekly.clone()]);
+        edits.set(Edit::ReadoutEvery(true));
+        edits.commit(&mut out);
+        assert_eq!(pins(&edits.draft()), std::slice::from_ref(&weekly));
+        assert!(!edits.choosing_pins());
         // Back to auto.
         edits.set_readout_mode(false);
         assert_eq!(edits.readout_mode_index(), 0);
         assert!(!edits.choosing_pins());
+    }
+
+    #[test]
+    fn an_account_taken_back_before_it_was_saved_takes_its_pins() {
+        let base = Settings::default();
+        let account = AccountSettings {
+            key: AccountKey("f-new".to_owned()),
+            source: SourceSettings::ClaudeConfigDir {
+                path: r"C:\Users\tester\.claude-new".into(),
+            },
+            ..AccountSettings::primary()
+        };
+        let mut edits = Edits::new(base);
+        edits.set(Edit::AccountAdded(
+            ProviderId::Claude,
+            Box::new(account),
+            r"c:\users\tester\.claude-new".to_owned(),
+        ));
+        let new_weekly = meter(ProviderId::Claude, "f-new", MeterId::WEEKLY);
+        let five = meter(ProviderId::Claude, "default", MeterId::FIVE_HOUR);
+        edits.set_readout_mode(true);
+        edits.set_pin_slot(0, Some(new_weekly));
+        edits.set_pin_slot(1, Some(five.clone()));
+        assert!(edits.remove_account(&key(ProviderId::Claude, "f-new")));
+        assert_eq!(pins(&edits.draft()), [five]);
     }
 
     #[test]

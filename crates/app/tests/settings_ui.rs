@@ -378,8 +378,9 @@ fn settings_pages_instant_apply_and_deep_links() {
         "Claude Code's sign-in on this PC · 1 account"
     );
 
-    // ---- Deep link to the pins: Display, the readout on and "Meters I pin" (choosing: no pin
-    // yet, still automatic), outlined, the first Pin box focused; Space pins it.
+    // ---- Deep link to the pins: Display, the readout on and "Meters I choose" (choosing: no
+    // pin yet, still automatic), the content's card outlined, the first slot focused; Down
+    // picks its first meter.
     window.invoke_select_page(sw::PAGE_GENERAL);
     sw::reveal(Focus::Pins);
     frame(&window);
@@ -387,14 +388,17 @@ fn settings_pages_instant_apply_and_deep_links() {
     assert!(window.get_highlight_pins());
     assert_eq!(window.get_readout_content_index(), 1);
     assert!(window.get_choosing_pins());
+    assert!(!window.get_pin_second_enabled(), "no first meter yet");
+    assert_eq!(window.get_pin_first_index(), 0, "None");
     assert_eq!(
         outside.borrow().disk.readout.content,
         ReadoutContent::Auto,
         "choosing changes nothing yet"
     );
-    press(&window, " ");
+    press(&window, Key::DownArrow);
     wait(&window, 300);
     assert!(!window.get_choosing_pins());
+    assert!(window.get_pin_second_enabled());
     assert!(matches!(
         outside.borrow().disk.readout.content,
         ReadoutContent::Pinned(ref p) if p.len() == 1
@@ -482,11 +486,7 @@ fn settings_pages_instant_apply_and_deep_links() {
         services(&window)[0].description,
         "Claude Code's sign-in on this PC · 3 accounts"
     );
-    let meters: Vec<String> = window
-        .get_meters()
-        .iter()
-        .map(|m| m.label.to_string())
-        .collect();
+    let meters = slot_choices(&window, 0);
     assert!(meters.iter().any(|m| m.contains("Work")), "{meters:?}");
     assert!(!meters.iter().any(|m| m.contains("Copy")), "{meters:?}");
 
@@ -512,6 +512,251 @@ fn settings_pages_instant_apply_and_deep_links() {
         Some(5),
         "each saved at once"
     );
+    window.invoke_dismiss();
+    assert!(!sw::is_open());
+
+    pin_slots();
+    meter_visibility();
+}
+
+/// The labels pin slot `slot` lists.
+fn slot_choices(window: &ui::SettingsWindow, slot: i32) -> Vec<String> {
+    let model = if slot == 0 {
+        window.get_pin_first_choices()
+    } else {
+        window.get_pin_second_choices()
+    };
+    model.iter().map(|c| c.to_string()).collect()
+}
+
+/// The label pin slot `slot` shows.
+fn slot_shows(window: &ui::SettingsWindow, slot: i32) -> String {
+    let index = if slot == 0 {
+        window.get_pin_first_index()
+    } else {
+        window.get_pin_second_index()
+    };
+    let at = usize::try_from(index).expect("a choice");
+    slot_choices(window, slot)[at].clone()
+}
+
+/// Picks `label` in pin slot `slot`, as the combo box does.
+fn pick(window: &ui::SettingsWindow, slot: i32, label: &str) {
+    let choices = slot_choices(window, slot);
+    let at = choices
+        .iter()
+        .position(|c| c == label)
+        .unwrap_or_else(|| panic!("{label:?} in {choices:?}"));
+    let index = i32::try_from(at).expect("a few choices");
+    if slot == 0 {
+        window.set_pin_first_index(index);
+    } else {
+        window.set_pin_second_index(index);
+    }
+    window.invoke_pin_slot_selected(slot, index);
+    frame(window);
+}
+
+/// The pins as saved, each as its slot lists it (by its service, account and meter id).
+fn saved_pins(outside: &Rc<RefCell<MemoryOutside>>) -> Vec<(ProviderId, String, String)> {
+    match &outside.borrow().disk.readout.content {
+        ReadoutContent::Pinned(pins) => pins
+            .iter()
+            .map(|k| (k.provider, k.account.0.clone(), k.meter.0.clone()))
+            .collect(),
+        ReadoutContent::Auto => Vec::new(),
+    }
+}
+
+/// The Meters list's card of `service`: its index and its meter types.
+fn meter_card(window: &ui::SettingsWindow, service: &str) -> Option<(i32, Vec<ui::MeterType>)> {
+    let groups: Vec<ui::MeterGroup> = window.get_meter_groups().iter().collect();
+    let at = groups.iter().position(|g| g.name == service)?;
+    let types = groups[at].types.iter().collect();
+    Some((i32::try_from(at).expect("a few cards"), types))
+}
+
+/// The pin slots (settings-spec §4): the choosing state survives an unrelated commit; no meter
+/// in both slots; emptying the first promotes the second; a pin whose service is off is kept
+/// and listed "(not available)"; hiding a pinned meter takes it off with a note; removing an
+/// account clears its pins and promotes the second.
+fn pin_slots() {
+    let outside = Rc::new(RefCell::new(MemoryOutside::default()));
+    let window = open(&outside);
+    window.invoke_select_page(sw::PAGE_DISPLAY);
+    window.set_readout_content_index(1);
+    window.invoke_readout_mode_selected(1);
+    frame(&window);
+    assert!(window.get_choosing_pins());
+    // An unrelated commit keeps the choosing state; the file stays automatic.
+    window.set_readout_every(true);
+    window.invoke_readout_every_toggled(true);
+    wait(&window, 300);
+    assert_eq!(outside.borrow().writes, 1);
+    assert!(window.get_choosing_pins());
+    assert_eq!(window.get_readout_content_index(), 1);
+    assert_eq!(saved_pins(&outside), []);
+
+    // The choices: the shown meters with their account where the service has several.
+    let me = "tester@example.invalid";
+    let work_weekly = "Claude · Work · Weekly limit";
+    let codex_five = "Codex · 5-hour limit";
+    let first = slot_choices(&window, 0);
+    assert_eq!(first[0], "None");
+    assert_eq!(first[1], format!("Claude · {me} · 5-hour limit"));
+    assert!(first.iter().any(|c| c == work_weekly), "{first:?}");
+    assert!(first.iter().any(|c| c == "Meshy · Credits"), "{first:?}");
+
+    // No duplicates: the second slot does not list the first's meter.
+    pick(&window, 0, work_weekly);
+    assert!(!window.get_choosing_pins());
+    assert!(window.get_pin_second_enabled());
+    assert!(!slot_choices(&window, 1).iter().any(|c| c == work_weekly));
+    pick(&window, 1, codex_five);
+    wait(&window, 300);
+    let work = |meter: &str| {
+        let account = outside
+            .borrow()
+            .disk
+            .provider(ProviderId::Claude)
+            .map(|p| p.accounts[1].key.0.clone())
+            .expect("Work");
+        (ProviderId::Claude, account, meter.to_owned())
+    };
+    let codex = |meter: &str| (ProviderId::Codex, "default".to_owned(), meter.to_owned());
+    assert_eq!(saved_pins(&outside), [work("weekly"), codex("five_hour")]);
+    // The second slot's meter picked in the first empties the second.
+    pick(&window, 0, codex_five);
+    assert_eq!(slot_shows(&window, 1), "None");
+    // Emptying the first promotes the second.
+    pick(&window, 1, work_weekly);
+    pick(&window, 0, "None");
+    wait(&window, 300);
+    assert_eq!(saved_pins(&outside), [work("weekly")]);
+    assert_eq!(slot_shows(&window, 0), work_weekly);
+    assert_eq!(slot_shows(&window, 1), "None");
+
+    // A pin whose service is off is kept, listed as not available.
+    pick(&window, 1, codex_five);
+    window.invoke_provider_toggled(service_row(&window, "codex"), false);
+    wait(&window, 300);
+    assert_eq!(saved_pins(&outside), [work("weekly"), codex("five_hour")]);
+    assert_eq!(
+        slot_shows(&window, 1),
+        "Codex · 5-hour limit (not available)"
+    );
+    assert!(
+        !slot_choices(&window, 0)
+            .iter()
+            .any(|c| c.starts_with("Codex"))
+    );
+    assert!(meter_card(&window, "Codex").is_none(), "off: not listed");
+    // An unrelated pick keeps it.
+    pick(&window, 0, &format!("Claude · {me} · 5-hour limit"));
+    wait(&window, 300);
+    assert_eq!(saved_pins(&outside)[1], codex("five_hour"));
+    window.invoke_provider_toggled(service_row(&window, "codex"), true);
+    wait(&window, 300);
+    assert_eq!(slot_shows(&window, 1), codex_five, "available again");
+
+    // Hiding a pinned meter takes it off its slot, with a note; the second moves up.
+    pick(&window, 0, work_weekly);
+    let (claude, types) = meter_card(&window, "Claude").expect("Claude's card");
+    let weekly = types
+        .iter()
+        .position(|t| t.label == "Weekly limit")
+        .and_then(|r| i32::try_from(r).ok())
+        .expect("weekly");
+    window.invoke_meter_shown_toggled(claude, weekly, false);
+    wait(&window, 300);
+    assert_eq!(saved_pins(&outside), [codex("five_hour")]);
+    assert_eq!(slot_shows(&window, 0), codex_five);
+    assert_eq!(
+        window.get_pin_note(),
+        "Claude weekly limit is hidden, so it was taken off the taskbar."
+    );
+    // Shown again, the note goes; the meter is not pinned again.
+    window.invoke_meter_shown_toggled(claude, weekly, true);
+    wait(&window, 300);
+    assert_eq!(window.get_pin_note(), "");
+    assert_eq!(saved_pins(&outside), [codex("five_hour")]);
+
+    // Removing an account clears its pins (committed at once) and promotes the second.
+    pick(&window, 0, work_weekly);
+    pick(&window, 1, codex_five);
+    wait(&window, 300);
+    window.invoke_account_removed(0, 1);
+    frame(&window);
+    assert_eq!(saved_pins(&outside), [codex("five_hour")]);
+    assert_eq!(slot_shows(&window, 0), codex_five);
+    assert!(!slot_choices(&window, 0).iter().any(|c| c.contains("Work")));
+    // Removing the last pin is choosing again (saved: automatic).
+    pick(&window, 0, "None");
+    wait(&window, 300);
+    assert!(window.get_choosing_pins());
+    assert_eq!(saved_pins(&outside), []);
+    window.invoke_dismiss();
+    assert!(!sw::is_open());
+}
+
+/// The Meters list (settings-spec §4): a card per service that is on, a check box per meter
+/// type with its short name; hiding one hides it for the whole service, every account; with no
+/// service on, the empty state's link goes to Services.
+fn meter_visibility() {
+    let outside = Rc::new(RefCell::new(MemoryOutside::default()));
+    let window = open(&outside);
+    let (claude, types) = meter_card(&window, "Claude").expect("Claude's card");
+    let labels: Vec<&str> = types.iter().map(|t| t.label.as_str()).collect();
+    // One row per type, though Claude has two accounts.
+    assert_eq!(
+        labels,
+        ["5-hour limit", "Weekly limit", "Fable weekly limit"]
+    );
+    assert_eq!(types[1].show_label, "Show Claude weekly limit");
+    assert!(types.iter().all(|t| t.shown));
+    let (_, meshy) = meter_card(&window, "Meshy").expect("Meshy's card");
+    assert_eq!(meshy[0].label, "Credits");
+
+    // Hiding the weekly limit hides it for the service.
+    window.invoke_meter_shown_toggled(claude, 1, false);
+    wait(&window, 300);
+    let hidden = outside
+        .borrow()
+        .disk
+        .provider(ProviderId::Claude)
+        .map(|p| p.hidden_meters.clone())
+        .expect("Claude");
+    assert_eq!(hidden.len(), 1, "once for the service: {hidden:?}");
+    assert_eq!(hidden[0].0, "weekly");
+    let (_, types) = meter_card(&window, "Claude").expect("Claude's card");
+    assert!(!types[1].shown);
+    let choices = slot_choices(&window, 0);
+    assert!(
+        !choices
+            .iter()
+            .any(|c| c.starts_with("Claude") && c.ends_with("· Weekly limit")),
+        "neither account's weekly limit can be pinned: {choices:?}"
+    );
+
+    // Every service off: the empty state, whose link goes to Services. Tab reaches the pane,
+    // Down shows Display; Tab passes the theme list, Theme Studio…, Open themes folder, the
+    // times, the readout's two switches and its content (automatic: no slots) to the link;
+    // Space follows it.
+    for row in services(&window) {
+        if row.enabled {
+            window.invoke_provider_toggled(service_row(&window, &row.id), false);
+        }
+    }
+    wait(&window, 300);
+    assert_eq!(window.get_meter_groups().row_count(), 0);
+    press(&window, Key::Tab);
+    press(&window, Key::DownArrow);
+    assert_eq!(window.get_page(), sw::PAGE_DISPLAY);
+    for _ in 0..8 {
+        press(&window, Key::Tab);
+    }
+    press(&window, " ");
+    assert_eq!(window.get_page(), sw::PAGE_SERVICES);
     window.invoke_dismiss();
     assert!(!sw::is_open());
 }

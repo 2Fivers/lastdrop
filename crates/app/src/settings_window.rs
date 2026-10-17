@@ -1,11 +1,11 @@
 //! The settings window (settings-spec): a navigation pane and four pages of settings cards —
 //! Services (the services on or off, each expanding to what it has to manage: Claude Code's and
 //! Codex's accounts, [`crate::settings_accounts`], accounts-spec §7, or an API key; privacy; the
-//! folder of described services), Display (theme, times, the taskbar readout and its pins,
-//! the meters), Notifications (N§2) and General (start with Windows, language, refresh interval,
-//! keyboard shortcut, updates). Its texts are the `settings.*` strings in the language the
-//! settings pick (else Windows' display language, [`Wording`]); when a commit changes the
-//! language, the window switches to it.
+//! folder of described services), Display (theme, times, the taskbar readout with its two pin
+//! slots, the meters each service shows), Notifications (N§2) and General (start with Windows,
+//! language, refresh interval, keyboard shortcut, updates). Its texts are the `settings.*`
+//! strings in the language the settings pick (else Windows' display language, [`Wording`]); when
+//! a commit changes the language, the window switches to it.
 //!
 //! **Instant apply** (settings-spec §5): every change goes to the window's [`Edits`] at its commit
 //! point and is committed — onto `settings.json` as it is then, under the settings lock
@@ -31,7 +31,9 @@ use lastdrop_core::grammar::meters::localized;
 use lastdrop_core::grammar::numbers::percent;
 use lastdrop_core::grammar::strings::{capitalise, count, text};
 use lastdrop_core::grammar::{Language, LocaleFormat, Msg, PluralMsg, Strings, TimeStyle};
-use lastdrop_core::model::{AccountKey, MeterKey, MeterNames, ProviderId, SourceKey, catalog};
+use lastdrop_core::model::{
+    AccountKey, MeterKey, MeterKind, MeterNames, ProviderId, SourceKey, catalog,
+};
 use lastdrop_core::secret::SecretString;
 use lastdrop_core::settings::{ProviderEntry, Settings, SourceSettings};
 use lastdrop_providers::io::CredentialName;
@@ -162,15 +164,46 @@ pub fn language_choices(ui_languages: &[String], strings: &dyn Strings) -> Vec<S
         .collect()
 }
 
+/// A meter the window knows: its key, the names its provider gives it (English; the labels
+/// localize them) and whether it is a balance (credits) rather than a limit.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ListedMeter {
+    /// The meter.
+    pub key: MeterKey,
+    /// Its names.
+    pub names: MeterNames,
+    /// A balance, not a limit.
+    pub balance: bool,
+}
+
+impl ListedMeter {
+    /// A meter of the catalogue or of a pin no reading is remembered for: the catalogue's names
+    /// and kind, a per-model weekly window's names (`weekly:fable` → `Fable weekly`), else its id.
+    pub fn of(key: &MeterKey) -> ListedMeter {
+        if let Some(def) = catalog(key.provider).iter().find(|d| d.id == key.meter.0) {
+            return ListedMeter {
+                key: key.clone(),
+                names: def.names(),
+                balance: def.kind == MeterKind::Balance,
+            };
+        }
+        ListedMeter {
+            key: key.clone(),
+            names: pinned_names(key),
+            balance: false,
+        }
+    }
+}
+
 /// The meters to list for `settings`: every enabled service's catalogue meters plus the meters
 /// its readings reported (Claude's per-model weekly windows), with the names their provider
 /// gives them; none of the `duplicates` (accounts-spec §3: never evaluated, so never shown).
 pub fn listed_meters(
     settings: &Settings,
-    reported: &[(MeterKey, MeterNames)],
+    reported: &[ListedMeter],
     duplicates: &BTreeSet<SourceKey>,
-) -> Vec<(MeterKey, MeterNames)> {
-    let mut out: Vec<(MeterKey, MeterNames)> = Vec::new();
+) -> Vec<ListedMeter> {
+    let mut out: Vec<ListedMeter> = Vec::new();
     for (_, p) in settings.enabled_providers() {
         for account in &p.accounts {
             let source = SourceKey {
@@ -181,21 +214,15 @@ pub fn listed_meters(
                 continue;
             }
             for def in catalog(p.id) {
-                out.push((
-                    MeterKey {
-                        provider: p.id,
-                        account: account.key.clone(),
-                        meter: def.meter_id(),
-                    },
-                    def.names(),
-                ));
+                out.push(ListedMeter::of(&MeterKey {
+                    provider: p.id,
+                    account: account.key.clone(),
+                    meter: def.meter_id(),
+                }));
             }
-            for (key, names) in reported {
-                if key.provider == p.id
-                    && key.account == account.key
-                    && !out.iter().any(|(k, _)| k == key)
-                {
-                    out.push((key.clone(), names.clone()));
+            for meter in reported {
+                if meter.key.source() == source && !out.iter().any(|m| m.key == meter.key) {
+                    out.push(meter.clone());
                 }
             }
         }
@@ -203,70 +230,95 @@ pub fn listed_meters(
     out
 }
 
-/// The [`listed_meters`] with their labels in the language of `strings` ([`meter_label`]);
-/// `accounts` names the accounts of services with two or more shown and leaves out the
-/// duplicates ([`settings_accounts::meter_accounts`]).
-pub fn meter_choices(
-    settings: &Settings,
-    reported: &[(MeterKey, MeterNames)],
-    strings: &dyn Strings,
-    accounts: &MeterAccounts,
-) -> Vec<(MeterKey, String)> {
-    listed_meters(settings, reported, &accounts.duplicates)
-        .into_iter()
-        .map(|(key, names)| {
-            let account = accounts.names.get(&key.source()).map(String::as_str);
-            let label = meter_label(&key, &names, strings, account);
-            (key, label)
-        })
-        .collect()
-}
-
-/// A meter's row label: its localized `short_name` with its service (`settings.meter`,
-/// capitalised): `Claude weekly`, `Veckogränsen för Claude`; with the account's name when its
-/// service has several (`Claude · Work weekly`, accounts-spec §7).
-pub fn meter_label(
-    key: &MeterKey,
-    names: &MeterNames,
-    strings: &dyn Strings,
-    account: Option<&str>,
-) -> String {
-    let names = localized(key.provider, &key.meter, names, strings);
-    let service = match account {
-        Some(account) => format!("{} · {account}", key.provider.display_name()),
-        None => key.provider.display_name().to_owned(),
-    };
-    capitalise(&text(
-        strings,
-        Msg::SettingsMeter,
-        &[("service", &service), ("short_name", &names.short_name)],
-    ))
-}
-
-/// The meters the tray process's readings reported, as it remembers them in `state.json`
-/// (`SavedState::seen`), plus any pinned meter it does not remember, each with the names its
-/// provider gave (English; [`meter_label`] localizes them).
-pub fn reported_meters(saved: &SavedState, settings: &Settings) -> Vec<(MeterKey, MeterNames)> {
-    let mut out: Vec<(MeterKey, MeterNames)> = saved
-        .seen
-        .iter()
-        .map(|m| (m.key.clone(), m.names.clone()))
-        .collect();
-    for key in pins(settings) {
-        if !out.iter().any(|(k, _)| *k == key) {
-            let names = pinned_names(&key);
-            out.push((key, names));
+/// The meter types of each service of `listed`, in order (settings-spec §4, the Meters list):
+/// every meter id its accounts list, once — visibility is per service, as `hidden_meters` is.
+pub fn meter_types(listed: &[ListedMeter]) -> Vec<(ProviderId, Vec<ListedMeter>)> {
+    let mut out: Vec<(ProviderId, Vec<ListedMeter>)> = Vec::new();
+    for meter in listed {
+        let provider = meter.key.provider;
+        let at = out
+            .iter()
+            .position(|(p, _)| *p == provider)
+            .unwrap_or_else(|| {
+                out.push((provider, Vec::new()));
+                out.len() - 1
+            });
+        let types = &mut out[at].1;
+        if !types.iter().any(|t| t.key.meter == meter.key.meter) {
+            types.push(meter.clone());
         }
     }
     out
 }
 
-/// The names of a pinned meter no reading is remembered for: the catalogue's, a per-model weekly
-/// window's (`weekly:fable` → `Fable weekly`), else its id.
-fn pinned_names(key: &MeterKey) -> MeterNames {
-    if let Some(def) = catalog(key.provider).iter().find(|d| d.id == key.meter.0) {
-        return def.names();
+/// A meter as a limit by its localized `short_name` (`settings.meter.limit`: `5-hour limit`,
+/// `Fable weekly limit`, sv `veckogränsen`), a balance by its `short_name` alone (`credits`).
+fn limit_name(meter: &ListedMeter, strings: &dyn Strings) -> String {
+    let names = localized(meter.key.provider, &meter.key.meter, &meter.names, strings);
+    if meter.balance {
+        names.short_name
+    } else {
+        text(
+            strings,
+            Msg::SettingsMeterLimit,
+            &[("short_name", &names.short_name)],
+        )
     }
+}
+
+/// A meter type's check box in the Meters list ([`limit_name`], capitalised): `5-hour limit`,
+/// `Veckogränsen`, `Credits`.
+pub fn meter_type_label(meter: &ListedMeter, strings: &dyn Strings) -> String {
+    capitalise(&limit_name(meter, strings))
+}
+
+/// A meter with its service (`settings.meter`): `Claude weekly limit`, `veckogränsen för Claude`
+/// (the accessible names, the note after hiding a pinned meter).
+pub fn meter_in_service(meter: &ListedMeter, strings: &dyn Strings) -> String {
+    text(
+        strings,
+        Msg::SettingsMeter,
+        &[
+            ("service", meter.key.provider.display_name()),
+            ("short_name", &limit_name(meter, strings)),
+        ],
+    )
+}
+
+/// A pin slot's choice: the service, the account's name when its service has several shown
+/// (accounts-spec §7), and the meter ([`meter_type_label`]): `Claude · Work · Weekly limit`,
+/// `Codex · 5-hour limit`.
+pub fn pin_label(meter: &ListedMeter, account: Option<&str>, strings: &dyn Strings) -> String {
+    let mut parts = vec![meter.key.provider.display_name().to_owned()];
+    parts.extend(account.map(str::to_owned));
+    parts.push(meter_type_label(meter, strings));
+    parts.join(" · ")
+}
+
+/// The meters the tray process's readings reported, as it remembers them in `state.json`
+/// (`SavedState::seen`), plus any pinned meter it does not remember ([`ListedMeter::of`]), each
+/// with the names its provider gave (English; the labels localize them).
+pub fn reported_meters(saved: &SavedState, settings: &Settings) -> Vec<ListedMeter> {
+    let mut out: Vec<ListedMeter> = saved
+        .seen
+        .iter()
+        .map(|m| ListedMeter {
+            key: m.key.clone(),
+            names: m.names.clone(),
+            balance: m.balance,
+        })
+        .collect();
+    for key in pins(settings) {
+        if !out.iter().any(|m| m.key == key) {
+            out.push(ListedMeter::of(&key));
+        }
+    }
+    out
+}
+
+/// The names of a pinned meter outside the catalogue no reading is remembered for: a per-model
+/// weekly window's (`weekly:fable` → `Fable weekly`), else its id.
+fn pinned_names(key: &MeterKey) -> MeterNames {
     match key.meter.0.strip_prefix("weekly:") {
         Some(model) => {
             let mut chars = model.chars();
@@ -386,7 +438,7 @@ pub struct Inputs {
     /// `settings.json` as read.
     pub settings: Settings,
     /// The meters the readings reported ([`reported_meters`]).
-    pub reported: Vec<(MeterKey, MeterNames)>,
+    pub reported: Vec<ListedMeter>,
     /// Who is signed in to each listed folder and the folders found on this PC.
     pub accounts: AccountsInfo,
     /// Whether the key of each API key service ([`key_services`]) is stored; a service not
@@ -419,6 +471,16 @@ impl Inputs {
     }
 }
 
+/// One card of the Meters list: its service, its meter types and their rows, updated in place.
+struct MeterCard {
+    provider: ProviderId,
+    types: Vec<ListedMeter>,
+    rows: Rc<VecModel<ui::MeterType>>,
+}
+
+/// What a pin slot lists: each choice's meter (`None` for "None") and its label.
+type PinChoices = Vec<(Option<MeterKey>, String)>;
+
 /// One accounts block's rows, updated in place (settings-spec §5.4).
 struct Block {
     provider: ProviderId,
@@ -437,7 +499,7 @@ struct Session {
     /// What a commit does outside the window.
     outside: RefCell<Box<dyn Outside>>,
     /// The meters the readings reported, read when the window opened.
-    reported: Vec<(MeterKey, MeterNames)>,
+    reported: Vec<ListedMeter>,
     /// What the texts are made of: read when the window opened, the language again after each
     /// commit.
     wording: RefCell<Wording>,
@@ -455,9 +517,14 @@ struct Session {
     provider_rows: Rc<VecModel<ui::ProviderRow>>,
     /// The services whose expander is open: kept while the window is open, whatever the page.
     expanded: RefCell<BTreeSet<ProviderId>>,
-    /// The meters listed (row index → meter).
-    meters: RefCell<Vec<MeterKey>>,
-    meter_rows: Rc<VecModel<ui::MeterChoice>>,
+    /// The Meters list: a card per service (card index → its service and meter types).
+    meter_cards: RefCell<Vec<MeterCard>>,
+    meter_groups: Rc<VecModel<ui::MeterGroup>>,
+    /// What the two pin slots list, as last shown (choice index → meter).
+    pin_choices: RefCell<[PinChoices; 2]>,
+    /// The pinned meter that hiding took off the taskbar: said under the pin slots until the
+    /// next pin change or until it is shown again.
+    pin_note: RefCell<Option<ListedMeter>>,
     key_rows: Rc<VecModel<ui::ApiKeyRow>>,
     /// Claude Code's and Codex's accounts.
     blocks: Vec<Block>,
@@ -590,8 +657,10 @@ pub fn start(
         providers,
         provider_rows: Rc::new(VecModel::default()),
         expanded: RefCell::new(BTreeSet::new()),
-        meters: RefCell::new(Vec::new()),
-        meter_rows: Rc::new(VecModel::default()),
+        meter_cards: RefCell::new(Vec::new()),
+        meter_groups: Rc::new(VecModel::default()),
+        pin_choices: RefCell::new([Vec::new(), Vec::new()]),
+        pin_note: RefCell::new(None),
         key_rows: Rc::new(VecModel::default()),
         block_status: Rc::new(VecModel::from(vec![SharedString::new(); blocks.len()])),
         blocks,
@@ -602,7 +671,7 @@ pub fn start(
         closing: Cell::new(false),
     });
     window.set_providers(ModelRc::from(session.provider_rows.clone()));
-    window.set_meters(ModelRc::from(session.meter_rows.clone()));
+    window.set_meter_groups(ModelRc::from(session.meter_groups.clone()));
     window.set_api_keys(ModelRc::from(session.key_rows.clone()));
     window.set_block_status(ModelRc::from(session.block_status.clone()));
     connect(&window);
@@ -664,10 +733,10 @@ pub fn reveal(focus: Focus) {
     });
 }
 
-/// Tray menu "Taskbar readout ▸ Pinned meters…": the readout on and "Meters I pin" (the choosing
-/// state when no meter is pinned yet) — committed at once, the menu choice is the user's intent —
-/// then the Display page at the readout, the first Pin box focused, the readout's content and the
-/// meters outlined.
+/// Tray menu "Taskbar readout ▸ Pinned meters…" (R§10): the readout on and "Meters I choose"
+/// (the choosing state when no meter is pinned yet) — committed at once, the menu choice is the
+/// user's intent — then the Display page at the readout, the first pin slot focused, the
+/// taskbar content's card outlined.
 fn reveal_pins(session: &Session) {
     {
         let mut edits = session.edits.borrow_mut();
@@ -795,6 +864,7 @@ pub fn texts(strings: &dyn Strings) -> ui::SettingsTexts {
         theme: t(Msg::SettingsTheme),
         theme_studio: t(Msg::SettingsThemeStudio),
         theme_hint: t(Msg::SettingsThemeHint),
+        theme_folder: t(Msg::SettingsThemeFolder),
         updates: t(Msg::SettingsUpdates),
         updates_check: t(Msg::SettingsUpdatesCheck),
         updates_now: t(Msg::SettingsUpdatesNow),
@@ -812,14 +882,15 @@ pub fn texts(strings: &dyn Strings) -> ui::SettingsTexts {
         readout_auto: t(Msg::SettingsReadoutAuto),
         readout_pinned: t(Msg::SettingsReadoutPinned),
         readout_choosing: t(Msg::SettingsReadoutChoosing),
+        pins_first: t(Msg::SettingsPinsFirst),
+        pins_second: t(Msg::SettingsPinsSecond),
         readout_times: t(Msg::SettingsReadoutTimes),
         readout_clock: t(Msg::SettingsReadoutClock),
         readout_relative: t(Msg::SettingsReadoutRelative),
         meters: t(Msg::SettingsMeters),
         meters_hint: t(Msg::SettingsMetersHint),
         meters_empty: t(Msg::SettingsMetersEmpty),
-        meter_show: t(Msg::SettingsMeterShow),
-        meter_pin: t(Msg::SettingsMeterPin),
+        meters_empty_link: t(Msg::SettingsMetersEmptyLink),
         notify_on: t(Msg::SettingsNotifyOn),
         notify_levels: t(Msg::SettingsNotifyLevels),
         notify_and: t(Msg::SettingsNotifyAnd),
@@ -966,48 +1037,167 @@ fn update_row<T: Clone + PartialEq + 'static>(model: &VecModel<T>, row: usize, d
     }
 }
 
-/// The meter rows from the draft: replaced when the meters listed change (a service turned on or
-/// off), else updated in place.
+/// Whether the draft hides `key`'s meter (for its whole service).
+fn hidden(draft: &Settings, key: &MeterKey) -> bool {
+    draft
+        .provider(key.provider)
+        .is_some_and(|p| p.hidden_meters.contains(&key.meter))
+}
+
+/// The Meters list and the pin slots from the draft (settings-spec §4).
 fn sync_meters(session: &Session, draft: &Settings, strings: &dyn Strings) {
-    let names = {
-        let accounts = session.accounts.borrow();
-        settings_accounts::meter_accounts(draft, &accounts, strings)
+    let accounts = {
+        let info = session.accounts.borrow();
+        settings_accounts::meter_accounts(draft, &info, strings)
     };
-    let pinned = pins(draft);
-    let rows: Vec<(MeterKey, ui::MeterChoice)> =
-        meter_choices(draft, &session.reported, strings, &names)
-            .into_iter()
-            .map(|(key, label)| {
-                let shown = !draft
-                    .provider(key.provider)
-                    .is_some_and(|p| p.hidden_meters.contains(&key.meter));
-                let row = ui::MeterChoice {
-                    show_label: text(strings, Msg::SettingsMeterShowA11y, &[("meter", &label)])
-                        .into(),
-                    pin_label: text(strings, Msg::SettingsMeterPinA11y, &[("meter", &label)])
-                        .into(),
-                    label: label.into(),
-                    shown,
-                    pinned: pinned.contains(&key),
-                };
-                (key, row)
+    let listed = listed_meters(draft, &session.reported, &accounts.duplicates);
+    sync_meter_cards(session, draft, &listed, strings);
+    sync_pins(session, draft, &listed, &accounts, strings);
+}
+
+/// The Meters list: a card per service that is on, with a check box per meter type. The cards
+/// are replaced when the services or their types change (a service turned on or off), else
+/// their rows are updated in place, so a check box keeps the focus.
+fn sync_meter_cards(
+    session: &Session,
+    draft: &Settings,
+    listed: &[ListedMeter],
+    strings: &dyn Strings,
+) {
+    let rows_of = |types: &[ListedMeter]| -> Vec<ui::MeterType> {
+        types
+            .iter()
+            .map(|t| ui::MeterType {
+                label: meter_type_label(t, strings).into(),
+                shown: !hidden(draft, &t.key),
+                show_label: text(
+                    strings,
+                    Msg::SettingsMeterShowA11y,
+                    &[("meter", &meter_in_service(t, strings))],
+                )
+                .into(),
             })
-            .collect();
-    let keys: Vec<MeterKey> = rows.iter().map(|(k, _)| k.clone()).collect();
-    let focus_row = rows.iter().position(|(_, r)| r.shown).unwrap_or(0);
-    if *session.meters.borrow() == keys {
-        for (i, (_, row)) in rows.into_iter().enumerate() {
-            update_row(&session.meter_rows, i, row);
+            .collect()
+    };
+    let groups = meter_types(listed);
+    let mut cards = session.meter_cards.borrow_mut();
+    let same = cards.len() == groups.len()
+        && cards.iter().zip(&groups).all(|(card, (provider, types))| {
+            card.provider == *provider
+                && card.types.len() == types.len()
+                && card
+                    .types
+                    .iter()
+                    .zip(types)
+                    .all(|(a, b)| a.key.meter == b.key.meter)
+        });
+    if same {
+        for (card, (_, types)) in cards.iter().zip(&groups) {
+            for (i, row) in rows_of(types).into_iter().enumerate() {
+                update_row(&card.rows, i, row);
+            }
         }
-    } else {
-        session
-            .meter_rows
-            .set_vec(rows.into_iter().map(|(_, r)| r).collect::<Vec<_>>());
-        *session.meters.borrow_mut() = keys;
+        return;
     }
-    session
-        .window
-        .set_pin_focus_row(i32::try_from(focus_row).unwrap_or(0));
+    let mut groups_shown = Vec::new();
+    cards.clear();
+    for (provider, types) in groups {
+        let rows = Rc::new(VecModel::from(rows_of(&types)));
+        groups_shown.push(ui::MeterGroup {
+            name: provider.display_name().into(),
+            glyph: wiring::glyph_data(&provider.glyph()),
+            types: ModelRc::from(rows.clone()),
+        });
+        cards.push(MeterCard {
+            provider,
+            types,
+            rows,
+        });
+    }
+    session.meter_groups.set_vec(groups_shown);
+}
+
+/// The two pin slots (settings-spec §4): each lists "None" and the shown meters of `listed` with
+/// their account ([`pin_label`]), the second slot not the first's meter. A saved pin that is not
+/// listed now (its service is off) is kept and listed as "… (not available)". A slot's list is
+/// set again only when it changed; its choice always.
+fn sync_pins(
+    session: &Session,
+    draft: &Settings,
+    listed: &[ListedMeter],
+    accounts: &MeterAccounts,
+    strings: &dyn Strings,
+) {
+    let pinned = pins(draft);
+    let label = |m: &ListedMeter| {
+        let account = accounts.names.get(&m.key.source()).map(String::as_str);
+        pin_label(m, account, strings)
+    };
+    let offered: Vec<&ListedMeter> = listed.iter().filter(|m| !hidden(draft, &m.key)).collect();
+    let none = strings.template(Msg::SettingsPinsNone).to_owned();
+    let mut choices: [PinChoices; 2] = [Vec::new(), Vec::new()];
+    for (slot, list) in choices.iter_mut().enumerate() {
+        list.push((None, none.clone()));
+        if let Some(key) = pinned.get(slot)
+            && !offered.iter().any(|m| m.key == *key)
+        {
+            let meter = session
+                .reported
+                .iter()
+                .find(|m| m.key == *key)
+                .cloned()
+                .unwrap_or_else(|| ListedMeter::of(key));
+            let unavailable = text(
+                strings,
+                Msg::SettingsPinsUnavailable,
+                &[("meter", &label(&meter))],
+            );
+            list.push((Some(key.clone()), unavailable));
+        }
+        for m in &offered {
+            if slot == 1 && pinned.first() == Some(&m.key) {
+                continue;
+            }
+            list.push((Some(m.key.clone()), label(m)));
+        }
+    }
+    let window = &session.window;
+    let mut shown = session.pin_choices.borrow_mut();
+    for (slot, list) in choices.iter().enumerate() {
+        let labels: Vec<String> = list.iter().map(|(_, l)| l.clone()).collect();
+        let changed = !shown[slot].iter().map(|(_, l)| l).eq(labels.iter());
+        let index = list
+            .iter()
+            .position(|(key, _)| key.as_ref() == pinned.get(slot))
+            .and_then(|i| i32::try_from(i).ok())
+            .unwrap_or(0);
+        if slot == 0 {
+            if changed {
+                window.set_pin_first_choices(string_model(labels));
+            }
+            window.set_pin_first_index(index);
+        } else {
+            if changed {
+                window.set_pin_second_choices(string_model(labels));
+            }
+            window.set_pin_second_index(index);
+        }
+    }
+    *shown = choices;
+    window.set_pin_second_enabled(!pinned.is_empty());
+    let note = session
+        .pin_note
+        .borrow()
+        .as_ref()
+        .map(|m| {
+            capitalise(&text(
+                strings,
+                Msg::SettingsPinsHidden,
+                &[("meter", &meter_in_service(m, strings))],
+            ))
+        })
+        .unwrap_or_default();
+    window.set_pin_note(note.into());
 }
 
 /// The accounts blocks from the draft, in place by source (settings-spec §5.4): rows of removed
@@ -1342,7 +1532,12 @@ fn connect(window: &ui::SettingsWindow) {
     window.on_privacy_toggled(|hide| edit_now(Edit::HidePersonalInfo(hide)));
     window.on_set_api_key(|row, key| with_session(|session| store_key(session, row, &key)));
     window.on_clear_api_key(|row| with_session(|session| clear_key(session, row)));
-    window.on_open_providers_folder(|| with_session(open_providers_folder));
+    window.on_open_providers_folder(|| {
+        with_session(|session| open_folder(session, &session.paths.providers));
+    });
+    window.on_open_themes_folder(|| {
+        with_session(|session| open_folder(session, &session.paths.themes));
+    });
     window.on_theme_selected(|index| {
         with_session(|session| {
             let id = usize::try_from(index)
@@ -1380,24 +1575,52 @@ fn connect(window: &ui::SettingsWindow) {
     window.on_readout_every_toggled(|on| edit_now(Edit::ReadoutEvery(on)));
     window.on_readout_mode_selected(|index| {
         with_session(|session| {
+            session.pin_note.borrow_mut().take();
             session.edits.borrow_mut().set_readout_mode(index == 1);
             edited(session);
         });
     });
-    window.on_meter_shown_toggled(|row, shown| {
+    window.on_pin_slot_selected(|slot, index| {
         with_session(|session| {
-            if let Some(key) = meter_at(session, row) {
-                session.edits.borrow_mut().set_meter_shown(&key, shown);
+            let Some(slot) = usize::try_from(slot).ok().filter(|s| *s < 2) else {
+                return;
+            };
+            let key = {
+                let choices = session.pin_choices.borrow();
+                usize::try_from(index)
+                    .ok()
+                    .and_then(|i| choices[slot].get(i))
+                    .map(|(key, _)| key.clone())
+            };
+            if let Some(key) = key {
+                session.pin_note.borrow_mut().take();
+                session.edits.borrow_mut().set_pin_slot(slot, key);
                 edited(session);
             }
         });
     });
-    window.on_meter_pinned_toggled(|row, on| {
+    window.on_meter_shown_toggled(|card, row, shown| {
         with_session(|session| {
-            if let Some(key) = meter_at(session, row) {
-                session.edits.borrow_mut().set_pinned(key, on);
-                edited(session);
+            let Some(meter) = meter_type_at(session, card, row) else {
+                return;
+            };
+            let unpinned = session.edits.borrow_mut().set_meter_shown(
+                meter.key.provider,
+                &meter.key.meter,
+                shown,
+            );
+            {
+                let mut note = session.pin_note.borrow_mut();
+                let same = |m: &ListedMeter| {
+                    m.key.provider == meter.key.provider && m.key.meter == meter.key.meter
+                };
+                if unpinned {
+                    *note = Some(meter);
+                } else if shown && note.as_ref().is_some_and(same) {
+                    *note = None;
+                }
             }
+            edited(session);
         });
     });
     window.on_notify_enabled_toggled(|on| edit_now(Edit::NotifyEnabled(on)));
@@ -1506,11 +1729,11 @@ fn edit_now(edit: Edit) {
     });
 }
 
-/// The meter of row `row`.
-fn meter_at(session: &Session, row: i32) -> Option<MeterKey> {
-    usize::try_from(row)
-        .ok()
-        .and_then(|i| session.meters.borrow().get(i).cloned())
+/// The meter type of row `row` of card `card` in the Meters list.
+fn meter_type_at(session: &Session, card: i32, row: i32) -> Option<ListedMeter> {
+    let cards = session.meter_cards.borrow();
+    let card = cards.get(usize::try_from(card).ok()?)?;
+    card.types.get(usize::try_from(row).ok()?).cloned()
 }
 
 /// Shows `status` under the accounts of block `block`.
@@ -1857,19 +2080,19 @@ fn clear_key(session: &Session, row: i32) {
     show_draft(session);
 }
 
-/// **Open folder** ("Add your own service", custom-services-spec §3): the folder of described
-/// services in File Explorer, made first when it is missing.
-fn open_providers_folder(session: &Session) {
+/// **Open folder** ("Add your own service", custom-services-spec §3: the folder of described
+/// services) and **Open themes folder** (themes-spec §3): `dir` in File Explorer, made first
+/// when it is missing.
+fn open_folder(session: &Session, dir: &std::path::Path) {
     if !session.native {
         return;
     }
-    let dir = &session.paths.providers;
     if let Err(e) = std::fs::create_dir_all(dir) {
-        log::warn!("settings window: no providers folder: {e}");
+        log::warn!("settings window: no folder {}: {e}", dir.display());
         return;
     }
     if let Err(e) = lastdrop_win::shell::open_folder(dir) {
-        log::warn!("settings window: providers folder not opened: {e}");
+        log::warn!("settings window: {} not opened: {e}", dir.display());
     }
 }
 
@@ -1987,26 +2210,105 @@ mod tests {
             account: AccountKey::primary(),
             meter: MeterId::weekly_model("fable"),
         };
-        let reported = [(fable.clone(), MeterNames::weekly_model("Fable"))];
-        let choices = meter_choices(&settings, &reported, &English, &MeterAccounts::default());
-        let labels: Vec<&str> = choices.iter().map(|(_, l)| l.as_str()).collect();
+        let reported = [ListedMeter {
+            key: fable.clone(),
+            names: MeterNames::weekly_model("Fable"),
+            balance: false,
+        }];
+        let listed = listed_meters(&settings, &reported, &BTreeSet::new());
+        let labels = |strings: &dyn Strings| -> Vec<String> {
+            listed.iter().map(|m| pin_label(m, None, strings)).collect()
+        };
         assert_eq!(
-            labels,
-            ["Claude 5-hour", "Claude weekly", "Claude Fable weekly"]
-        );
-        assert_eq!(choices[2].0, fable);
-
-        // In Swedish the meter comes first, with "limit" in it, and is capitalised.
-        let choices = meter_choices(&settings, &reported, &Swedish, &MeterAccounts::default());
-        let labels: Vec<&str> = choices.iter().map(|(_, l)| l.as_str()).collect();
-        assert_eq!(
-            labels,
+            labels(&English),
             [
-                "5-timmarsgränsen för Claude",
-                "Veckogränsen för Claude",
-                "Fable-veckogränsen för Claude"
+                "Claude · 5-hour limit",
+                "Claude · Weekly limit",
+                "Claude · Fable weekly limit"
             ]
         );
+        assert_eq!(listed[2].key, fable);
+        // In Swedish the short names say "limit" themselves.
+        assert_eq!(
+            labels(&Swedish),
+            [
+                "Claude · 5-timmarsgränsen",
+                "Claude · Veckogränsen",
+                "Claude · Fable-veckogränsen"
+            ]
+        );
+        assert_eq!(
+            pin_label(&listed[1], Some("Work"), &English),
+            "Claude · Work · Weekly limit"
+        );
+        assert_eq!(
+            meter_in_service(&listed[1], &English),
+            "Claude weekly limit"
+        );
+        assert_eq!(
+            meter_in_service(&listed[1], &Swedish),
+            "veckogränsen för Claude"
+        );
+
+        // Meshy's credits are a balance, not a limit.
+        let settings = Settings {
+            providers: vec![ProviderEntry::Known(ProviderSettings::new(
+                ProviderId::Meshy,
+                true,
+            ))],
+            ..Settings::default()
+        };
+        let credits = listed_meters(&settings, &[], &BTreeSet::new());
+        assert!(credits[0].balance);
+        assert_eq!(meter_type_label(&credits[0], &English), "Credits");
+        assert_eq!(meter_type_label(&credits[0], &Swedish), "Krediterna");
+        assert_eq!(meter_in_service(&credits[0], &English), "Meshy credits");
+    }
+
+    #[test]
+    fn meter_types_are_per_service_once_each() {
+        // Two Claude accounts list the same types; visibility is per service.
+        let settings = {
+            let mut s = Settings::default();
+            if let Some(p) = s.provider_mut(ProviderId::Claude) {
+                let taken: Vec<AccountKey> = p.accounts.iter().map(|a| a.key.clone()).collect();
+                p.accounts
+                    .push(lastdrop_core::settings::AccountSettings::for_folder(
+                        SourceSettings::ClaudeConfigDir {
+                            path: r"C:\Users\tester\.claude-work".into(),
+                        },
+                        Some("Work"),
+                        &taken,
+                    ));
+            }
+            s
+        };
+        let work = settings
+            .provider(ProviderId::Claude)
+            .map(|p| p.accounts[1].key.clone())
+            .expect("work");
+        let fable = ListedMeter {
+            key: MeterKey {
+                provider: ProviderId::Claude,
+                account: work,
+                meter: MeterId::weekly_model("fable"),
+            },
+            names: MeterNames::weekly_model("Fable"),
+            balance: false,
+        };
+        let listed = listed_meters(&settings, &[fable], &BTreeSet::new());
+        let types = meter_types(&listed);
+        let claude: Vec<String> = types[0]
+            .1
+            .iter()
+            .map(|m| meter_type_label(m, &English))
+            .collect();
+        assert_eq!(types[0].0, ProviderId::Claude);
+        assert_eq!(
+            claude,
+            ["5-hour limit", "Weekly limit", "Fable weekly limit"]
+        );
+        assert_eq!(types[1].0, ProviderId::Codex);
     }
 
     #[test]
@@ -2158,18 +2460,22 @@ mod tests {
         let reported = reported_meters(&saved, &settings);
         let labels: Vec<String> = reported
             .iter()
-            .map(|(key, names)| meter_label(key, names, &English, None))
+            .map(|m| meter_in_service(m, &English))
             .collect();
         assert_eq!(
             labels,
-            ["Claude Fable weekly", "Claude Opus weekly", "Claude 5-hour"]
+            [
+                "Claude Fable weekly limit",
+                "Claude Opus weekly limit",
+                "Claude 5-hour limit"
+            ]
         );
         assert_eq!(
-            reported.iter().map(|(k, _)| k.clone()).collect::<Vec<_>>(),
-            [fable, opus.clone(), five]
+            reported.iter().map(|m| m.key.clone()).collect::<Vec<_>>(),
+            [fable, opus, five]
         );
         assert_eq!(
-            meter_label(&opus, &reported[1].1, &Swedish, None),
+            capitalise(&meter_in_service(&reported[1], &Swedish)),
             "Opus-veckogränsen för Claude"
         );
         assert!(reported_meters(&SavedState::default(), &Settings::default()).is_empty());

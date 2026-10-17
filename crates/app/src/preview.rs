@@ -412,20 +412,33 @@ fn night_sky() -> lastdrop_win::theme::HighContrastColors {
 /// the demo's language and regional format (Windows' display language is the demo's language
 /// too), and no files: the themes are the built-in ones.
 pub fn demo_settings_inputs(world: &demo::Demo, contrast: bool) -> crate::settings_window::Inputs {
-    let reported: Vec<(MeterKey, MeterNames)> = world
+    use crate::settings_window::ListedMeter;
+    let reported: Vec<ListedMeter> = world
         .services
         .iter()
         .flat_map(|s| {
-            s.snapshot.meters.iter().map(move |m| {
-                (
-                    MeterKey {
+            let listed = move |id: &lastdrop_core::model::MeterId, names: &MeterNames, balance| {
+                ListedMeter {
+                    key: MeterKey {
                         provider: s.snapshot.provider,
                         account: s.account.key.clone(),
-                        meter: m.id.clone(),
+                        meter: id.clone(),
                     },
-                    m.names.clone(),
-                )
-            })
+                    names: names.clone(),
+                    balance,
+                }
+            };
+            let meters = s
+                .snapshot
+                .meters
+                .iter()
+                .map(move |m| listed(&m.id, &m.names, false));
+            let balances = s
+                .snapshot
+                .balances
+                .iter()
+                .map(move |b| listed(&b.id, &b.names, true));
+            meters.chain(balances)
         })
         .collect();
     let (mut settings, accounts) = world.accounts();
