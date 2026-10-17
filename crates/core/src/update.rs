@@ -8,9 +8,9 @@ use std::fmt;
 
 use serde::Deserialize;
 
-/// The public repository the releases are published to (`owner/name`): the source repository is
-/// private, and GitHub serves a private repository's releases only with a token.
-pub const RELEASES_REPO: &str = "2Fivers/lastdrop-releases";
+/// The public repository the releases are published to (`owner/name`): the source repository
+/// itself (GitHub serves a repository's releases without a token only while it is public).
+pub const RELEASES_REPO: &str = "2Fivers/lastdrop";
 
 /// The installer's file name in a release: the app itself, which installs itself when it runs
 /// under this name (updates-spec §2).
@@ -251,17 +251,17 @@ mod tests {
     fn answer(tag: &str, draft: bool, setup_url: &str, size: u64) -> String {
         format!(
             r#"{{"tag_name":"{tag}","draft":{draft},"prerelease":false,
-            "html_url":"https://github.com/2Fivers/lastdrop-releases/releases/tag/{tag}",
+            "html_url":"https://github.com/2Fivers/lastdrop/releases/tag/{tag}",
             "assets":[
               {{"name":"Lastdrop-Setup.exe","browser_download_url":"{setup_url}","size":{size}}},
-              {{"name":"SHA256SUMS","browser_download_url":"https://github.com/2Fivers/lastdrop-releases/releases/download/{tag}/SHA256SUMS","size":90}}
+              {{"name":"SHA256SUMS","browser_download_url":"https://github.com/2Fivers/lastdrop/releases/download/{tag}/SHA256SUMS","size":90}}
             ]}}"#
         )
     }
 
     #[test]
     fn offers_only_newer_complete_releases() {
-        let url = "https://github.com/2Fivers/lastdrop-releases/releases/download/v0.2.0/Lastdrop-Setup.exe";
+        let url = "https://github.com/2Fivers/lastdrop/releases/download/v0.2.0/Lastdrop-Setup.exe";
         let current = v("0.1.0");
         let offer = offer(
             answer("v0.2.0", false, url, 17_000_000).as_bytes(),

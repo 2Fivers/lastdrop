@@ -4,7 +4,8 @@
 //! Start menu shortcut and the "Installed apps" entry, keeps "Start with Windows" pointing at the
 //! installed copy, and starts it. `--uninstall` undoes that and leaves settings and history.
 //! An update runs the new installer with `--install --update`: no questions, and the installed
-//! app starts again quietly.
+//! app starts again quietly. A package manager (winget) runs `--install --quiet` and
+//! `--uninstall --quiet`: no questions, no message boxes, only the exit code and the log.
 //!
 //! Every step that touches the running app asks it to quit first (the settings-changed message
 //! with [`Changes::quit`]) and waits for its mutex to go.
@@ -46,9 +47,14 @@ pub enum Mode {
     Install {
         /// Started by an update of a running Lastdrop.
         update: bool,
+        /// `--quiet`: no message boxes, and the app starts quietly.
+        quiet: bool,
     },
-    /// `--uninstall`: ask, then uninstall.
-    Uninstall,
+    /// `--uninstall`: ask, then uninstall (`--quiet`: neither ask nor tell).
+    Uninstall {
+        /// `--quiet`.
+        quiet: bool,
+    },
 }
 
 /// The folder Lastdrop is installed in: `%LOCALAPPDATA%\Programs\Lastdrop`.
@@ -112,7 +118,8 @@ fn copy_with_retry(from: &Path, to: &Path) -> std::io::Result<()> {
     }
 }
 
-/// Starts the installed app (with `--autostart` after an update: it opens nothing).
+/// Starts the installed app (`quietly`, after an update or a quiet install: with `--autostart`,
+/// so it opens nothing).
 fn start(exe: &Path, quietly: bool) {
     let mut command = Command::new(exe);
     if quietly {
@@ -126,8 +133,9 @@ fn start(exe: &Path, quietly: bool) {
     }
 }
 
-/// Installs this executable (updates-spec §2). Returns a message for the user on failure.
-fn install(update: bool) -> Result<PathBuf, String> {
+/// Installs this executable (updates-spec §2) and starts it, `quietly` or not. Returns a message
+/// for the user on failure.
+fn install(quietly: bool) -> Result<PathBuf, String> {
     let strings = strings();
     let dir = install_dir().ok_or_else(|| "%LOCALAPPDATA% is not set".to_owned())?;
     let me = std::env::current_exe().map_err(|e| e.to_string())?;
@@ -170,7 +178,7 @@ fn install(update: bool) -> Result<PathBuf, String> {
         log::warn!("install: autostart not moved: {e}");
     }
     log::info!("install: Lastdrop {} installed", env!("CARGO_PKG_VERSION"));
-    start(&target, update);
+    start(&target, quietly);
     Ok(target)
 }
 
@@ -251,19 +259,29 @@ pub fn run(mode: Mode) -> std::process::ExitCode {
             }
             finish(install(false).map(|_| ()), strings, Msg::InstallDone)
         }
-        Mode::Install { update } => {
-            let result = install(update).map(|_| ());
-            if update {
-                // Quietly: the app says itself that it was updated, or the log says why not.
+        Mode::Install { update, quiet } => {
+            let result = install(update || quiet).map(|_| ());
+            if update || quiet {
+                // Quietly: the app says itself that it was updated, or the log says why not. An
+                // update still shows its failure; a quiet install leaves it to the exit code.
                 if let Err(e) = &result {
-                    log::error!("update: {e}");
-                    win_install::tell(title, e, true);
+                    log::error!("{}: {e}", if update { "update" } else { "install" });
+                    if !quiet {
+                        win_install::tell(title, e, true);
+                    }
                 }
                 return exit(result.is_ok());
             }
             finish(result, strings, Msg::InstallDone)
         }
-        Mode::Uninstall => {
+        Mode::Uninstall { quiet: true } => {
+            let result = uninstall();
+            if let Err(e) = &result {
+                log::error!("uninstall: {e}");
+            }
+            exit(result.is_ok())
+        }
+        Mode::Uninstall { quiet: false } => {
             if !win_install::ask(title, strings.template(Msg::UninstallAsk)) {
                 return std::process::ExitCode::SUCCESS;
             }
