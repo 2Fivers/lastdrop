@@ -520,8 +520,9 @@ fn move_widget(widgets: &mut [lastdrop_core::theme::Widget], index: i32, delta: 
     }
 }
 
-/// Closes the window and releases it.
-fn close() {
+/// Closes the window and releases it ([`dialog::release_later`]); a draft not saved is dropped
+/// (Close, ✕, and the installer's [`dialog::CLOSE_REQUEST`]).
+pub fn close() {
     let session = SESSION.with(|s| s.borrow_mut().take());
     if let Some(session) = session {
         let _ = session.window.hide();

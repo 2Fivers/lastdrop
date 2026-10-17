@@ -549,6 +549,7 @@ catalogue! {
         InstallShortcut = "install.shortcut",
         UninstallAsk = "uninstall.ask",
         UninstallDone = "uninstall.done",
+        UninstallFailed = "uninstall.failed",
         UpdateAvailable = "update.available",
         UpdateAvailableBody = "update.available_body",
         UpdateInstall = "update.install",

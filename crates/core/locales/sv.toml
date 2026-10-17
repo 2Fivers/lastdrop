@@ -432,6 +432,7 @@ lowercase_names = true
 "install.shortcut" = "Hur mycket AI som finns kvar i tanken"
 "uninstall.ask" = "Avinstallera Lastdrop? Dina inställningar, din historik och dina teman finns kvar i %APPDATA%\\Lastdrop och %LOCALAPPDATA%\\Lastdrop."
 "uninstall.done" = "Lastdrop är avinstallerad."
+"uninstall.failed" = "Lastdrop avinstallerades inte: {detail}"
 "update.available" = "Lastdrop {version} finns"
 "update.available_body" = "Öppna Lastdrop och välj Installera. Det tar några sekunder."
 "update.install" = "Installera"
