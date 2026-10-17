@@ -263,6 +263,9 @@ export component HoverCard inherits Window {
         if root.show-sentence && root.sentence != "": VerticalLayout {
             padding-top: 4px;
             Text {
+                // The inner width (padding 12 on each side). Without a known width Slint measures
+                // a wrapped Text inside an `if` as one line, and content-height came out short.
+                width: root.width - 24px;
                 text: root.sentence;
                 font-family: Theme.font-small;
                 letter-spacing: Theme.small-tracking;
