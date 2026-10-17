@@ -1,0 +1,3 @@
+// The app icon (tools/icon/make_icon.py draws it). The first icon group is the one Explorer,
+// the Start menu shortcut and "Installed apps" (DisplayIcon) show for lastdrop.exe.
+1 ICON "icons/lastdrop.ico"

@@ -34,8 +34,10 @@ crates/
                                    Credential Manager, single instance
   app/        lastdrop (binary)    Slint UI (flyout, hover card, settings, about), wiring,
                                    refresh scheduler, settings and history persistence, the
-                                   dialog process
+                                   dialog process; icons/ holds the app icon, which build.rs
+                                   links into the exe with the Windows SDK's rc.exe
 spikes/                     the stack spikes (reference only, not built by the workspace)
+tools/icon/                 draws the app icon (`python tools/icon/make_icon.py`, Pillow)
 tools/measure/              memory and latency measurement
 docs/
 ```
