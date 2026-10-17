@@ -1,0 +1,164 @@
+name: release
+
+# Builds a release from a version tag on GitHub's runners (docs/RELEASING.md, updates-spec §4):
+# the tag must name the workspace version and a commit on main. The job builds
+# Lastdrop-Setup.exe from the tagged sources alone (no cache), writes SHA256SUMS, installs and
+# uninstalls the installer the way winget does, attests the build's provenance and creates a
+# draft release. A maintainer tests the draft and publishes it; running Lastdrops only see
+# published releases.
+#
+# A pull request that changes the installer or the release tooling, or a run by hand
+# (workflow_dispatch), is a dry run: build, checksums and the install test, with no attestation
+# and no release.
+#
+# Only repository admins can create v* tags (the "release tags" ruleset), and the release job
+# runs in the "release" environment, which only v* tags may deploy to. Code signing (SignPath)
+# will be a step of the build job, before the checksums.
+
+on:
+  push:
+    tags: ["v[0-9]+.[0-9]+.[0-9]+"]
+  pull_request:
+    paths:
+      - .github/workflows/release.yml
+      - tools/release/**
+      - packaging/**
+      - crates/app/src/install.rs
+      - crates/win/src/install.rs
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: build and test the installer
+    runs-on: windows-latest
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      # The provenance attestation: a Sigstore certificate for this workflow run, and the
+      # repository's attestation store.
+      id-token: write
+      attestations: write
+    env:
+      CARGO_TERM_COLOR: always
+      CARGO_INCREMENTAL: "0"
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+          # All of main's history: the tag must be one of its commits.
+          fetch-depth: 0
+
+      - name: Version
+        id: version
+        shell: bash
+        run: |
+          version=$(sed -n '/^\[workspace\.package\]/,/^\[/{s/^version = "\(.*\)"$/\1/p}' Cargo.toml)
+          if [ -z "$version" ]; then
+            echo "::error::no workspace version in Cargo.toml"
+            exit 1
+          fi
+          if [ "$GITHUB_REF_TYPE" = "tag" ]; then
+            if [ "$GITHUB_REF_NAME" != "v$version" ]; then
+              echo "::error::the tag is $GITHUB_REF_NAME but Cargo.toml says $version"
+              exit 1
+            fi
+            if ! git merge-base --is-ancestor "$GITHUB_SHA" origin/main; then
+              echo "::error::$GITHUB_REF_NAME is not a commit on main"
+              exit 1
+            fi
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "Lastdrop $version from $GITHUB_REF_NAME ($GITHUB_SHA)"
+
+      # rust-toolchain.toml pins the version; with no toolchain named, rustup installs exactly
+      # that. No rust-cache: a release is built from the tagged sources and nothing else.
+      - name: Toolchain from rust-toolchain.toml
+        shell: bash
+        run: |
+          rustup toolchain install --profile minimal
+          rustup show active-toolchain
+
+      - name: Release build
+        run: cargo build --release -p lastdrop --locked
+
+      # The installer is the app itself (updates-spec §2). SHA256SUMS in sha256sum format with
+      # LF line ends, which the app's updater reads.
+      - name: Installer and checksums
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory dist | Out-Null
+          Copy-Item target\release\lastdrop.exe dist\Lastdrop-Setup.exe
+          $hash = (Get-FileHash -Algorithm SHA256 dist\Lastdrop-Setup.exe).Hash.ToLowerInvariant()
+          [System.IO.File]::WriteAllText("$PWD\dist\SHA256SUMS", "$hash  Lastdrop-Setup.exe`n")
+          Get-Content dist\SHA256SUMS
+
+      # What winget runs (packaging/winget): --install --quiet, then the "Installed apps"
+      # entry's QuietUninstallString. A fresh runner is a clean Windows user.
+      - name: Install and uninstall test
+        shell: pwsh
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: tools\release\install-test.ps1 -Setup dist\Lastdrop-Setup.exe -Version $env:VERSION
+
+      - name: Provenance attestation
+        if: ${{ github.ref_type == 'tag' }}
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: dist/Lastdrop-Setup.exe
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: release
+          path: |
+            dist/Lastdrop-Setup.exe
+            dist/SHA256SUMS
+          if-no-files-found: error
+          retention-days: 14
+
+  release:
+    name: draft release
+    needs: build
+    if: ${{ github.ref_type == 'tag' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment: release
+    permissions:
+      # Create the release and upload its files.
+      contents: write
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: release
+          path: dist
+
+      - name: Draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.build.outputs.version }}
+        run: |
+          cat > notes.md <<EOF
+          Download **Lastdrop-Setup.exe** and run it: it installs Lastdrop for your Windows user,
+          without administrator rights, and updates itself from these releases. Or use winget:
+          \`winget install 2Fivers.Lastdrop\`.
+
+          \`SHA256SUMS\` lists the installer's checksum. GitHub's runners built it from the tag
+          ${GITHUB_REF_NAME}; to check that, run
+          \`gh attestation verify Lastdrop-Setup.exe --repo ${GITHUB_REPOSITORY}\`.
+          EOF
+          gh release create "$GITHUB_REF_NAME" dist/Lastdrop-Setup.exe dist/SHA256SUMS \
+            --repo "$GITHUB_REPOSITORY" \
+            --draft \
+            --verify-tag \
+            --title "Lastdrop $VERSION" \
+            --notes-file notes.md \
+            --generate-notes
+          echo "Draft release $GITHUB_REF_NAME created: test it, then publish it on GitHub." >> "$GITHUB_STEP_SUMMARY"

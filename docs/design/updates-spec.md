@@ -3,7 +3,8 @@
 ROADMAP M5: updates, code signing, installer. Decided 2026-10-16: releases on GitHub Releases,
 unsigned until a certificate exists, with the signing step ready in the release script.
 Amended 2026-10-17: the source repository is public (MIT OR Apache-2.0), so releases go to it
-directly, and winget installs and updates Lastdrop too (§5).
+directly, and winget installs and updates Lastdrop too (§5); releases are built by GitHub
+Actions from a tag, with a provenance attestation (§4).
 
 References: ARCHITECTURE "App", ROADMAP "Principles" (no telemetry).
 
@@ -70,17 +71,27 @@ check the installer's signature (`WinVerifyTrust`) before starting it: a follow-
 
 ## 4. Releasing
 
-`tools\release\release.ps1 -Version 0.1.0 [-Publish]`: checks the version against Cargo.toml and
-a clean tree, runs CI's steps, builds, copies the binary to `dist\Lastdrop-Setup.exe`, signs it
-when `LASTDROP_SIGN_THUMBPRINT` or `LASTDROP_SIGN_PFX` is set (signtool, SHA-256, RFC 3161
-timestamp; otherwise a warning: unsigned builds make SmartScreen warn), writes `dist\SHA256SUMS`,
-creates the GitHub release `v0.1.0` in `2Fivers/lastdrop` with both files, as a draft unless
-`-Publish`, and writes the winget manifests for it to `dist\winget` (§5).
+Built by GitHub's runners from a tag, never on a maintainer's machine ([RELEASING](../RELEASING.md)).
+
+- `tools\release\release.ps1 -Version 0.1.0` checks the version against Cargo.toml, a clean
+  tree and main = origin/main, and pushes the tag `v0.1.0`. Only repository admins may create
+  `v*` tags (the "release tags" ruleset, which also forbids moving or deleting one).
+- `.github/workflows/release.yml` on the tag: the tag must name the workspace version and a
+  commit on main; a release build without caches; `Lastdrop-Setup.exe` and `SHA256SUMS`
+  (`<hex>  Lastdrop-Setup.exe`, LF); `tools/release/install-test.ps1` (`--install --quiet`, then
+  the entry's `QuietUninstallString`, each step's result checked); a build provenance
+  attestation of the installer; a **draft** release with both files, in the `release`
+  environment, which only `v*` tags may deploy to. Pull requests that touch the installer or the
+  release tooling run it as a dry run (no attestation, no release).
+- A maintainer tests the draft and publishes it. Published releases are immutable (the
+  repository's *Release immutability* setting): their files and tag cannot be changed.
+- Unsigned until a certificate exists; signing becomes a step of the build job, before the
+  checksums.
 
 ## 5. winget
 
 Package `2Fivers.Lastdrop` in `microsoft/winget-pkgs`. The manifest templates are in
-`packaging/winget` (`{{VERSION}}`, `{{SHA256}}`, `{{DATE}}`); the release script fills them in.
+`packaging/winget` (`{{VERSION}}`, `{{SHA256}}`, `{{DATE}}`); `release.ps1 -Winget` fills them in.
 
 - **Installer:** `InstallerType: exe`, `Scope: user`, the release's `Lastdrop-Setup.exe` with
   `--install --quiet` for both silent modes; `UpgradeBehavior: install` (the installer replaces
@@ -89,9 +100,11 @@ Package `2Fivers.Lastdrop` in `microsoft/winget-pkgs`. The manifest templates ar
   version, also after Lastdrop updated itself (§3).
 - **Uninstall:** winget runs the entry's `QuietUninstallString`.
 - **Submitting:** once the release is published (the manifests point at its download URL),
-  `wingetcreate submit dist\winget` opens the pull request to `microsoft/winget-pkgs`; their
-  validation installs and uninstalls it in a sandbox. Unsigned installers are accepted but are
-  likelier to wait for a manual review.
+  `release.ps1 -Version 0.1.0 -Winget` downloads its files, checks the checksum and the
+  attestation, and writes the manifests to `dist\winget`; `wingetcreate submit dist\winget`
+  opens the pull request to `microsoft/winget-pkgs`; their validation installs and uninstalls
+  it in a sandbox. Unsigned installers are accepted but are likelier to wait for a manual
+  review.
 
 ## 6. Not decided here
 

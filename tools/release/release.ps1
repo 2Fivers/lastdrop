@@ -1,126 +1,83 @@
 <#
 .SYNOPSIS
-Builds a Lastdrop release and publishes it to the public releases repository
-(docs/design/updates-spec.md §4).
+Starts a Lastdrop release, and afterwards writes its winget manifests (docs/RELEASING.md,
+docs/design/updates-spec.md §4–5). GitHub's runners build the release, not this machine.
 
 .DESCRIPTION
-1. Checks that -Version is the workspace version in Cargo.toml.
-2. Runs CI's steps (fmt, clippy, tests) unless -SkipChecks, then builds the release binary.
-3. Copies it to dist\Lastdrop-Setup.exe (the app installs itself under that name).
-4. Signs it when a certificate is configured (below); otherwise warns and goes on unsigned.
-5. Writes dist\SHA256SUMS, which the app checks the download against.
-6. Creates the GitHub release v<Version> in -Repo with both files: a draft unless -Publish.
-7. Writes the winget manifests for this release to dist\winget (from packaging\winget), ready
-   for `wingetcreate submit dist\winget` once the release is published.
+Without -Winget: checks that -Version is the workspace version in Cargo.toml, that the working
+tree is clean, that main is checked out and equal to origin/main, and that the tag v<Version>
+does not exist yet; then creates the tag on main's commit and pushes it. The push starts
+.github/workflows/release.yml, which builds Lastdrop-Setup.exe, tests the installer, attests the
+build and creates a draft release. Only repository admins may push v* tags.
 
-Signing (Authenticode, SHA-256, RFC 3161 timestamp) uses signtool.exe from the Windows SDK and
-one of these, in this order:
-  LASTDROP_SIGN_THUMBPRINT  the SHA-1 thumbprint of a certificate in the user's store (a
-                            hardware token's certificate shows up there too)
-  LASTDROP_SIGN_PFX         a .pfx file, with its password in LASTDROP_SIGN_PFX_PASSWORD
-  LASTDROP_SIGN_TIMESTAMP   the timestamp server (default http://timestamp.digicert.com)
+With -Winget, once the release is tested and published: downloads its Lastdrop-Setup.exe and
+SHA256SUMS to dist\, checks the checksum and the build's provenance attestation
+(`gh attestation verify`), and writes the winget manifests (packaging\winget, with the version,
+the SHA-256 and the release date) to dist\winget, ready for `wingetcreate submit dist\winget`.
 
 .EXAMPLE
 pwsh tools\release\release.ps1 -Version 0.1.0
-pwsh tools\release\release.ps1 -Version 0.1.0 -Publish
+pwsh tools\release\release.ps1 -Version 0.1.0 -Winget
 #>
 [CmdletBinding()]
 param(
     [Parameter(Mandatory)] [string] $Version,
     [string] $Repo = "2Fivers/lastdrop",
-    [string] $NotesFile,
-    [switch] $Publish,
-    [switch] $SkipChecks
+    [switch] $Winget
 )
 
 $ErrorActionPreference = "Stop"
 $root = Resolve-Path (Join-Path $PSScriptRoot "..\..")
+$tag = "v$Version"
 Push-Location $root
 try {
-    # 1. The version.
-    $cargo = Get-Content "Cargo.toml" -Raw
-    if ($cargo -notmatch '(?m)^\[workspace\.package\][\s\S]*?^version\s*=\s*"([^"]+)"') {
-        throw "no workspace version in Cargo.toml"
-    }
-    if ($Matches[1] -ne $Version) {
-        throw "Cargo.toml says $($Matches[1]), not ${Version}: bump the workspace version first"
-    }
-    if (git status --porcelain) {
-        throw "the working tree has changes: commit or stash them first"
+    if (-not $Winget) {
+        $cargo = Get-Content "Cargo.toml" -Raw
+        if ($cargo -notmatch '(?m)^\[workspace\.package\][\s\S]*?^version\s*=\s*"([^"]+)"') {
+            throw "no workspace version in Cargo.toml"
+        }
+        if ($Matches[1] -ne $Version) {
+            throw "Cargo.toml says $($Matches[1]), not ${Version}: bump the workspace version first (a pull request)"
+        }
+        if (git status --porcelain) { throw "the working tree has changes: commit or stash them first" }
+        if ((git branch --show-current) -ne "main") { throw "check out main first" }
+        git fetch --quiet --tags origin; if ($LASTEXITCODE) { throw "git fetch" }
+        if ((git rev-parse HEAD) -ne (git rev-parse origin/main)) { throw "main is not origin/main: pull (or push) first" }
+        if (git tag --list $tag) { throw "the tag $tag exists already" }
+
+        git tag $tag; if ($LASTEXITCODE) { throw "git tag" }
+        git push origin $tag; if ($LASTEXITCODE) { git tag -d $tag | Out-Null; throw "git push $tag" }
+        Write-Host "Pushed $tag. The release workflow builds it and creates a draft release:"
+        Write-Host "  https://github.com/$Repo/actions/workflows/release.yml"
+        Write-Host "Test the draft (docs/RELEASING.md), publish it, then run this again with -Winget."
+        return
     }
 
-    # 2. CI's steps and the release build.
-    if (-not $SkipChecks) {
-        cargo fmt --all -- --check; if ($LASTEXITCODE) { throw "cargo fmt" }
-        cargo clippy --workspace --all-targets --locked -- -D warnings; if ($LASTEXITCODE) { throw "cargo clippy" }
-        cargo test --workspace --locked; if ($LASTEXITCODE) { throw "cargo test" }
-    }
-    cargo build --release -p lastdrop --locked; if ($LASTEXITCODE) { throw "cargo build" }
-
-    # 3. The installer.
+    # -Winget: the published release's files.
+    $release = gh release view $tag --repo $Repo --json isDraft,publishedAt | ConvertFrom-Json
+    if ($LASTEXITCODE) { throw "no release $tag in $Repo" }
+    if ($release.isDraft) { throw "$tag is still a draft: publish it first (the manifests point at its download URL)" }
     $dist = Join-Path $root "dist"
     if (Test-Path $dist) { Remove-Item -Recurse -Force $dist }
     New-Item -ItemType Directory $dist | Out-Null
+    gh release download $tag --repo $Repo --dir $dist --pattern Lastdrop-Setup.exe --pattern SHA256SUMS
+    if ($LASTEXITCODE) { throw "gh release download" }
     $setup = Join-Path $dist "Lastdrop-Setup.exe"
-    Copy-Item "target\release\lastdrop.exe" $setup
+    $hash = (Get-FileHash -Algorithm SHA256 $setup).Hash
+    $listed = (Get-Content (Join-Path $dist "SHA256SUMS") | Where-Object { $_ -match '  Lastdrop-Setup\.exe$' }) -replace '\s.*$', ''
+    if ($listed -ne $hash.ToLowerInvariant()) { throw "Lastdrop-Setup.exe does not match SHA256SUMS" }
+    gh attestation verify $setup --repo $Repo; if ($LASTEXITCODE) { throw "gh attestation verify" }
 
-    # 4. Signing, when configured.
-    $thumbprint = $env:LASTDROP_SIGN_THUMBPRINT
-    $pfx = $env:LASTDROP_SIGN_PFX
-    if ($thumbprint -or $pfx) {
-        $signtool = (Get-Command signtool.exe -ErrorAction SilentlyContinue).Source
-        if (-not $signtool) {
-            $signtool = Get-ChildItem "${env:ProgramFiles(x86)}\Windows Kits\10\bin\*\x64\signtool.exe" -ErrorAction SilentlyContinue |
-                Sort-Object FullName -Descending | Select-Object -First 1 -ExpandProperty FullName
-        }
-        if (-not $signtool) { throw "signing is configured but signtool.exe was not found (Windows SDK)" }
-        $timestamp = if ($env:LASTDROP_SIGN_TIMESTAMP) { $env:LASTDROP_SIGN_TIMESTAMP } else { "http://timestamp.digicert.com" }
-        $sign = @("sign", "/fd", "SHA256", "/tr", $timestamp, "/td", "SHA256", "/d", "Lastdrop")
-        if ($thumbprint) {
-            $sign += @("/sha1", $thumbprint)
-        } else {
-            $sign += @("/f", $pfx, "/p", $env:LASTDROP_SIGN_PFX_PASSWORD)
-        }
-        & $signtool @sign $setup; if ($LASTEXITCODE) { throw "signtool sign" }
-        & $signtool verify /pa $setup; if ($LASTEXITCODE) { throw "signtool verify" }
-        Write-Host "Signed."
-    } else {
-        Write-Warning "No signing certificate configured: Lastdrop-Setup.exe is unsigned (SmartScreen will warn)."
-    }
-
-    # 5. Checksums (sha256sum format, LF line ends).
-    $hash = (Get-FileHash -Algorithm SHA256 $setup).Hash.ToLowerInvariant()
-    $sums = Join-Path $dist "SHA256SUMS"
-    [System.IO.File]::WriteAllText($sums, "$hash  Lastdrop-Setup.exe`n")
-    Write-Host "SHA-256 $hash"
-
-    # 6. The release.
-    $tag = "v$Version"
-    $notes = if ($NotesFile) { $NotesFile } else {
-        $generated = Join-Path $dist "NOTES.md"
-        Set-Content $generated "Lastdrop $Version.`n`nDownload Lastdrop-Setup.exe and run it; it installs for your Windows user without administrator rights. SHA256SUMS lists its checksum."
-        $generated
-    }
-    $ghArgs = @("release", "create", $tag, $setup, $sums, "--repo", $Repo, "--title", "Lastdrop $Version", "--notes-file", $notes)
-    if (-not $Publish) { $ghArgs += "--draft" }
-    gh @ghArgs; if ($LASTEXITCODE) { throw "gh release create" }
-    if ($Publish) {
-        Write-Host "Published $tag to ${Repo}: running Lastdrops find it within a day."
-    } else {
-        Write-Host "Draft $tag created in ${Repo}: publish it on GitHub (or run again with -Publish) when it is ready."
-    }
-
-    # 7. The winget manifests (packaging\winget, LF line ends). They point at the release's
-    # download URL, so they are submitted only once the release is published.
     $winget = Join-Path $dist "winget"
     New-Item -ItemType Directory $winget | Out-Null
-    $date = (Get-Date).ToUniversalTime().ToString("yyyy-MM-dd")
+    $date = ([datetime]$release.publishedAt).ToUniversalTime().ToString("yyyy-MM-dd")
     foreach ($template in Get-ChildItem (Join-Path $root "packaging\winget") -Filter "*.yaml") {
         $text = [System.IO.File]::ReadAllText($template.FullName).
             Replace("{{VERSION}}", $Version).Replace("{{SHA256}}", $hash.ToUpperInvariant()).Replace("{{DATE}}", $date)
         [System.IO.File]::WriteAllText((Join-Path $winget $template.Name), $text.Replace("`r`n", "`n"))
     }
-    Write-Host "winget manifests in $winget. Once $tag is published: wingetcreate submit `"$winget`""
+    winget validate --manifest $winget; if ($LASTEXITCODE) { throw "winget validate" }
+    Write-Host "winget manifests in $winget. Submit them with: wingetcreate submit `"$winget`""
 } finally {
     Pop-Location
 }

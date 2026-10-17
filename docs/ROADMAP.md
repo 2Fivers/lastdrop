@@ -173,7 +173,7 @@ Status as of 2026-10-16.
 | M2 | **More services** | Copilot, Cursor, Antigravity, OpenCode Go, Grok Build; declarative balance providers; multiple accounts for Claude Code and Codex. | Copilot, Cursor, Antigravity, OpenCode Go and Grok built ([providers-research](design/providers-research.md)); multiple accounts built ([accounts-spec](design/accounts-spec.md): who is signed in to each folder, the same account in two folders shown once, a folder signed in to someone else starts over, found folders, add and create accounts, hide personal info); declarative balance providers built ([custom-services-spec](design/custom-services-spec.md)). Done |
 | M3 | **Statistics** | History store, pace, forecasts, charts, threshold and reset notifications. | History store (90 days, one sample per meter per 5 minutes), pace, forecasts, a 14-day sparkline and notifications (levels, used up, resets, low balances) built; the usage history window built (each meter over time, use per day, active hours, [charts-spec](design/charts-spec.md)); tokens and cost per day and model built ([tokens-spec](design/tokens-spec.md)). Done |
 | M4 | **Make it yours** | Readout on every taskbar, themes and Theme Studio, languages, adaptive refresh. | Adaptive refresh built; English and Swedish, following Windows' display language or the setting, with numbers and times in the Windows regional format. The settings and about windows switch language too. The readout shows on every taskbar when chosen ([every-taskbar-spec](design/every-taskbar-spec.md); the multi-monitor matrix is a release check); themes and Theme Studio built ([themes-spec](design/themes-spec.md)). Done |
-| M5 | **v0.1** | Updates, code signing, installer; decide on distribution and licensing. | Installer (the app installs itself per user as `Lastdrop-Setup.exe`, with an "Installed apps" entry and `--uninstall`), updates and the release script built ([updates-spec](design/updates-spec.md)); unsigned until a certificate exists (the script signs once one is configured); open source under MIT OR Apache-2.0; winget manifests prepared, the first release and its winget submission are left |
+| M5 | **v0.1** | Updates, code signing, installer; decide on distribution and licensing. | Installer (the app installs itself per user as `Lastdrop-Setup.exe`, with an "Installed apps" entry and `--uninstall`), updates built ([updates-spec](design/updates-spec.md)); releases built by GitHub Actions from a tag, with an install test and a provenance attestation ([RELEASING](RELEASING.md)); unsigned until a certificate exists; open source under MIT OR Apache-2.0; winget manifests prepared, the first release and its winget submission are left |
 
 ## Open questions
 
@@ -190,7 +190,9 @@ Status as of 2026-10-16.
 
 - **Distribution and updates** (M5, 2026-10-16, amended 2026-10-17): GitHub Releases of the
   source repository itself (`2Fivers/lastdrop`), now that it is public, and winget
-  (`2Fivers.Lastdrop`); releases are unsigned until a certificate exists
+  (`2Fivers.Lastdrop`). GitHub's runners build each release from a `v*` tag only admins can
+  push, test the installer and attest the build; a maintainer tests the draft and publishes it
+  ([RELEASING](RELEASING.md)). Releases are unsigned until a certificate exists
   ([updates-spec](design/updates-spec.md)).
 
 - **Theme Studio scope** (M4, 2026-10-16): colours and widget layout, no free-form placement
