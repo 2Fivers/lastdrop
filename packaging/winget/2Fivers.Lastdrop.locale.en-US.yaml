@@ -2,15 +2,15 @@
 PackageIdentifier: 2Fivers.Lastdrop
 PackageVersion: {{VERSION}}
 PackageLocale: en-US
-Publisher: Adinosaur AB
+Publisher: 2Fivers
 PublisherUrl: https://github.com/2Fivers
 PublisherSupportUrl: https://github.com/2Fivers/lastdrop/issues
-Author: Adinosaur AB
+Author: 2Fivers
 PackageName: Lastdrop
 PackageUrl: https://github.com/2Fivers/lastdrop
 License: MIT OR Apache-2.0
 LicenseUrl: https://github.com/2Fivers/lastdrop#license
-Copyright: Copyright (c) 2026 Adinosaur AB
+Copyright: Copyright (c) 2026 2Fivers
 ShortDescription: How much AI is left in the tank, one click away.
 Description: |-
   Lastdrop is a Windows 11 tray app that shows your remaining usage across AI services without

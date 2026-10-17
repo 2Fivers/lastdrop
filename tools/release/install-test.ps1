@@ -57,7 +57,7 @@ Check ($null -ne $entry) "the Installed apps entry exists"
 $quiet = $null
 if ($entry) {
     Check ($entry.DisplayVersion -eq $Version) "DisplayVersion is $Version (got $($entry.DisplayVersion))"
-    Check ($entry.Publisher -eq "Adinosaur AB") "Publisher is Adinosaur AB (got $($entry.Publisher))"
+    Check ($entry.Publisher -eq "2Fivers") "Publisher is 2Fivers (got $($entry.Publisher))"
     $quiet = $entry.QuietUninstallString
     Check ($quiet -eq "`"$exe`" --uninstall --quiet") "QuietUninstallString runs the program with --uninstall --quiet (got $quiet)"
 }

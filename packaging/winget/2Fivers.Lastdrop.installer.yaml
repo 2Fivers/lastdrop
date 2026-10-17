@@ -19,7 +19,7 @@ UpgradeBehavior: install
 ReleaseDate: {{DATE}}
 AppsAndFeaturesEntries:
   - DisplayName: Lastdrop
-    Publisher: Adinosaur AB
+    Publisher: 2Fivers
     ProductCode: Lastdrop
 Installers:
   - Architecture: x64

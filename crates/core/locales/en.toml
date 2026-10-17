@@ -523,7 +523,7 @@ lowercase_names = true
 "about.title" = "About Lastdrop"
 "about.heading" = "Lastdrop {version}"
 "about.tagline" = "How much AI is left in the tank, one click away."
-"about.copyright" = "© 2026 Adinosaur AB. Open source under the MIT or Apache-2.0 licence."
+"about.copyright" = "© 2026 2Fivers. Open source under the MIT or Apache-2.0 licence."
 # Third-party credit line (open-source components and their licences).
 "about.credits" = "Built with Slint (Royalty-free License 2.0), jiff, serde, ureq and windows-rs (MIT / Apache-2.0). No telemetry: Lastdrop only talks to the services whose usage it reads."
 "about.close" = "Close"

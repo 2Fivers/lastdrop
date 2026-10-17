@@ -40,9 +40,9 @@ The release's installer is the app itself: `Lastdrop-Setup.exe`.
   message with `Changes::quit`) and waits up to 15 s for its mutex; copies itself to
   `%LOCALAPPDATA%\Programs\Lastdrop\lastdrop.exe` (retrying for 10 s while a scanner holds the
   file); writes `Lastdrop.lnk` in the Start menu's Programs folder and the "Installed apps" entry
-  (`HKCU\…\Uninstall\Lastdrop`: name, version, publisher Adinosaur AB, icon, folder, size,
-  `UninstallString` = `"…\lastdrop.exe" --uninstall`, `QuietUninstallString` = the same with
-  `--quiet`); points "Start with Windows" at the installed copy when it was on for another copy;
+  (`HKCU\…\Uninstall\Lastdrop`: name, version, publisher 2Fivers (Adinosaur AB in 0.1.0; the
+  next install or update rewrites it), icon, folder, size, `UninstallString` =
+  `"…\lastdrop.exe" --uninstall`, `QuietUninstallString` = the same with `--quiet`); points "Start with Windows" at the installed copy when it was on for another copy;
   starts the installed app and says it is done.
 - **`--uninstall`** (from "Installed apps"): asks, quits the app, removes the Run value (if it is
   the installed copy's), the shortcut and the entry, and has a hidden `cmd.exe` delete the
@@ -100,7 +100,7 @@ them in.
 - **Installer:** `InstallerType: exe`, `Scope: user`, the release's `Lastdrop-Setup.exe` with
   `--install --quiet` for both silent modes; `UpgradeBehavior: install` (the installer replaces
   a running copy, §2). `AppsAndFeaturesEntries` names the "Installed apps" entry (`ProductCode`
-  `Lastdrop`, publisher Adinosaur AB), whose `DisplayVersion` is how winget sees the installed
+  `Lastdrop`, publisher 2Fivers), whose `DisplayVersion` is how winget sees the installed
   version, also after Lastdrop updated itself (§3).
 - **Uninstall:** winget runs the entry's `QuietUninstallString`.
 - **Submitting:** once the release is published (the manifests point at its download URL),
