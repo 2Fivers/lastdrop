@@ -346,6 +346,7 @@ lowercase_names = true
 "settings.refresh.manual" = "Manuellt"
 "settings.readout" = "Visning i aktivitetsfältet"
 "settings.readout.show" = "Visa användningen i aktivitetsfältet"
+"settings.readout.every" = "Visa den i alla aktivitetsfält"
 "settings.readout.rows" = "Rader"
 "settings.readout.auto" = "De mest belastade mätarna (auto)"
 "settings.readout.pinned" = "Mätare jag fäster"

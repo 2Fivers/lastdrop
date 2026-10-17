@@ -39,6 +39,11 @@ pub enum TaskbarAlignment {
 pub struct AppButtonExtents {
     /// Right edge of the rightmost app button (device px); `None` when there are no buttons.
     pub rightmost_right: Option<i32>,
+    /// On a taskbar without a notification area window (a secondary taskbar,
+    /// every-taskbar-spec §3): the left edge of the buttons at its right end (the clock, Show
+    /// desktop), device px; `None` when there are none or the taskbar has `TrayNotifyWnd`.
+    #[serde(default)]
+    pub tray_left: Option<i32>,
 }
 
 /// The geometry of one taskbar, device px (ARCHITECTURE: "taskbar and tray rects per monitor,
@@ -67,6 +72,11 @@ pub struct TaskbarGeometry {
     pub fullscreen_app: bool,
     /// App buttons; `None` when unknown (UI Automation failed or timed out).
     pub app_buttons: Option<AppButtonExtents>,
+    /// A secondary taskbar (`Shell_SecondaryTrayWnd`, every-taskbar-spec §3): no notification
+    /// area window; the readout keeps clear of [`AppButtonExtents::tray_left`], else of the
+    /// taskbar's right edge.
+    #[serde(default)]
+    pub secondary: bool,
 }
 
 /// What placement needs besides geometry and size.
@@ -132,13 +142,16 @@ fn scale_of(dpi: u32) -> f64 {
 
 /// The x the readout's right edge keeps `round(4 s)` away from: the left edge of the overflow
 /// chevron, else of the notification area (R§4.2, R§6.1). On Windows 11 the chevron is a XAML
-/// element inside `TrayNotifyWnd`, so the notification area's left edge *is* the chevron's.
-/// `None` without either.
+/// element inside `TrayNotifyWnd`, so the notification area's left edge *is* the chevron's. A
+/// secondary taskbar has neither: the left edge of the buttons at its right end, else its right
+/// edge (every-taskbar-spec §3). `None` otherwise.
 fn anchor_x(geometry: &TaskbarGeometry) -> Option<i32> {
     geometry
         .chevron
         .or(geometry.notification_area)
         .map(|r| r.left)
+        .or_else(|| geometry.app_buttons.and_then(|b| b.tray_left))
+        .or_else(|| geometry.secondary.then_some(geometry.taskbar.right))
 }
 
 /// `room` (R§4.2), device px: left edge of the overflow chevron (or of the notification area if
@@ -281,7 +294,9 @@ mod tests {
             fullscreen_app: false,
             app_buttons: Some(AppButtonExtents {
                 rightmost_right: Some(1200),
+                tray_left: None,
             }),
+            secondary: false,
         }
     }
 
@@ -302,6 +317,7 @@ mod tests {
         let mut empty = g.clone();
         empty.app_buttons = Some(AppButtonExtents {
             rightmost_right: None,
+            tray_left: None,
         });
         assert_eq!(room(&empty), Some(1660 - 4 - 8));
         let mut unknown = g.clone();
@@ -366,5 +382,48 @@ mod tests {
                 form: ReadoutForm::TwoRows,
             }
         );
+    }
+
+    #[test]
+    fn secondary_taskbars_keep_clear_of_the_clock_or_the_right_edge() {
+        let l = layout(1.0, 160, 134);
+        let mut g = geometry();
+        g.notification_area = None;
+        g.secondary = true;
+        // The clock and Show desktop at the right end.
+        g.app_buttons = Some(AppButtonExtents {
+            rightmost_right: Some(1200),
+            tray_left: Some(1800),
+        });
+        assert_eq!(room(&g), Some(1800 - 4 - 1208));
+        assert_eq!(
+            place(&g, &l, &prefs(ReadoutForm::TwoRows)),
+            Placement::Docked {
+                rect: rect(1636, 1036, 1796, 1076),
+                form: ReadoutForm::TwoRows,
+            }
+        );
+        // No clock: the taskbar's right edge.
+        g.app_buttons = Some(AppButtonExtents {
+            rightmost_right: Some(1200),
+            tray_left: None,
+        });
+        assert_eq!(room(&g), Some(1920 - 4 - 1208));
+        // Unknown buttons float, right-aligned to the taskbar's end.
+        g.app_buttons = None;
+        assert_eq!(
+            place(&g, &l, &prefs(ReadoutForm::TwoRows)),
+            Placement::Floating {
+                rect: rect(1756, 1032 - 4 - 40, 1916, 1032 - 4),
+                form: ReadoutForm::TwoRows,
+            }
+        );
+        // A primary taskbar without a notification area still has no anchor.
+        g.secondary = false;
+        g.app_buttons = Some(AppButtonExtents {
+            rightmost_right: Some(1200),
+            tray_left: None,
+        });
+        assert_eq!(room(&g), None);
     }
 }

@@ -368,6 +368,7 @@ lowercase_names = true
 "settings.refresh.manual" = "Manual"
 "settings.readout" = "Taskbar readout"
 "settings.readout.show" = "Show the readout in the taskbar"
+"settings.readout.every" = "Show it on every taskbar"
 "settings.readout.rows" = "Rows"
 "settings.readout.auto" = "The most constrained meters (auto)"
 "settings.readout.pinned" = "Meters I pin"

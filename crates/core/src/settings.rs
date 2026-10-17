@@ -522,6 +522,9 @@ pub struct ReadoutSettings {
     pub content: ReadoutContent,
     /// Time points as clock times or as time remaining (R§5.2 "Show times as").
     pub time_style: TimeStyle,
+    /// Also on every secondary taskbar, not only the primary one (every-taskbar-spec §1). Default
+    /// off: each extra taskbar costs memory (§4).
+    pub every_taskbar: bool,
     /// Unknown fields.
     #[serde(flatten)]
     pub extra: Extra,
@@ -533,6 +536,7 @@ impl Default for ReadoutSettings {
             enabled: true,
             content: ReadoutContent::Auto,
             time_style: TimeStyle::Clock,
+            every_taskbar: false,
             extra: Extra::new(),
         }
     }

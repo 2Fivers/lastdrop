@@ -79,6 +79,7 @@ export struct SettingsTexts {
     refresh-check: string,
     readout: string,
     readout-show: string,
+    readout-every: string,
     readout-rows: string,
     readout-auto: string,
     readout-pinned: string,
@@ -140,6 +141,7 @@ export component SettingsWindow inherits Window {
     in property <[string]> interval-choices;
     in-out property <int> interval-index;
     in-out property <bool> readout-enabled;
+    in-out property <bool> readout-every;
     // Readout content (R§4.3): 0 auto, 1 pinned meters.
     in-out property <int> readout-content-index;
     // "Show times as" (R§5.2): 0 clock times, 1 time remaining.
@@ -450,6 +452,11 @@ export component SettingsWindow inherits Window {
                     Switch {
                         text: root.texts.readout-show;
                         checked <=> root.readout-enabled;
+                    }
+                    Switch {
+                        text: root.texts.readout-every;
+                        checked <=> root.readout-every;
+                        enabled: root.readout-enabled;
                     }
                     HorizontalLayout {
                         spacing: 12px;

@@ -921,7 +921,7 @@ STALE(SIGN_IN) at once.
 - Multiple accounts in the readout (M2: same rules, the service name gains the account alias in the card).
 - Left/right (vertical) taskbars: Windows 11 does not support them natively; with a third-party vertical taskbar the
   readout is HIDDEN and the tray icon remains. Top taskbars are supported (card opens below).
-- Readout on secondary taskbars (M4); per-row click targets; drag to reorder; animations.
+- ~~Readout on secondary taskbars (M4)~~: built, [every-taskbar-spec](every-taskbar-spec.md); per-row click targets; drag to reorder; animations.
 - Explorer injection to reserve taskbar space (never).
 
 ## Appendix A — provider glyphs (12 × 12 grid, stroke = TextPrimary, no fill unless noted)

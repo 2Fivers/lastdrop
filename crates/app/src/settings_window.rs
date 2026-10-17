@@ -578,6 +578,7 @@ pub fn fill(
     window.set_providers(ModelRc::new(VecModel::from(rows)));
     window.set_interval_index(i32::try_from(interval_index(s.refresh.interval)).unwrap_or(3));
     window.set_readout_enabled(s.readout.enabled);
+    window.set_readout_every(s.readout.every_taskbar);
     window.set_readout_content_index(i32::from(matches!(
         s.readout.content,
         ReadoutContent::Pinned(_)
@@ -709,6 +710,7 @@ pub fn texts(strings: &dyn Strings) -> ui::SettingsTexts {
         refresh_check: t(Msg::SettingsRefreshCheck),
         readout: t(Msg::SettingsReadout),
         readout_show: t(Msg::SettingsReadoutShow),
+        readout_every: t(Msg::SettingsReadoutEvery),
         readout_rows: t(Msg::SettingsReadoutRows),
         readout_auto: t(Msg::SettingsReadoutAuto),
         readout_pinned: t(Msg::SettingsReadoutPinned),
@@ -1311,6 +1313,7 @@ fn apply(session: &Session) {
     let mut draft = session.draft.borrow().settings.clone();
     draft.refresh.interval = interval_at(window.get_interval_index());
     draft.readout.enabled = window.get_readout_enabled();
+    draft.readout.every_taskbar = window.get_readout_every();
     if window.get_readout_content_index() == 0 {
         draft.readout.content = ReadoutContent::Auto;
     }
