@@ -81,10 +81,12 @@ two meters, each as a short label, a bar, the percentage used and when it resets
 the most important numbers without a click.
 
 By default it shows the two meters that are most constrained right now (*Auto*). To choose them
-yourself, use *Taskbar readout ▸ Pinned meters…* in the tray menu, which opens the settings at the
-meter list, or *Show in taskbar readout* in a card's right-click menu in the flyout. You can pin up
-to two; pinning a third replaces the one you pinned first. Choosing *Auto* again forgets your pins.
-*Off* hides the readout; the tray icon stays.
+yourself, use *Taskbar readout ▸ Pinned meters…* in the tray menu. It opens **Settings ▸ Display**
+at the taskbar's content, where you pick a *First meter* and, if you like, a *Second meter*. You
+can also use *Show in taskbar readout* in a card's right-click menu in the flyout; pinning a third
+meter there replaces the one you pinned first. Choosing *Auto* again forgets your pins. *Off*
+hides the readout; the tray icon stays. Under **Meters** on the same page you can hide a meter of
+a service, such as Claude's weekly limit, in the flyout and the taskbar.
 
 - **Rest the pointer** on it for the hover card.
 - **Click** it to open or close the flyout.

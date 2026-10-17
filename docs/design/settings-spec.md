@@ -24,8 +24,9 @@ instant apply. It is built in phases; this spec describes what is built:
 - **Built** (phase 3): the service list's rows with their glyph, a line on how each service is
   read and capability-driven expanders holding the accounts and the API keys; "Add your own
   service" (§4).
-- **Later** (§10): pin slots and per-service meter visibility; the shortcut editor with a
-  preview, the version card's result, open-folder links.
+- **Built** (phase 4): the Display page's theme card with **Open themes folder**, the two pin
+  slots and the meters per service (§4).
+- **Later** (§10): the shortcut editor with a preview, the version card's result.
 
 ## 2. Shell
 
@@ -41,8 +42,8 @@ instant apply. It is built in phases; this spec describes what is built:
   only after keyboard use.
 - **Content pane**: the page's title (28 px semibold, Segoe UI Variable Display) and, for
   Services and Display, a one-line description (14 px, secondary); side padding 32 px (24 px
-  when the pane is narrower than 560 px); content at most 720 px wide; one scroll view per page.
-  Every page is a tab panel.
+  when the pane is narrower than 560 px); content as wide as the pane allows up to 720 px,
+  whatever the page holds; one scroll view per page. Every page is a tab panel.
 - **InfoBar** at the top of the content pane, above the page (it does not scroll with it):
   only for errors not tied to one visible control — "Couldn't save the settings: {detail}" with
   **Try again** (and **Close without saving** while closing, §5.5). A live region (assertive), so
@@ -60,16 +61,20 @@ instant apply. It is built in phases; this spec describes what is built:
 
 - **SettingsCard**: radius 4, the card fill and a 1 px card stroke around its rows; `highlighted`
   draws a 2 px accent outline (a deep link's target, §7). One row, or several separated by 1 px
-  dividers (a **grouped card**: the service list, the meters, "Also notify me"). A card does not
-  clip its rows: Slint's Tab skips an item that a clipping element other than the page's scroll
-  view hides, so a clipping card taller than the page would lose the Tab stops scrolled out of
-  view. A row with a fill of its own (the expander's hover) rounds its corners itself.
+  dividers (a **grouped card**: the service list, a service's meters, "Also notify me"). A card
+  does not clip its rows: Slint's Tab skips an item that a clipping element other than the
+  page's scroll view hides, so a clipping card taller than the page would lose the Tab stops
+  scrolled out of view. A row with a fill of its own (the expander's hover) rounds its corners
+  itself.
 - **CardRow**: [20 px icon] header (14 px) and description (12 px, secondary, wraps) · the
   trailing controls, centred. At least 48 px high, 64 px with a description; text wraps, never
   clips. A dependent row (`enabled: false`) dims its texts while its controls are disabled.
 - **StackedRow**: the same look with the controls under the header, for controls too wide to
-  share its line (the theme list and Theme Studio…, the taskbar content list, the language list,
-  the level boxes, the shortcut's keys, an API key box, an account).
+  share its line (the taskbar content list, the language list, the level boxes, the shortcut's
+  keys, an API key box, an account).
+- **SettingsLink**: a text link, 14 px in the accent colour (HotLight in a contrast theme), a
+  button to UI Automation that Tab reaches and Enter or Space follows (**Open themes folder**,
+  **Turn on a service**).
 - **Group headings**: 14 px semibold, 24 px above and 8 px below, with an optional 12 px
   description; 4 px between separate cards.
 
@@ -169,21 +174,50 @@ page, scroll positions, open expanders and edits; a deep link overrides (§7).
 
 "The taskbar readout, the flyout and the meters they show."
 
-- **Appearance**: Theme (description, list, **Theme Studio…**); "Show times as" (Clock times /
-  Time remaining).
+- **Appearance**: **Theme** — "Colours and layout of the taskbar readout and the flyout." — with
+  the theme list and **Theme Studio…** beside the texts (under them in a narrow column; placed
+  by hand, so a resize keeps the controls and the focus) and **Open themes folder** under the
+  texts, which opens `%APPDATA%\Lastdrop\themes` in File Explorer, made first when it is missing
+  (themes-spec §3). **Show times as**: Clock times (14:56) / Time remaining (2h).
 - **Taskbar readout**: "Show usage in the taskbar" (switch); "Show it on every taskbar" (switch,
   dimmed while the readout is off); "Taskbar content" (The most constrained meters (auto) /
-  Meters I pin). Picking "Meters I pin" with no pin yet is the **choosing state**: nothing is
-  saved (no pins = auto), the card says "The taskbar stays automatic until you pin a meter
-  below.", and the choice stays shown through commits and reconciling until a meter is pinned or
-  auto is picked again; unpinning or hiding every pinned meter, or removing their account,
-  returns to it.
-- **Meters**: "Show them in the flyout, and pin up to two to the taskbar." A grouped card of the
-  meters of the services that are on (the duplicates' left out), each with **Show** and **Pin**
-  (Pin enabled while the meter is shown, the readout is on and "Meters I pin" is chosen; at most
-  two, in the order picked). Hiding a meter hides it for its whole service and unpins it for
-  every account. Accessible names name the meter ("Show Claude weekly", "Pin Claude weekly to the
-  taskbar"). With no service on: "No meters yet. Turn on a service."
+  Meters I choose / sv De mest belastade mätarna (auto) / Mätare jag väljer). With "Meters I
+  choose" the same card holds the two **pin slots** under it, **First meter** and **Second
+  meter (optional)** (sv Första mätaren, Andra mätaren (valfri)), dimmed while the readout is
+  off, the second also while the first is empty. Each lists **None** and the meters of the
+  Meters list that are shown (the duplicates' left out) by service, account (when its service
+  shows several, accounts-spec §7) and meter: "Claude · Work · Weekly limit", "Codex · 5-hour
+  limit", "Meshy · Credits". Rust keeps each choice's meter (`MeterKey`): what is saved is the
+  meter, never a place in the list. At most two, in the user's order (R§4.3); the rules are
+  `Edits::set_pin_slot`'s:
+  - **Choosing state**: "Meters I choose" with no pin saved shows the slots with None in the
+    first and "The taskbar stays automatic until you choose a meter." under them; nothing is
+    saved (no pins = auto). It stays through commits, reconciling and the deep link (§7) until
+    a meter is chosen (one the tray pinned meanwhile too) or auto is picked again.
+  - **No duplicates**: the second slot does not list the first's meter; picking the second's
+    meter in the first empties the second.
+  - **Promotion**: emptying the first slot (None, hiding its meter, removing its account) moves
+    the second up; emptying both is the choosing state again.
+  - **Unavailable pins**: a saved pin whose meter is not listed now — its service is off, its
+    account a duplicate — stays saved and shows in its slot as "Codex · 5-hour limit (not
+    available)" until the user picks another; an unrelated pick keeps it. A pin without a reading
+    yet is listed as usual (the catalogue's names, or the remembered ones). Removing an account is
+    not such a reason: its pins go with it (accounts-spec §7), also when its adding was still
+    pending.
+  - **Hiding** a pinned meter in the Meters list takes it off its slot, for every account of the
+    service, and the card says so under the slots ("Claude weekly limit is hidden, so it was taken
+    off the taskbar.") until the next pin change, the next choice of content or until the meter
+    is shown again.
+- **Meters**: "Meters you turn off are hidden in the flyout and the taskbar." A card per service
+  that is on: its glyph and name (the card's accessible name), then a check box per meter
+  **type** — every meter id the service's shown accounts list, once — with its short name:
+  "5-hour limit", "Weekly limit", "Fable weekly limit", a balance by its name alone ("Credits");
+  sv "5-timmarsgränsen", "Veckogränsen", "Krediterna" (`settings.meter.limit` on the meter's
+  `short_name`). Visibility is per service, as `ProviderSettings.hidden_meters` keeps it; the
+  check boxes are indented like an expander's rows. Accessible names name the service ("Show
+  Claude weekly limit"). The rows are updated in place (a check box keeps the focus); the cards
+  are made again when a service is turned on or off. With no service on: "No meters yet." and
+  **Turn on a service**, which shows Services with the focus in the pane.
 
 ### Notifications / Aviseringar
 
@@ -311,8 +345,10 @@ closing, only by Try again or a newer edit, and not on closing after a commit wh
 an account whose adding is still pending is taken back by Remove or dropped; aliases of Claude's and Codex's `default` accounts
 persist apart; reconciling shows the file's values but leaves a dirty alias editor alone; a failed
 write keeps the edits pending; start with Windows is undone when the write fails, and an undo that
-fails leaves the switch at the registry's state; pins are chosen, promoted, unpinned by hiding a
-meter or removing its account.
+fails leaves the switch at the registry's state; the pin slots choose, never hold a meter twice,
+promote the second, return to choosing when both are empty and stop choosing when the tray
+pinned a meter; hiding a meter unpins it for every account (and says whether it did); removing an
+account takes its pins, also one whose adding was still pending.
 
 ## 6. Settings write coordination
 
@@ -383,11 +419,11 @@ writer's change.
   typed but not saved.
 - **Deep links** = select the page → expand → scroll → keyboard focus → highlight
   (`settings_window::reveal`). Focusing an item scrolls it into view (Slint).
-  - `Focus::Pins` (tray menu "Taskbar readout ▸ Pinned meters…", `--settings-pins`): the readout
-    on and "Meters I pin" (the choosing state when no pin is saved), committed at once — the menu
-    choice is the user's intent; the Display page scrolled to the taskbar readout; the first
-    shown meter's **Pin** focused; the taskbar content card and the meters outlined in the accent
-    until the page changes.
+  - `Focus::Pins` (tray menu "Taskbar readout ▸ Pinned meters…", `--settings-pins`, R§10): the
+    readout on and "Meters I choose" (the choosing state when no pin is saved), committed at once
+    — the menu choice is the user's intent; the Display page scrolled to the taskbar readout; the
+    first pin slot focused (once the slots are shown: they come with "Meters I choose"); the
+    taskbar content's card, slots included, outlined in the accent until the page changes.
   - `Focus::Accounts` (the first run found more folders, `--settings-accounts`): the Services
     page; the rows of Claude and Codex that have found folders expanded; the first of them
     scrolled to the top and its first found folder's **Add** focused.
@@ -398,9 +434,9 @@ writer's change.
 - Tab order: the pane, then the page shown, top to bottom; nothing on a hidden page or in a
   closed expander.
 - Every switch, list and box has an accessible name from its card ("Show usage in the taskbar",
-  "Alias of Work", "Remove account Work", "Pin Claude weekly to the taskbar", "Save the Meshy API
-  key"); a found folder's **Add** names its folder; an expander's chevron what it shows ("Claude
-  accounts", "Meshy API key").
+  "Alias of Work", "Remove account Work", "First meter", "Show Claude weekly limit", "Save the
+  Meshy API key"); a found folder's **Add** names its folder; an expander's chevron what it shows
+  ("Claude accounts", "Meshy API key"); a card of the Meters list its service.
 - When the row holding the focus goes, the focus moves on in its block: after **Remove** to the
   next account's alias box, after a found folder's **Add** to the next found folder's Add, else to
   **Add folder…** (also when the write failed: the adding stays pending and its row is gone);
@@ -417,35 +453,41 @@ writer's change.
 - **Previews**: `lastdrop.exe --demo --preview-settings <png>` renders each page's viewport —
   `services`, `display`, `notifications`, `general` — and four states — `accounts` (the
   accounts deep link), `keys` (Meshy's and OpenCode Go's API keys expanded), `pins` (the pins
-  deep link, choosing), `errors` (General with a refused shortcut and the InfoBar of a write that
-  failed on closing) — at 880 × 680 and 680 × 520 into `<stem>-<view>-<w>x<h>.png` next to
-  `<png>`. With `--language sv`, `--dark`, `--contrast` (Windows' "Night sky" contrast colours)
-  and `--scale`. No files are read or written: the demo's invented accounts, the described
-  services Lastdrop ships (turned off) and an in-memory `settings.json` and key store.
+  deep link: choosing, the first slot focused), `errors` (General with a refused shortcut and
+  the InfoBar of a write that failed on closing) — at 880 × 680 and 680 × 520 into
+  `<stem>-<view>-<w>x<h>.png` next to `<png>`. With `--language sv`, `--dark`, `--contrast`
+  (Windows' "Night sky" contrast colours) and `--scale`. No files are read or written: the
+  demo's invented accounts, the described services Lastdrop ships (turned off) and an in-memory
+  `settings.json` and key store.
 - **Interaction test** (`crates/app/tests/settings_ui.rs`, headless, the test's own clock): the
   pane's keys and Ctrl+Tab; Tab from the pane lands on the page shown; a burst of edits on two
   pages commits once, 250 ms after its last edit, the registry before the file; a change the
   tray wrote meanwhile shows after the next commit in a focused combo box without an edit, which
   keeps the focus; an alias commits after its 800 ms pause, not before; both deep links (page,
-  expansion, focus — Space then acts on the focused control —, highlight, choosing; a repeated
-  request keeps an edit); an account added and removed at once, "Account added.", the focus
+  expansion, focus — Space or Down then acts on the focused control —, highlight, choosing; a
+  repeated request keeps an edit); an account added and removed at once, "Account added.", the focus
   moving on (after Remove to Add folder…, where Tab and Space open New account… and Cancel closes
   it, or into the next alias box, where typing saves an alias; with two found folders Space on the
   first Add, then Space again, adds both); a described service's row (key) expands to its key
   row from the keyboard (Tab to its chevron, Space, Tab into the box), Enter saves the key, turns
   the service on and changes its line, Remove takes the key back; the expansion survives a page
   change; every configured folder listed, a duplicate marked "Same account as …" and its meters
-  left out of the meter list; a failed write on closing keeps the window open with the InfoBar,
-  Try again closes it once the write works, Close without saving discards.
+  left out of the pin slots; a failed write on closing keeps the window open with the InfoBar,
+  Try again closes it once the write works, Close without saving discards. The **pin slots**:
+  the choosing state through an unrelated commit; the choices' labels; the second slot without
+  the first's meter, and the second's meter picked in the first emptying it; None in the first
+  promoting the second; a pin whose service is turned off kept as "(not available)", through an
+  unrelated pick, and available again when it is back on; hiding a pinned meter promoting the
+  second with the note, which goes when it is shown again; removing an account clearing its pin
+  and promoting the second; the last pin removed choosing again. The **Meters list**: one row per
+  type though Claude has two accounts, the short names and accessible names, hiding a type
+  saved once for the service and gone from the slots for every account; with every service off
+  the empty state, whose link Tab reaches from the pane and Space follows to Services.
 - Unit tests: §5.7 and §6.4.
 - **Manual**: keyboard only, Narrator, 100/150/200 % scaling, Windows text size 150 %, a
   contrast theme.
 
 ## 10. Later phases
 
-- **Display**: two pin slots ("First meter", "Second meter (optional)") instead of the Pin boxes,
-  with the choosing state, no duplicates, promotion of the second slot and unavailable pins kept;
-  meter visibility per service with short names (`5-hour limit`); appearance cards with **Open
-  themes folder**; readout-spec R§10's wording.
 - **Polish**: the shortcut editor with a live preview ("Ctrl + Alt + L"), the version card's
   result, a Narrator and DPI pass, the preview CLI's documentation.
