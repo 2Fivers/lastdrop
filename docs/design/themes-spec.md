@@ -79,9 +79,10 @@ A JSON file (`lastdrop_core::theme::Theme`), unknown fields ignored:
 
 ## 4. Theme Studio
 
-Settings ▸ Theme: a list of the themes (built-in first, then the user's by name) and
+Settings ▸ Display ▸ Theme: a list of the themes (built-in first, then the user's by name),
 **Theme Studio…**, which opens the Studio window in the dialog process, starting from the theme
-selected there.
+selected there, and **Open themes folder**, which opens the folder in File Explorer, made first
+when it is missing (settings-spec §4).
 
 - **Start from** (a theme) and **Name**.
 - **Colours:** light or dark (same as the taskbar, always light, always dark); own accent colour

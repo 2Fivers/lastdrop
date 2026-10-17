@@ -11,8 +11,8 @@
 // accessibility tree) and keep their scroll position.
 
 import { Button, CheckBox, LineEdit, ComboBox, ScrollView, Switch, Palette } from "std-widgets.slint";
-import { SettingsTheme, SettingsFocusRect, NavItem, GroupHeading, PageNote, CardRow, StackedRow, SettingsCard, ExpanderHeader, InfoBar } from "settings_controls.slint";
-import { GlyphData } from "common.slint";
+import { SettingsTheme, SettingsFocusRect, NavItem, GroupHeading, PageNote, CardRow, StackedRow, SettingsCard, ExpanderHeader, InfoBar, SettingsLink } from "settings_controls.slint";
+import { GlyphData, ProviderGlyph } from "common.slint";
 
 export { SettingsTheme }
 
@@ -38,16 +38,21 @@ export struct ProviderRow {
     toggle-label: string,
 }
 
-// One meter of an enabled service (settings `hidden_meters`, F§2.2; readout pins, R§4.3).
-// label: the meter with its service (`settings.meter`: `Claude weekly`, `Veckogränsen för
-// Claude`); pinned: one of the 1–2 readout pins (Rust keeps at most two, in the order picked);
-// show-label / pin-label: the check boxes' accessible names (`Show Claude weekly`).
-export struct MeterChoice {
+// One meter type of a service in the Meters list (settings `hidden_meters`, per service; F§2.2):
+// its short name (`5-hour limit`, `Veckogränsen`), shown or hidden, and its check box's
+// accessible name (`Show Claude 5-hour limit`).
+export struct MeterType {
     label: string,
     shown: bool,
-    pinned: bool,
     show-label: string,
-    pin-label: string,
+}
+
+// A service's card in the Meters list: its glyph and name, and its meter types (Rust updates
+// them in place).
+export struct MeterGroup {
+    name: string,
+    glyph: GlyphData,
+    types: [MeterType],
 }
 
 // The API key of one service: the box's placeholder, whether a key is stored, what the last Save
@@ -132,6 +137,7 @@ export struct SettingsTexts {
     theme: string,
     theme-studio: string,
     theme-hint: string,
+    theme-folder: string,
     updates: string,
     updates-check: string,
     updates-now: string,
@@ -144,14 +150,15 @@ export struct SettingsTexts {
     readout-auto: string,
     readout-pinned: string,
     readout-choosing: string,
+    pins-first: string,
+    pins-second: string,
     readout-times: string,
     readout-clock: string,
     readout-relative: string,
     meters: string,
     meters-hint: string,
     meters-empty: string,
-    meter-show: string,
-    meter-pin: string,
+    meters-empty-link: string,
     notify-on: string,
     notify-levels: string,
     notify-and: string,
@@ -185,6 +192,7 @@ component ErrorNote inherits Text {
 // A row of a grouped card holding one check box with its own label.
 component CheckRow inherits Rectangle {
     in property <bool> divider;
+    in property <length> indent: 0px;
     min-height: 44px;
     if root.divider: Rectangle {
         y: 0px;
@@ -192,12 +200,103 @@ component CheckRow inherits Rectangle {
         background: SettingsTheme.divider;
     }
     HorizontalLayout {
-        padding-left: 16px;
+        padding-left: 16px + root.indent;
         padding-right: 16px;
         padding-top: 8px;
         padding-bottom: 8px;
         alignment: start;
         @children
+    }
+}
+
+// A pin slot's row (settings-spec §4): its header with its list beside it, the list under the
+// header in a narrow column, as wide as the column allows (the choices name a service, an account
+// and a meter). Placed by hand, so a resize keeps the list and its focus. A divider above.
+component PinSlotRow inherits Rectangle {
+    in property <string> header;
+    in property <bool> enabled: true;
+    in property <bool> narrow;
+    in property <length> indent;
+    in property <[string]> choices;
+    in-out property <int> current-index;
+    callback selected(int);
+    // The list got or lost the keyboard focus (its open popup counts as the list).
+    callback focus-changed(bool);
+    public function focus-list() {
+        list.focus();
+    }
+    property <bool> list-focused: list.has-focus;
+    changed list-focused => {
+        root.focus-changed(self.list-focused);
+    }
+    property <length> inner: self.width - 32px - root.indent;
+    property <length> list-width: root.narrow ? min(self.inner, 360px) : min(340px, self.inner - 16px - 140px);
+    height: root.narrow
+        ? 10px + label.preferred-height + 8px + list.min-height + 12px
+        : max(48px, max(label.preferred-height, list.min-height) + 20px);
+    accessible-role: groupbox;
+    accessible-label: root.header;
+
+    Rectangle {
+        y: 0px;
+        height: 1px;
+        background: SettingsTheme.divider;
+    }
+    label := Text {
+        x: 16px + root.indent;
+        y: root.narrow ? 10px : (parent.height - self.height) / 2;
+        width: root.narrow ? parent.inner : parent.inner - root.list-width - 16px;
+        height: self.preferred-height;
+        text: root.header;
+        font-size: 14px;
+        color: root.enabled ? SettingsTheme.text-primary : SettingsTheme.text-disabled;
+        wrap: word-wrap;
+        accessible-role: none;
+    }
+    list := ComboBox {
+        x: root.narrow ? 16px + root.indent : parent.width - 16px - root.list-width;
+        y: root.narrow ? label.y + label.height + 8px : (parent.height - self.height) / 2;
+        width: root.list-width;
+        height: self.min-height;
+        model: root.choices;
+        current-index <=> root.current-index;
+        enabled: root.enabled;
+        accessible-label: root.header;
+        selected => {
+            root.selected(self.current-index);
+        }
+    }
+}
+
+// The first row of a service's card in the Meters list: its glyph and its name.
+component ServiceHeaderRow inherits Rectangle {
+    in property <string> name;
+    in property <GlyphData> glyph;
+    min-height: 48px;
+    HorizontalLayout {
+        padding-left: 16px;
+        padding-right: 16px;
+        padding-top: 10px;
+        padding-bottom: 10px;
+        spacing: 16px;
+        if root.glyph.commands != "" || root.glyph.monogram != "": VerticalLayout {
+            alignment: center;
+            ProviderGlyph {
+                glyph: root.glyph;
+                size: 20px;
+                foreground: SettingsTheme.text-primary;
+            }
+        }
+        Text {
+            text: root.name;
+            font-size: 14px;
+            font-weight: 600;
+            color: SettingsTheme.text-primary;
+            vertical-alignment: center;
+            horizontal-stretch: 1;
+            wrap: word-wrap;
+            accessible-role: none;
+        }
     }
 }
 
@@ -275,14 +374,23 @@ export component SettingsWindow inherits Window {
     in-out property <bool> readout-every;
     // Readout content (R§4.3): 0 auto, 1 pinned meters (or choosing them).
     in-out property <int> readout-content-index;
-    // "Meters I pin" without a pin yet: the taskbar stays automatic.
+    // "Meters I choose" without a pin yet: the taskbar stays automatic.
     in property <bool> choosing-pins;
-    in property <[MeterChoice]> meters;
-    // The tray menu's "Pinned meters…" (R§10): an accent outline around the readout's content and
-    // the meters.
+    // The two pin slots (settings-spec §4): what each lists ("None", the shown meters with their
+    // account, a saved pin not listed now as "… (not available)") and its choice. The second is
+    // off while the first is empty. Rust maps a choice to its meter.
+    in property <[string]> pin-first-choices;
+    in-out property <int> pin-first-index;
+    in property <[string]> pin-second-choices;
+    in-out property <int> pin-second-index;
+    in property <bool> pin-second-enabled;
+    // Under the slots after a pinned meter was hidden.
+    in property <string> pin-note;
+    // The Meters list: a card per service that is on, a check box per meter type.
+    in property <[MeterGroup]> meter-groups;
+    // The tray menu's "Pinned meters…" (R§10): an accent outline around the taskbar content's
+    // card.
     in property <bool> highlight-pins;
-    // The meter row whose Pin box a deep link focuses.
-    in property <int> pin-focus-row: 0;
 
     // ---- Notifications (N§2): on/off, two levels (indices into level-choices: "Off", "50%", …),
     // used up, resets and low balances.
@@ -348,14 +456,20 @@ export component SettingsWindow inherits Window {
     // "Add your own service": the folder of described services in File Explorer.
     callback open-providers-folder();
     callback theme-selected(int);
-    // Theme Studio, starting from the theme at that index.
+    // Theme Studio, starting from the theme at that index; the themes folder in File Explorer.
     callback open-studio(int);
+    callback open-themes-folder();
     callback time-style-selected(int);
     callback readout-enabled-toggled(bool);
     callback readout-every-toggled(bool);
     callback readout-mode-selected(int);
-    callback meter-shown-toggled(int, bool);
-    callback meter-pinned-toggled(int, bool);
+    // A pin slot (0 first, 1 second) picked a choice (an index into its list).
+    callback pin-slot-selected(int, int);
+    // A list of the taskbar's content (-1 "Taskbar content", 0 and 1 the pin slots) got or lost
+    // the keyboard focus: while it has it, Rust measures its picks against the pins it had then.
+    callback pin-list-focused(int, bool);
+    // A meter type (card, row) of the Meters list shown or hidden.
+    callback meter-shown-toggled(int, int, bool);
     callback notify-enabled-toggled(bool);
     callback levels-selected(int, int);
     callback notify-used-up-toggled(bool);
@@ -375,8 +489,10 @@ export component SettingsWindow inherits Window {
     // `close` would shadow Window's builtin close() (Slint 1.18), hence `dismiss`: Escape.
     callback dismiss();
 
-    // Bumped by a deep link to the pins; the meter row `pin-focus-row` takes the focus.
+    // Bumped by a deep link to the pins; the first pin slot takes the focus, once it is shown
+    // (`pins-focus-pending` until then: the slots come with "Meters I choose").
     property <int> pins-request;
+    property <bool> pins-focus-pending;
     // Bumped by a deep link to the accounts.
     property <int> reveal-request;
     // Where the keyboard focus goes when the row holding it went (an account removed, a found
@@ -408,12 +524,13 @@ export component SettingsWindow inherits Window {
     }
 
     // Deep link to the readout's pins (tray menu "Taskbar readout ▸ Pinned meters…", R§10):
-    // the Display page, scrolled to the taskbar readout, the first Pin box focused.
+    // the Display page, scrolled to the taskbar readout, the first pin slot focused.
     public function reveal-pins() {
         root.select-page(1);
         display-sv.content-y = max(
             min(0px, 12px - (readout-heading.absolute-position.y - display-page.absolute-position.y)),
             display-sv.visible-height - display-page.preferred-height);
+        root.pins-focus-pending = true;
         root.pins-request += 1;
     }
 
@@ -577,6 +694,9 @@ export component SettingsWindow inherits Window {
                             padding-bottom: 32px;
                             alignment: start;
                             VerticalLayout {
+                                // As wide as the pane allows, up to 720 px, whatever the
+                                // page holds (the page's layout places its column at the start).
+                                preferred-width: 720px;
                                 max-width: 720px;
                                 horizontal-stretch: 1;
                                 spacing: 4px;
@@ -978,6 +1098,9 @@ export component SettingsWindow inherits Window {
                             padding-bottom: 32px;
                             alignment: start;
                             VerticalLayout {
+                                // As wide as the pane allows, up to 720 px, whatever the
+                                // page holds (the page's layout places its column at the start).
+                                preferred-width: 720px;
                                 max-width: 720px;
                                 horizontal-stretch: 1;
                                 spacing: 4px;
@@ -989,15 +1112,49 @@ export component SettingsWindow inherits Window {
                                 GroupHeader {
                                     text: root.texts.appearance;
                                 }
+                                // The theme: its list and Theme Studio… beside the texts (under
+                                // them in a narrow column), the themes folder under the texts.
+                                // Placed by hand: the same controls in both arrangements, so a
+                                // resize keeps the focus, and Tab goes list, Theme Studio…,
+                                // folder.
                                 SettingsCard {
-                                    StackedRow {
-                                        header: root.texts.theme;
-                                        description: root.texts.theme-hint;
-                                        HorizontalLayout {
+                                    Rectangle {
+                                        property <length> inner: self.width - 32px;
+                                        height: root.narrow
+                                            ? 12px + theme-texts.preferred-height + 8px + theme-controls.preferred-height + 6px + theme-folder.preferred-height + 12px
+                                            : max(theme-texts.preferred-height + 4px + theme-folder.preferred-height, theme-controls.preferred-height) + 24px;
+                                        accessible-role: groupbox;
+                                        accessible-label: root.texts.theme;
+                                        accessible-description: root.texts.theme-hint;
+                                        theme-texts := VerticalLayout {
+                                            x: 16px;
+                                            y: 12px;
+                                            width: root.narrow ? parent.inner : parent.inner - theme-controls.width - 16px;
+                                            height: self.preferred-height;
+                                            spacing: 2px;
+                                            Text {
+                                                text: root.texts.theme;
+                                                font-size: 14px;
+                                                color: SettingsTheme.text-primary;
+                                                wrap: word-wrap;
+                                                accessible-role: none;
+                                            }
+                                            Text {
+                                                text: root.texts.theme-hint;
+                                                font-size: 12px;
+                                                color: SettingsTheme.text-secondary;
+                                                wrap: word-wrap;
+                                                accessible-role: none;
+                                            }
+                                        }
+                                        theme-controls := HorizontalLayout {
+                                            x: root.narrow ? 16px : parent.width - 16px - self.width;
+                                            y: root.narrow ? theme-texts.y + theme-texts.height + 8px : (parent.height - self.height) / 2;
+                                            width: self.preferred-width;
+                                            height: self.preferred-height;
                                             spacing: 8px;
                                             ComboBox {
-                                                horizontal-stretch: 1;
-                                                max-width: 320px;
+                                                width: 200px;
                                                 model: root.themes;
                                                 current-index <=> root.theme-index;
                                                 accessible-label: root.texts.theme;
@@ -1011,8 +1168,13 @@ export component SettingsWindow inherits Window {
                                                     root.open-studio(root.theme-index);
                                                 }
                                             }
-                                            Rectangle {
-                                                horizontal-stretch: 0.01;
+                                        }
+                                        theme-folder := SettingsLink {
+                                            x: 16px;
+                                            y: root.narrow ? theme-controls.y + theme-controls.height + 6px : theme-texts.y + theme-texts.height + 4px;
+                                            text: root.texts.theme-folder;
+                                            clicked => {
+                                                root.open-themes-folder();
                                             }
                                         }
                                     }
@@ -1060,6 +1222,8 @@ export component SettingsWindow inherits Window {
                                         }
                                     }
                                 }
+                                // The taskbar's content and, with "Meters I choose", the two pin
+                                // slots under it (settings-spec §4); the deep link's target.
                                 SettingsCard {
                                     highlighted: root.highlight-pins;
                                     StackedRow {
@@ -1075,55 +1239,110 @@ export component SettingsWindow inherits Window {
                                                 selected => {
                                                     root.readout-mode-selected(self.current-index);
                                                 }
+                                                property <bool> focused: self.has-focus;
+                                                changed focused => {
+                                                    root.pin-list-focused(-1, self.focused);
+                                                }
                                             }
                                         }
-                                        if root.choosing-pins: PageNote {
-                                            text: root.texts.readout-choosing;
+                                    }
+                                    if root.readout-content-index == 1: VerticalLayout {
+                                        PinSlotRow {
+                                            header: root.texts.pins-first;
+                                            enabled: root.readout-enabled;
+                                            narrow: root.narrow;
+                                            indent: root.indent;
+                                            choices: root.pin-first-choices;
+                                            current-index <=> root.pin-first-index;
+                                            selected(index) => {
+                                                root.pin-slot-selected(0, index);
+                                            }
+                                            focus-changed(focused) => {
+                                                root.pin-list-focused(0, focused);
+                                            }
+                                            // The deep link focuses the first slot, also when
+                                            // it came with the link's "Meters I choose".
+                                            init => {
+                                                if (root.pins-focus-pending) {
+                                                    root.pins-focus-pending = false;
+                                                    self.focus-list();
+                                                }
+                                            }
+                                            property <int> request: root.pins-request;
+                                            changed request => {
+                                                if (root.pins-focus-pending) {
+                                                    root.pins-focus-pending = false;
+                                                    self.focus-list();
+                                                }
+                                            }
+                                        }
+                                        PinSlotRow {
+                                            header: root.texts.pins-second;
+                                            enabled: root.readout-enabled && root.pin-second-enabled;
+                                            narrow: root.narrow;
+                                            indent: root.indent;
+                                            choices: root.pin-second-choices;
+                                            current-index <=> root.pin-second-index;
+                                            selected(index) => {
+                                                root.pin-slot-selected(1, index);
+                                            }
+                                            focus-changed(focused) => {
+                                                root.pin-list-focused(1, focused);
+                                            }
+                                        }
+                                        if root.choosing-pins || root.pin-note != "": VerticalLayout {
+                                            padding-left: 16px + root.indent;
+                                            padding-right: 16px;
+                                            padding-bottom: 12px;
+                                            spacing: 4px;
+                                            if root.choosing-pins: PageNote {
+                                                text: root.texts.readout-choosing;
+                                            }
+                                            if root.pin-note != "": PageNote {
+                                                text: root.pin-note;
+                                            }
                                         }
                                     }
                                 }
 
+                                // A card per service that is on, a check box per meter type:
+                                // visibility is per service, as the settings keep it.
                                 GroupHeader {
                                     text: root.texts.meters;
                                     description: root.texts.meters-hint;
                                 }
-                                SettingsCard {
-                                    highlighted: root.highlight-pins;
-                                    if root.meters.length == 0: CardRow {
+                                if root.meter-groups.length == 0: SettingsCard {
+                                    CardRow {
                                         header: root.texts.meters-empty;
+                                        SettingsLink {
+                                            text: root.texts.meters-empty-link;
+                                            clicked => {
+                                                root.select-page(0);
+                                                nav.focus();
+                                            }
+                                        }
                                     }
-                                    for meter[i] in root.meters: CardRow {
-                                        header: meter.label;
-                                        divider: i > 0;
-                                        property <bool> shown: meter.shown;
-                                        property <bool> pinned: meter.pinned;
-                                        property <int> request: root.pins-request;
+                                }
+                                for group[g] in root.meter-groups: SettingsCard {
+                                    accessible-role: groupbox;
+                                    accessible-label: group.name;
+                                    ServiceHeaderRow {
+                                        name: group.name;
+                                        glyph: group.glyph;
+                                    }
+                                    for type[t] in group.types: CheckRow {
+                                        divider: true;
+                                        indent: root.indent;
+                                        property <bool> shown: type.shown;
                                         changed shown => {
                                             show-box.checked = self.shown;
                                         }
-                                        changed pinned => {
-                                            pin-box.checked = self.pinned;
-                                        }
-                                        changed request => {
-                                            if (i == root.pin-focus-row) {
-                                                pin-box.focus();
-                                            }
-                                        }
                                         show-box := CheckBox {
-                                            text: root.texts.meter-show;
-                                            checked: meter.shown;
-                                            accessible-label: meter.show-label;
+                                            text: type.label;
+                                            checked: type.shown;
+                                            accessible-label: type.show-label;
                                             toggled => {
-                                                root.meter-shown-toggled(i, self.checked);
-                                            }
-                                        }
-                                        pin-box := CheckBox {
-                                            text: root.texts.meter-pin;
-                                            checked: meter.pinned;
-                                            enabled: meter.shown && root.readout-content-index == 1 && root.readout-enabled;
-                                            accessible-label: meter.pin-label;
-                                            toggled => {
-                                                root.meter-pinned-toggled(i, self.checked);
+                                                root.meter-shown-toggled(g, t, self.checked);
                                             }
                                         }
                                     }
@@ -1148,6 +1367,9 @@ export component SettingsWindow inherits Window {
                             padding-bottom: 32px;
                             alignment: start;
                             VerticalLayout {
+                                // As wide as the pane allows, up to 720 px, whatever the
+                                // page holds (the page's layout places its column at the start).
+                                preferred-width: 720px;
                                 max-width: 720px;
                                 horizontal-stretch: 1;
                                 spacing: 4px;
@@ -1261,6 +1483,9 @@ export component SettingsWindow inherits Window {
                             padding-bottom: 32px;
                             alignment: start;
                             VerticalLayout {
+                                // As wide as the pane allows, up to 720 px, whatever the
+                                // page holds (the page's layout places its column at the start).
+                                preferred-width: 720px;
                                 max-width: 720px;
                                 horizontal-stretch: 1;
                                 spacing: 4px;

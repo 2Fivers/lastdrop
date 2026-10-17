@@ -309,7 +309,9 @@ construction").
 
 ### 4.3 Content mode
 
-- **Pinned** (user picks 1–2 meters): rows = the pinned meters in the user's order.
+- **Pinned** (user picks 1–2 meters): rows = the pinned meters in the user's order. Picked in the
+  settings window's two pin slots, "First meter" and "Second meter (optional)" (settings-spec §4),
+  or with a flyout card's **Show in taskbar readout** (a third replaces the one pinned first).
 - **Auto** (default on first run): rows = §3.10.
 - The tray icon always shows the winner.
 
@@ -791,6 +793,10 @@ No fade animation in M1.
 - Context menu (Win32 popup menu, dark-mode aware as in the spike): **Refresh now** · **Pause updates** ▸ (for 1 hour /
   until I resume) · **Taskbar readout** ▸ (Auto / Pinned meters… / Off) · **Settings…** · **About Lastdrop**
   (required by Slint's licence) · **Quit Lastdrop**.
+- **Pinned meters…** opens the settings window (`--settings-pins`, settings-spec §7) on its Display page with the
+  readout on and the taskbar content set to "Meters I choose", saved at once; the first of the two pin slots has the
+  focus and their card an accent outline. With no meter pinned yet the readout stays automatic until one is chosen
+  there.
 - About Lastdrop: version, tagline, copyright, Slint's `AboutSlint`, the credits, then a row with a small
   **Support Lastdrop ♥** link on the left (accent text, 12 px) and **Close** on the right. The link opens
   `https://github.com/2Fivers/lastdrop#support-lastdrop` (the README's section listing GitHub Sponsors and Buy Me a
