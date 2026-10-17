@@ -250,6 +250,33 @@ pub fn bar_geometry(input: &BarInput, width: f32, row_h: f32, scale: f64) -> Bar
     }
 }
 
+/// Blocks of a segmented bar (themes-spec §2).
+pub const SEGMENTS: i32 = 10;
+
+/// `geometry` as ten blocks (a theme's segmented readout bar, themes-spec §2): a gap one hair
+/// wide at each tenth of the bar cuts the track and the fill; the tick and its gaps stay. No
+/// rounded ends: blocks are square. A bar shorter than two pixels per block is left as it is.
+pub fn segmented(mut geometry: BarGeometry) -> BarGeometry {
+    let (len, hair) = (geometry.len, geometry.hair);
+    if len < SEGMENTS * (hair + 2) {
+        return geometry;
+    }
+    // The gap at boundary i ends at round(i × len / 10), so the last block ends flush at `len`.
+    let cuts: Vec<Seg> = (1..SEGMENTS)
+        .map(|i| {
+            let x1 = round_i32(f64::from(i) * f64::from(len) / f64::from(SEGMENTS));
+            Seg { x0: x1 - hair, x1 }
+        })
+        .collect();
+    let cut =
+        |segs: &[Seg]| -> Vec<Seg> { segs.iter().flat_map(|s| minus(s.x0, s.x1, &cuts)).collect() };
+    geometry.track = cut(&geometry.track);
+    geometry.fill = cut(&geometry.fill);
+    geometry.round_start = false;
+    geometry.round_end = false;
+    geometry
+}
+
 /// The bar inputs of an assessed meter (R§5.7 "Bar" column, R§6.6 colours): `u`, `e` (none for
 /// balances, LOADING, IDLE, ENDED, no `R`/`L`), the mode (EXHAUSTED full length, LOADING and
 /// ENDED track only), dashes and the stale colour when the service is stale, the fill role by
@@ -452,5 +479,42 @@ mod tests {
         let idle = tray_bar_geometry(&input(0.0, None, BarMode::Normal, false), l16);
         assert!(idle.fill.is_empty());
         assert_eq!(idle.tick, None);
+    }
+
+    #[test]
+    fn segmented_bars_cut_track_and_fill_at_each_tenth() {
+        let input = BarInput {
+            used: 0.42,
+            elapsed: Some(0.55),
+            mode: BarMode::Normal,
+            dashed: false,
+            fill: ColorRole::TextPrimary,
+            tick: ColorRole::TextPrimary,
+            track: ColorRole::Track,
+        };
+        let plain = bar_geometry(&input, 40.0, 16.0, 1.0);
+        let blocks = segmented(plain.clone());
+        assert_eq!(blocks.tick, plain.tick);
+        assert!(!blocks.round_start && !blocks.round_end);
+        // 40 px: gaps at x 3, 7, 11, …, 35.
+        let painted = |segs: &[Seg], x: i32| segs.iter().any(|s| s.x0 <= x && x < s.x1);
+        for x in 0..40 {
+            let gap = (x + 1) % 4 == 0 && x < 39;
+            if gap {
+                assert!(
+                    !painted(&blocks.fill, x) && !painted(&blocks.track, x),
+                    "{x}"
+                );
+            } else {
+                assert_eq!(
+                    painted(&blocks.fill, x) || painted(&blocks.track, x),
+                    painted(&plain.fill, x) || painted(&plain.track, x),
+                    "{x}"
+                );
+            }
+        }
+        // Too short for blocks: unchanged.
+        let tiny = bar_geometry(&input, 12.0, 16.0, 1.0);
+        assert_eq!(segmented(tiny.clone()), tiny);
     }
 }

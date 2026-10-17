@@ -230,6 +230,7 @@ fn theme() -> ThemeInfo {
         },
         transparency: true,
         high_contrast: None,
+        custom: Default::default(),
     }
 }
 

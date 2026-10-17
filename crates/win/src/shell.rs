@@ -1,6 +1,7 @@
 //! Handing things to the shell on the user's request: a service's usage page in the default
 //! browser (F§9 "Enter on a card"), and the vendor's own sign-in in a visible console window
-//! (F§4.3 `Open sign-in…`). Lastdrop never reads what either does.
+//! (F§4.3 `Open sign-in…`), and the themes folder in File Explorer (themes-spec §4). Lastdrop
+//! never reads what any of them does.
 //!
 //! Threading: main thread, from a flyout action (which then hides the flyout, F§1.4).
 
@@ -61,6 +62,36 @@ pub fn open_url(url: &str) -> windows::core::Result<()> {
                 format!("ShellExecuteW failed ({})", result.0 as usize),
             )
         })
+    }
+}
+
+/// Opens the folder `dir` in File Explorer (`ShellExecuteW` "explore"): Lastdrop's own folders
+/// only (the themes folder, themes-spec §4). Anything that is not an existing directory is an
+/// `E_INVALIDARG` error, so no file is ever launched this way.
+pub fn open_folder(dir: &Path) -> windows::core::Result<()> {
+    if !dir.is_dir() {
+        return Err(Error::new(E_INVALIDARG, "not a folder"));
+    }
+    let wide: Vec<u16> = dir
+        .as_os_str()
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect();
+    // SAFETY: NUL-terminated strings that outlive the call; no window owner.
+    let result = unsafe {
+        ShellExecuteW(
+            None,
+            w!("explore"),
+            PCWSTR(wide.as_ptr()),
+            PCWSTR::null(),
+            PCWSTR::null(),
+            SW_SHOWNORMAL,
+        )
+    };
+    if result.0 as usize > 32 {
+        Ok(())
+    } else {
+        Err(Error::from_thread())
     }
 }
 

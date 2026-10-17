@@ -205,7 +205,9 @@ pub fn run(startup: Startup) -> Result<(), AppError> {
     let _ = unsafe { CoInitializeEx(None, COINIT_APARTMENTTHREADED) };
     backdrop::allow_dark_menus();
 
-    let theme = lastdrop_win::theme::read();
+    let theme_data = crate::themes::load(&paths.themes, settings.theme.as_deref());
+    log::info!("theme: {}", theme_data.name);
+    let theme = lastdrop_win::theme::apply(lastdrop_win::theme::read(), &theme_data);
     let locale = lastdrop_win::locale::read(TimeZone::system());
     let ui_languages = lastdrop_win::locale::ui_languages();
     let now = Timestamp::now();
@@ -318,6 +320,7 @@ pub fn run(startup: Startup) -> Result<(), AppError> {
         writer,
         rt: Runtime {
             bench: bench.clone(),
+            theme_data: RefCell::new(theme_data),
             ..Runtime::default()
         },
     });
@@ -668,6 +671,8 @@ pub struct CardMenu {
 /// Main-thread runtime bookkeeping besides [`AppState`].
 #[derive(Default)]
 pub struct Runtime {
+    /// The Lastdrop theme of the settings (themes-spec), applied over Windows' theme.
+    pub theme_data: RefCell<lastdrop_core::theme::Theme>,
     /// The flyout's `HWND` (0 until winit created it).
     pub flyout_hwnd: Cell<isize>,
     /// The hover card's `HWND`.
@@ -1135,7 +1140,8 @@ fn on_system_event(app: &App, event: SystemEvent) {
 /// to the readout's host window and to each popup): only the first that finds a different theme
 /// applies it, the rest change nothing and return here.
 fn apply_theme(app: &App) {
-    let theme = lastdrop_win::theme::read();
+    let theme =
+        lastdrop_win::theme::apply(lastdrop_win::theme::read(), &app.rt.theme_data.borrow());
     if app.state.borrow().theme == theme {
         return;
     }
@@ -1384,6 +1390,16 @@ fn apply_reloaded(app: &App, previous: &Settings, settings: Settings) {
     set_flyout_labels(&app.windows.flyout, strings);
     app.readout.set_enabled(allowed);
     crate::secondary::sync(app);
+    // The theme, or its file, may have changed (Theme Studio saves, then applies).
+    let theme_data = {
+        let st = app.state.borrow();
+        crate::themes::load(&app.paths.themes, st.settings.theme.as_deref())
+    };
+    if *app.rt.theme_data.borrow() != theme_data {
+        log::info!("theme: {}", theme_data.name);
+        *app.rt.theme_data.borrow_mut() = theme_data;
+        apply_theme(app);
+    }
 }
 
 // ---- Flyout ------------------------------------------------------------------------------------------
@@ -2595,6 +2611,51 @@ fn color(c: Argb) -> slint::Color {
 /// Sets a window's `Theme` global from the theme (each window has its own global instance). The
 /// flyout and the hover card follow the Windows mode (`SystemUsesLightTheme`, F§1.1, R§0).
 pub fn set_theme(global: &ui::Theme<'_>, theme: &ThemeInfo) {
+    // A Lastdrop theme's colours (themes-spec §1): `has-*` and the colour per role.
+    let custom = &theme.custom;
+    let role = |r: ColorRole| (custom.color(r).is_some(), color(palette::resolve(r, theme)));
+    let (has, c) = role(ColorRole::TextPrimary);
+    global.set_has_text_primary(has);
+    global.set_custom_text_primary(c);
+    let (has, c) = role(ColorRole::TextSecondary);
+    global.set_has_text_secondary(has);
+    global.set_custom_text_secondary(c);
+    let (has, c) = role(ColorRole::Track);
+    global.set_has_track(has);
+    global.set_custom_track(c);
+    let (has, c) = role(ColorRole::Caution);
+    global.set_has_caution(has);
+    global.set_custom_caution(c);
+    let (has, c) = role(ColorRole::Critical);
+    global.set_has_critical(has);
+    global.set_custom_critical(c);
+    let (has, c) = role(ColorRole::Success);
+    global.set_has_success(has);
+    global.set_custom_success(c);
+    let (has, c) = role(ColorRole::FlyoutCardBackground);
+    global.set_has_card_fill(has);
+    global.set_custom_card_fill(c);
+    let (has, c) = role(ColorRole::FlyoutCardStroke);
+    global.set_has_card_stroke(has);
+    global.set_custom_card_stroke(c);
+    let (has, c) = role(ColorRole::Divider);
+    global.set_has_divider(has);
+    global.set_custom_divider(c);
+    let (has, c) = role(ColorRole::BadgeFill);
+    global.set_has_badge_fill(has);
+    global.set_custom_badge_fill(c);
+    // Its layout (themes-spec §2).
+    use lastdrop_core::theme::WidgetId;
+    global.set_show_plan(custom.shown(WidgetId::Plan));
+    global.set_show_age(custom.shown(WidgetId::Age));
+    global.set_show_spark(custom.shown(WidgetId::Sparkline));
+    global.set_show_resets(custom.shown(WidgetId::Resets));
+    global.set_show_bars(custom.shown(WidgetId::Bars));
+    global.set_show_trouble(custom.shown(WidgetId::Trouble));
+    global.set_header_order(ModelRc::new(VecModel::from(
+        custom.header.map(i32::from).to_vec(),
+    )));
+    global.set_compact(custom.compact);
     global.set_dark(theme.taskbar_dark);
     global.set_high_contrast(theme.high_contrast.is_some());
     global.set_accent_fill(color(palette::resolve(ColorRole::AccentFill, theme)));

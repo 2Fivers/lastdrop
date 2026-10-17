@@ -48,8 +48,12 @@ pub struct Settings {
     /// Start with Windows (`HKCU\…\Run\Lastdrop`, ARCHITECTURE "Autostart"). Default off
     /// (judgement call: nothing is written to the Run key before the user asks).
     pub start_with_windows: bool,
-    /// Follow the Windows light/dark mode and accent (the only M1 theme; Theme Studio is M4).
+    /// Follow the Windows light/dark mode and accent (the M1 look; kept for older files, the
+    /// theme below decides now).
     pub theme_follows_system: bool,
+    /// The theme (themes-spec §3): a built-in id (`windows`, `segmented`, `compact`, `ember`) or a
+    /// user theme's id (`%APPDATA%\Lastdrop\themes\<id>.json`). `None` = `windows`.
+    pub theme: Option<String>,
     /// The language of every string (ROADMAP M4 "Language"): a BCP 47 tag (`en`, `sv`), or
     /// `None` to follow Windows' display language (the first preferred display language with a
     /// table, else English: [`crate::grammar::Language::resolve`]). A tag without a table (a
@@ -159,6 +163,7 @@ impl Default for Settings {
             pause: None,
             start_with_windows: false,
             theme_follows_system: true,
+            theme: None,
             language: None,
             hotkey: None,
             notifications: NotificationSettings::default(),

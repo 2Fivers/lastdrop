@@ -341,6 +341,7 @@ fn run_dialogs(guard: &InstanceGuard, paths: &Paths, kind: DialogKind) -> Result
     // Every window is dropped here, before `main` returns, not by thread-local teardown at exit.
     settings_window::release();
     history_window::release();
+    crate::theme_studio::release();
     release_about();
     drop_closed();
     ran

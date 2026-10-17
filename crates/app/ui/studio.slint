@@ -1,0 +1,406 @@
+// Theme Studio (docs/design/themes-spec.md §4): edits a theme's colours and layout, shows a flyout
+// card with the draft, saves it as a JSON file. Every text comes from Rust; the draft lives in
+// Rust, which redraws the preview after each change. Fluent, following the app theme like
+// Settings; only the preview pane draws with the draft (its own `Theme` global values).
+
+import { Button, CheckBox, ComboBox, LineEdit, ScrollView, Palette } from "std-widgets.slint";
+import { Theme } from "common.slint";
+import { CardData, ServiceCard } from "flyout.slint";
+
+// One colour role (themes-spec §1): its label, the light and dark values as typed, whether each
+// parses (an empty field keeps Windows' colour) and the colour each shows.
+export struct RoleRow {
+    label: string,
+    light: string,
+    dark: string,
+    light-ok: bool,
+    dark-ok: bool,
+    light-swatch: color,
+    dark-swatch: color,
+}
+
+// One flyout widget (themes-spec §2): its name, shown, whether it has a place in the header's
+// order, and whether it can move up or down there.
+export struct WidgetRow {
+    name: string,
+    shown: bool,
+    movable: bool,
+    can-up: bool,
+    can-down: bool,
+}
+
+// The window's texts (`studio.*` strings), from Rust.
+export struct StudioTexts {
+    title: string,
+    start-from: string,
+    name: string,
+    colours: string,
+    mode: string,
+    modes: [string],
+    accent-own: string,
+    roles-hint: string,
+    light: string,
+    dark: string,
+    layout: string,
+    density: string,
+    densities: [string],
+    bar: string,
+    bars: [string],
+    widgets: string,
+    widgets-hint: string,
+    up: string,
+    down: string,
+    preview: string,
+    save: string,
+    save-use: string,
+    folder: string,
+    close: string,
+}
+
+component SectionTitle inherits Text {
+    font-size: 14px;
+    font-weight: 600;
+    color: Palette.foreground;
+}
+
+component Hint inherits Text {
+    font-size: 12px;
+    color: Palette.foreground.with-alpha(0.62);
+    wrap: word-wrap;
+}
+
+// A colour field: a swatch and the hex text; red text when it does not parse.
+component ColorField inherits HorizontalLayout {
+    in-out property <string> value;
+    in property <bool> ok;
+    in property <color> swatch;
+    callback edited(string);
+    spacing: 6px;
+    VerticalLayout {
+        alignment: center;
+        Rectangle {
+            width: 18px;
+            height: 18px;
+            border-radius: 4px;
+            border-width: 1px;
+            border-color: Palette.border;
+            background: root.swatch;
+        }
+    }
+    LineEdit {
+        width: 104px;
+        text <=> root.value;
+        placeholder-text: "#RRGGBB";
+        edited(t) => {
+            root.edited(t);
+        }
+    }
+    Text {
+        width: 10px;
+        text: root.ok ? "" : "!";
+        color: #c42b1c;
+        vertical-alignment: center;
+    }
+}
+
+export component ThemeStudioWindow inherits Window {
+    title: root.texts.title;
+    preferred-width: 880px;
+    preferred-height: 760px;
+    min-width: 720px;
+    min-height: 480px;
+    background: Palette.background;
+
+    in property <StudioTexts> texts;
+    in property <[string]> themes;
+    in-out property <int> start-index;
+    in-out property <string> name;
+    in-out property <int> mode-index;
+    in-out property <bool> own-accent;
+    in-out property <string> accent;
+    in property <bool> accent-ok: true;
+    in property <color> accent-swatch;
+    in property <[RoleRow]> roles;
+    in-out property <int> density-index;
+    in-out property <int> bar-index;
+    in property <[WidgetRow]> widgets;
+    in property <[CardData]> cards;
+    in property <string> status;
+
+    callback start-changed(int);
+    // Any field above changed: Rust reads them into the draft and redraws the preview.
+    callback changed();
+    callback role-edited(int, bool, string);
+    callback widget-toggled(int, bool);
+    callback widget-moved(int, int);
+    callback save();
+    callback save-use();
+    callback open-folder();
+    // `close` would shadow Window's builtin close() (Slint 1.18), hence `dismiss`.
+    callback dismiss();
+
+    VerticalLayout {
+        HorizontalLayout {
+            vertical-stretch: 1;
+            // The editor.
+            sv := ScrollView {
+                horizontal-stretch: 1;
+                content-width: self.visible-width;
+                content-height: editor.preferred-height;
+                editor := VerticalLayout {
+                    width: sv.visible-width;
+                    padding: 16px;
+                    spacing: 10px;
+
+                    HorizontalLayout {
+                        spacing: 12px;
+                        VerticalLayout {
+                            spacing: 4px;
+                            horizontal-stretch: 1;
+                            Hint {
+                                text: root.texts.start-from;
+                            }
+                            ComboBox {
+                                model: root.themes;
+                                current-index <=> root.start-index;
+                                selected => {
+                                    root.start-changed(self.current-index);
+                                }
+                            }
+                        }
+                        VerticalLayout {
+                            spacing: 4px;
+                            horizontal-stretch: 1;
+                            Hint {
+                                text: root.texts.name;
+                            }
+                            LineEdit {
+                                text <=> root.name;
+                                edited => {
+                                    root.changed();
+                                }
+                            }
+                        }
+                    }
+
+                    SectionTitle {
+                        text: root.texts.colours;
+                    }
+                    HorizontalLayout {
+                        spacing: 12px;
+                        Text {
+                            text: root.texts.mode;
+                            vertical-alignment: center;
+                            color: Palette.foreground;
+                        }
+                        ComboBox {
+                            model: root.texts.modes;
+                            current-index <=> root.mode-index;
+                            selected => {
+                                root.changed();
+                            }
+                        }
+                    }
+                    HorizontalLayout {
+                        spacing: 12px;
+                        CheckBox {
+                            text: root.texts.accent-own;
+                            checked <=> root.own-accent;
+                            toggled => {
+                                root.changed();
+                            }
+                        }
+                        if root.own-accent: ColorField {
+                            value <=> root.accent;
+                            ok: root.accent-ok;
+                            swatch: root.accent-swatch;
+                            edited => {
+                                root.changed();
+                            }
+                        }
+                    }
+                    Hint {
+                        text: root.texts.roles-hint;
+                    }
+                    HorizontalLayout {
+                        Rectangle {
+                            horizontal-stretch: 1;
+                        }
+                        Text {
+                            width: 148px;
+                            text: root.texts.light;
+                            color: Palette.foreground.with-alpha(0.62);
+                            font-size: 12px;
+                        }
+                        Text {
+                            width: 148px;
+                            text: root.texts.dark;
+                            color: Palette.foreground.with-alpha(0.62);
+                            font-size: 12px;
+                        }
+                    }
+                    for role[i] in root.roles: HorizontalLayout {
+                        spacing: 8px;
+                        Text {
+                            horizontal-stretch: 1;
+                            text: role.label;
+                            vertical-alignment: center;
+                            color: Palette.foreground;
+                            overflow: elide;
+                        }
+                        ColorField {
+                            value: role.light;
+                            ok: role.light-ok;
+                            swatch: role.light-swatch;
+                            edited(t) => {
+                                root.role-edited(i, false, t);
+                            }
+                        }
+                        ColorField {
+                            value: role.dark;
+                            ok: role.dark-ok;
+                            swatch: role.dark-swatch;
+                            edited(t) => {
+                                root.role-edited(i, true, t);
+                            }
+                        }
+                    }
+
+                    SectionTitle {
+                        text: root.texts.layout;
+                    }
+                    HorizontalLayout {
+                        spacing: 12px;
+                        Text {
+                            text: root.texts.density;
+                            vertical-alignment: center;
+                            color: Palette.foreground;
+                        }
+                        ComboBox {
+                            model: root.texts.densities;
+                            current-index <=> root.density-index;
+                            selected => {
+                                root.changed();
+                            }
+                        }
+                        Rectangle {
+                            horizontal-stretch: 1;
+                        }
+                    }
+                    HorizontalLayout {
+                        spacing: 12px;
+                        Text {
+                            text: root.texts.bar;
+                            vertical-alignment: center;
+                            color: Palette.foreground;
+                        }
+                        ComboBox {
+                            model: root.texts.bars;
+                            current-index <=> root.bar-index;
+                            selected => {
+                                root.changed();
+                            }
+                        }
+                        Rectangle {
+                            horizontal-stretch: 1;
+                        }
+                    }
+                    Text {
+                        text: root.texts.widgets;
+                        color: Palette.foreground;
+                    }
+                    Hint {
+                        text: root.texts.widgets-hint;
+                    }
+                    for widget[i] in root.widgets: HorizontalLayout {
+                        spacing: 8px;
+                        CheckBox {
+                            horizontal-stretch: 1;
+                            text: widget.name;
+                            checked: widget.shown;
+                            toggled => {
+                                root.widget-toggled(i, self.checked);
+                            }
+                        }
+                        if widget.movable: Button {
+                            text: root.texts.up;
+                            enabled: widget.can-up;
+                            clicked => {
+                                root.widget-moved(i, -1);
+                            }
+                        }
+                        if widget.movable: Button {
+                            text: root.texts.down;
+                            enabled: widget.can-down;
+                            clicked => {
+                                root.widget-moved(i, 1);
+                            }
+                        }
+                    }
+                }
+            }
+            // The preview: flyout cards drawn with the draft.
+            Rectangle {
+                width: 368px;
+                background: Theme.window-fill;
+                border-width: 1px;
+                border-color: Palette.border;
+                VerticalLayout {
+                    padding: 16px;
+                    spacing: 8px;
+                    alignment: start;
+                    Text {
+                        text: root.texts.preview;
+                        font-size: 12px;
+                        color: Theme.text-secondary;
+                    }
+                    for card[i] in root.cards: ServiceCard {
+                        data: card;
+                        index: i;
+                    }
+                }
+            }
+        }
+
+        Rectangle {
+            height: 1px;
+            background: Palette.border;
+        }
+        HorizontalLayout {
+            padding: 16px;
+            spacing: 8px;
+            Button {
+                text: root.texts.folder;
+                clicked => {
+                    root.open-folder();
+                }
+            }
+            Text {
+                horizontal-stretch: 1;
+                text: root.status;
+                vertical-alignment: center;
+                color: Palette.foreground.with-alpha(0.62);
+                overflow: elide;
+            }
+            Button {
+                text: root.texts.save;
+                clicked => {
+                    root.save();
+                }
+            }
+            Button {
+                text: root.texts.save-use;
+                primary: true;
+                clicked => {
+                    root.save-use();
+                }
+            }
+            Button {
+                text: root.texts.close;
+                clicked => {
+                    root.dismiss();
+                }
+            }
+        }
+    }
+}

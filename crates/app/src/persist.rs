@@ -30,6 +30,8 @@ pub struct Paths {
     pub settings: PathBuf,
     /// `%APPDATA%\Lastdrop\providers`: the user's described services (custom-services-spec §3).
     pub providers: PathBuf,
+    /// `%APPDATA%\Lastdrop\themes`: the user's themes (themes-spec §3), one JSON file each.
+    pub themes: PathBuf,
     /// `%APPDATA%\Lastdrop\prices.json`: the user's token prices over the bundled ones
     /// (tokens-spec §2); only read, never written.
     pub prices: PathBuf,
@@ -70,6 +72,7 @@ impl Paths {
             settings: roaming.join("settings.json"),
             providers: roaming.join("providers"),
             prices: roaming.join("prices.json"),
+            themes: roaming.join("themes"),
             history: data.join("history"),
             logs: data.join("logs"),
             state: data.join("state.json"),

@@ -11,7 +11,7 @@ use lastdrop_core::consts::layout::{
     BALANCE_APPROX_GAP, BAR_W, MONOGRAM_FONT, MONOGRAM_RADIUS, PLATE_RADIUS, ROW_H,
 };
 use lastdrop_core::glyph::{ProviderGlyph, provider_paths};
-use lastdrop_core::readout::bar::bar_geometry;
+use lastdrop_core::readout::bar::{bar_geometry, segmented};
 use lastdrop_core::readout::{
     FontFace, FontWeight, GlyphKind, ReadoutForm, ReadoutLayout, ReadoutModel, RowModel, Run,
     TextRun,
@@ -177,6 +177,12 @@ fn draw_row(
         theme,
     );
     let geometry = bar_geometry(&row.bar, BAR_W, ROW_H, s);
+    // A theme's segmented look (themes-spec §2).
+    let geometry = if theme.custom.segmented {
+        segmented(geometry)
+    } else {
+        geometry
+    };
     let colors = BarColors {
         fill: resolve(row.bar.fill, theme),
         track: resolve(row.bar.track, theme),
@@ -421,6 +427,7 @@ pub(super) mod tests {
             },
             transparency: true,
             high_contrast: None,
+            custom: Default::default(),
         }
     }
 

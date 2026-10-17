@@ -25,6 +25,9 @@ use windows::Win32::UI::WindowsAndMessaging::{
 };
 use windows::core::{BOOL, w};
 
+use lastdrop_core::color::ColorRole;
+use lastdrop_core::theme::{BarStyle, Density, THEMABLE, Theme, WidgetId, accent_shades};
+
 use crate::palette::Argb;
 
 /// The system accent and its shades (`UISettings.GetColorValue`, R§7: "Accent shades come from
@@ -76,6 +79,96 @@ pub struct ThemeInfo {
     pub transparency: bool,
     /// High-contrast colours when a contrast theme is on.
     pub high_contrast: Option<HighContrastColors>,
+    /// What the user's Lastdrop theme changes (themes-spec), resolved for the mode above by
+    /// [`apply`]; empty for the Windows theme.
+    pub custom: ThemeOverrides,
+}
+
+/// A Lastdrop theme's colours for the current mode, its readout bar style and the flyout's layout
+/// (themes-spec §1, §2). `Copy`, so it travels with [`ThemeInfo`] to the readout thread (which
+/// uses the colours and the bar style only).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct ThemeOverrides {
+    /// By the role's place in [`lastdrop_core::theme::THEMABLE`]; `None` keeps Windows' colour.
+    pub colors: [Option<Argb>; THEMABLE.len()],
+    /// The readout draws its bars as ten blocks.
+    pub segmented: bool,
+    /// The flyout card widgets that are hidden, by their place in [`WidgetId::ALL`].
+    pub hidden: [bool; WidgetId::ALL.len()],
+    /// The card header's order: 0 plan badge, 1 age, 2 sparkline.
+    pub header: [u8; 3],
+    /// The flyout's compact density.
+    pub compact: bool,
+}
+
+impl Default for ThemeOverrides {
+    /// The Windows theme: nothing changed.
+    fn default() -> ThemeOverrides {
+        ThemeOverrides {
+            colors: [None; THEMABLE.len()],
+            segmented: false,
+            hidden: [false; WidgetId::ALL.len()],
+            header: [0, 1, 2],
+            compact: false,
+        }
+    }
+}
+
+impl ThemeOverrides {
+    /// Whether the flyout shows `widget`.
+    pub fn shown(&self, widget: WidgetId) -> bool {
+        WidgetId::ALL
+            .iter()
+            .position(|w| *w == widget)
+            .is_none_or(|i| !self.hidden[i])
+    }
+
+    /// The theme's colour of `role`, if it sets one.
+    pub fn color(&self, role: ColorRole) -> Option<Argb> {
+        let i = THEMABLE.iter().position(|r| *r == role)?;
+        self.colors.get(i).copied().flatten()
+    }
+}
+
+/// `info` (Windows' theme, from [`read`]) as `theme` draws it (themes-spec §1): the theme's mode
+/// for the taskbar-themed surfaces, its accent shades, its colours for that mode and its bar
+/// style. A contrast theme keeps every system colour: only the bar style applies then. The
+/// settings and about windows' mode (`apps_dark`) is never changed.
+pub fn apply(mut info: ThemeInfo, theme: &Theme) -> ThemeInfo {
+    let layout = &theme.layout;
+    let mut header = [0u8, 1, 2];
+    for (slot, id) in header.iter_mut().zip(layout.header_order()) {
+        *slot = match id {
+            WidgetId::Age => 1,
+            WidgetId::Sparkline => 2,
+            _ => 0,
+        };
+    }
+    info.custom = ThemeOverrides {
+        segmented: layout.readout_bar == BarStyle::Segmented,
+        hidden: WidgetId::ALL.map(|id| !layout.shown(id)),
+        header,
+        compact: layout.density == Density::Compact,
+        ..ThemeOverrides::default()
+    };
+    if info.high_contrast.is_some() {
+        return info;
+    }
+    info.taskbar_dark = theme.dark(info.taskbar_dark);
+    if let Some(accent) = theme.accent {
+        let (dark1, dark2, light2, light3) = accent_shades(accent);
+        info.accent = AccentShades {
+            accent: Argb(accent.0),
+            dark1: Argb(dark1),
+            dark2: Argb(dark2),
+            light2: Argb(light2),
+            light3: Argb(light3),
+        };
+    }
+    for (slot, role) in info.custom.colors.iter_mut().zip(THEMABLE) {
+        *slot = theme.color(role, info.taskbar_dark).map(|c| Argb(c.0));
+    }
+    info
 }
 
 /// `HKCU\…\Themes\Personalize`, where Windows keeps the light/dark and transparency switches.
@@ -100,6 +193,7 @@ pub fn read() -> ThemeInfo {
         accent: read_accent(),
         transparency,
         high_contrast: read_high_contrast(),
+        custom: Default::default(),
     }
 }
 
