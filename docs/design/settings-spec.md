@@ -62,8 +62,8 @@ instant apply. It is built in phases; this spec describes what is built:
   trailing controls, centred. At least 48 px high, 64 px with a description; text wraps, never
   clips. A dependent row (`enabled: false`) dims its texts while its controls are disabled.
 - **StackedRow**: the same look with the controls under the header, for controls too wide to
-  share its line (the theme list and Theme Studio…, the taskbar content list, the level boxes,
-  the shortcut's keys, an API key box, an account).
+  share its line (the theme list and Theme Studio…, the taskbar content list, the language list,
+  the level boxes, the shortcut's keys, an API key box, an account).
 - **Group headings**: 14 px semibold, 24 px above and 8 px below, with an optional 12 px
   description; 4 px between separate cards.
 
@@ -208,7 +208,10 @@ window) → atomic write → base = written → unlock → tell the tray → rec
   and the switch shows the registry's real state.
 - **Hotkey**: refused → drops out (above).
 - **Write failure**: the pending edits stay pending (not lost); the InfoBar shows the detail with
-  **Try again**; controls keep showing the user's values.
+  **Try again**; controls keep showing the user's values. A refused shortcut keeps its refusal.
+  A **New account** whose write failed is dropped with the folder it just made (it would be
+  saved later without its folder); **Remove** on an account whose adding is still pending takes
+  the adding back.
 - Independent actions are reported apart from configuration, in their own rows: "Key saved"
   (Credential Manager), "Opened {client}'s sign-in in a terminal"; "Account added" only after its
   commit succeeded.
@@ -233,7 +236,8 @@ the shortcut that works stays); the 250 ms queue runs; the commit runs at once.
 
 - Success, or nothing pending: the window closes.
 - Write failure: the window stays open with the InfoBar ("Couldn't save the settings: …") and two
-  actions, **Try again** and **Close without saving**.
+  actions, **Try again** (which flushes the editors again, then closes once the write works) and
+  **Close without saving**.
 - An incomplete or invalid shortcut never blocks closing; it is dropped, as its hint said.
 
 ### 5.6 Secrets
@@ -248,7 +252,8 @@ is cleared after Save.
 parse); a commit writes only the pending fields onto the file as it is; an alias committed by its
 pause while a shortcut is being composed (alias saved, shortcut not); an account action does not
 commit an alias being typed; a refused shortcut is not tried again by an unrelated commit or by
-closing, only by Try again or a newer edit; aliases of Claude's and Codex's `default` accounts
+closing, only by Try again or a newer edit, and not on closing after a commit whose write failed;
+an account whose adding is still pending is taken back by Remove or dropped; aliases of Claude's and Codex's `default` accounts
 persist apart; reconciling shows the file's values but leaves a dirty alias editor alone; a failed
 write keeps the edits pending; start with Windows is undone when the write fails, and an undo that
 fails leaves the switch at the registry's state; pins are chosen, promoted, unpinned by hiding a

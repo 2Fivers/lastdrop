@@ -695,6 +695,12 @@ impl Edits {
         self.pending.insert(edit.field(), edit);
     }
 
+    /// Drops the pending edit of `field` (an action taken back before it was saved). Returns
+    /// whether there was one.
+    pub fn discard(&mut self, field: &Field) -> bool {
+        self.pending.remove(field).is_some()
+    }
+
     /// Another writer wrote `edit` to the file (Theme Studio's "Save and use"): it is part of the
     /// base now, and a pending edit of its field is dropped.
     pub fn written_elsewhere(&mut self, edit: &Edit) {
@@ -791,7 +797,9 @@ impl Edits {
         }
     }
 
-    /// Removes an account (not its service's last one). Returns whether it was removed.
+    /// Removes an account (not its service's last one). Returns whether it was removed. An
+    /// account whose adding is still pending (its write failed) is taken back: its pending edit
+    /// goes, so no later commit writes it.
     pub fn remove_account(&mut self, key: &SourceKey) -> bool {
         let draft = self.draft();
         let Some(p) = draft.provider(key.provider) else {
@@ -803,7 +811,20 @@ impl Edits {
         let was_pinned = matches!(draft.readout.content, ReadoutContent::Pinned(_));
         self.aliases.remove(key);
         self.pending.remove(&Field::Alias(key.clone()));
-        self.set(Edit::AccountRemoved(key.clone()));
+        let added = self.pending.iter().find_map(|(field, edit)| match edit {
+            Edit::AccountAdded(provider, account, _)
+                if *provider == key.provider && account.key == key.account =>
+            {
+                Some(field.clone())
+            }
+            _ => None,
+        });
+        match added {
+            Some(field) => {
+                self.pending.remove(&field);
+            }
+            None => self.set(Edit::AccountRemoved(key.clone())),
+        }
         if was_pinned && pins(&self.draft()).is_empty() {
             self.choosing_pins = true;
         }
@@ -990,8 +1011,9 @@ impl Edits {
                 {
                     report.startup = Some(StartupProblem::Stuck { on });
                 }
-                if hotkey_tried {
-                    // Tested, but not saved: a later commit tests it again.
+                if hotkey_tried && self.pending.contains_key(&Field::Hotkey) {
+                    // Tested and accepted, but not saved: a later commit tests it again. A
+                    // refused one keeps its refusal (it is not tried again on closing).
                     self.shortcut.attempted = None;
                 }
                 out.unlock();
@@ -1344,6 +1366,73 @@ mod tests {
         assert_eq!(out.disk.hotkey.map(|h| h.key).as_deref(), Some("J"));
         assert!(!edits.shortcut_dirty());
         assert_eq!(edits.shortcut_problem(), None);
+    }
+
+    #[test]
+    fn a_shortcut_refused_in_a_commit_whose_write_failed_is_not_tried_on_closing() {
+        let mut edits = Edits::new(Settings::default());
+        edits.shortcut_edited(ctrl_alt("K"));
+        edits.set(Edit::NotifyResets(false));
+        let mut out = fake(&Settings::default());
+        out.refuse = Some(HotkeyError::InUse);
+        out.fail_write = true;
+        let commit = edits.commit(&mut out);
+        assert!(commit.shortcut.is_some() && commit.error.is_some());
+        out.refuse = None;
+        out.fail_write = false;
+        edits.flush_editors();
+        assert!(!edits.is_pending(&Field::Hotkey), "the refusal is kept");
+        assert!(edits.commit(&mut out).saved(), "the rest is written");
+        assert_eq!(out.tested.len(), 1);
+        assert_eq!(out.disk.hotkey, None);
+    }
+
+    #[test]
+    fn an_account_whose_adding_is_still_pending_is_taken_back() {
+        let base = Settings::default();
+        let account = AccountSettings {
+            key: AccountKey("f-new".to_owned()),
+            source: SourceSettings::CodexHome {
+                path: r"C:\Users\tester\.codex-new".into(),
+            },
+            ..AccountSettings::primary()
+        };
+        let folder = r"c:\users\tester\.codex-new".to_owned();
+        let mut edits = Edits::new(base.clone());
+        edits.set(Edit::AccountAdded(
+            ProviderId::Codex,
+            Box::new(account.clone()),
+            folder.clone(),
+        ));
+        let mut out = fake(&base);
+        out.fail_write = true;
+        assert!(edits.commit(&mut out).error.is_some());
+        assert!(
+            edits.account(&key(ProviderId::Codex, "f-new")).is_some(),
+            "still pending"
+        );
+        // Remove takes the adding back instead of queueing a removal it would undo.
+        assert!(edits.remove_account(&key(ProviderId::Codex, "f-new")));
+        assert!(edits.account(&key(ProviderId::Codex, "f-new")).is_none());
+        assert!(!edits.has_pending());
+        // Or the window drops it (its folder was removed).
+        edits.set(Edit::AccountAdded(
+            ProviderId::Codex,
+            Box::new(account),
+            folder.clone(),
+        ));
+        assert!(edits.discard(&Field::AccountAdded(ProviderId::Codex, folder)));
+        out.fail_write = false;
+        edits.set(Edit::UpdatesCheck(false));
+        edits.commit(&mut out);
+        assert_eq!(
+            out.disk
+                .provider(ProviderId::Codex)
+                .expect("codex")
+                .accounts
+                .len(),
+            1
+        );
     }
 
     #[test]

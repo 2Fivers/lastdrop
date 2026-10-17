@@ -1315,9 +1315,14 @@ fn connect(window: &ui::SettingsWindow) {
     window.on_info_retry(|| {
         let mut closes = false;
         with_session(|session| {
-            // The InfoBar of a failed close: closing, once the commit works.
-            let closing = session.closing.get();
-            closes = commit_now(session).error.is_none() && closing;
+            // The InfoBar of a failed close: closing once the commit works, with what the
+            // editors hold since (an alias typed meanwhile).
+            closes = if session.closing.get() {
+                flush_for_close(session)
+            } else {
+                commit_now(session);
+                false
+            };
         });
         if closes {
             close_now();
@@ -1517,7 +1522,16 @@ fn new_account(session: &Session, block: i32, name: &str) {
         return;
     }
     if !add_account(session, block, &folder, Some(&alias)) {
-        // Created just now and still empty: not left behind.
+        // Created just now and still empty: not left behind, and neither is its account when
+        // its write failed (it would be saved later without its folder).
+        let folder_id = settings_accounts::folder_id(&folder);
+        if session
+            .edits
+            .borrow_mut()
+            .discard(&Field::AccountAdded(provider, folder_id))
+        {
+            show_draft(session);
+        }
         let _ = std::fs::remove_dir(&folder);
         return;
     }
