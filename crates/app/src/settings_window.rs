@@ -11,8 +11,9 @@
 //! (settings-spec §6) — 250 ms after the last one, at once for account actions, and when the
 //! window closes. After a commit every control shows the file again unless it holds an edit of
 //! its own (reconcile, §5.4). The API key is the exception: it is stored at once when the user
-//! saves it and never kept anywhere else — not in the edits, not in a Slint property, not in
-//! `settings.json`, not in the log — and the tray process is told so it reads the service again.
+//! saves it ([`Outside::store_key`]) and never kept anywhere else — not in the edits, not in a
+//! Slint property, not in `settings.json`, not in the log — and the tray process is told so it
+//! reads the service again.
 //!
 //! It runs in the dialog process ([`crate::dialog`]), not in the tray process. Opening reads
 //! `settings.json` and the meters earlier readings reported (`state.json`) ([`Inputs::read`]).
@@ -409,8 +410,8 @@ struct Session {
     commit_timer: slint::Timer,
     /// Each alias box's 800 ms pause.
     alias_timers: RefCell<BTreeMap<SourceKey, slint::Timer>>,
-    /// A real window: the folder picker, the sign-in console, Credential Manager, Theme Studio
-    /// and the tray process are used (not in tests and previews).
+    /// A real window: the folder picker, the sign-in console, Theme Studio and the tray process
+    /// are used (not in tests and previews; Credential Manager is `outside`'s).
     native: bool,
     /// The window is closing but the last commit failed (the InfoBar offers Close without
     /// saving).
@@ -1604,25 +1605,28 @@ fn set_key_row(session: &Session, provider: ProviderId, stored: bool, status: &s
     }
 }
 
-/// **Save key**: stores the API key of row `row` in Credential Manager at once and drops it, then
-/// tells the tray process, which lifts the service's sign-in stop (they have no credential
-/// fingerprint Lastdrop owns, so only this can lift it). Turns the service on (committed at once).
+/// **Save key**: stores the API key of row `row` in Credential Manager at once and drops it, and
+/// the tray process is told, which lifts the service's sign-in stop (they have no credential
+/// fingerprint Lastdrop owns, so only this can lift it) ([`Outside::store_key`]). Turns the
+/// service on (committed at once).
 fn store_key(session: &Session, row: i32, key: &SharedString) {
     let Some(provider) = key_service(session, row) else {
         return;
     };
     let secret = SecretString::new(key.trim().to_owned());
-    if secret.is_empty() || !session.native {
+    if secret.is_empty() {
         return;
     }
     let credential = key_credential(&session.edits.borrow().draft(), provider);
-    let stored = lastdrop_win::credentials::write(&credential.target(), &secret);
+    let stored = session
+        .outside
+        .borrow_mut()
+        .store_key(provider, &credential.target(), &secret);
     drop(secret);
     let strings = session.wording.borrow().strings();
     match stored {
         Ok(()) => {
             log::info!("{provider:?} API key stored");
-            dialog::notify(Changes::key_of(provider));
             let status = text(
                 strings,
                 Msg::SettingsKeySaved,
@@ -1637,11 +1641,7 @@ fn store_key(session: &Session, row: i32, key: &SharedString) {
         }
         Err(e) => {
             log::warn!("cannot store the {provider:?} key: {e}");
-            let status = text(
-                strings,
-                Msg::SettingsKeyNotSaved,
-                &[("detail", &e.to_string())],
-            );
+            let status = text(strings, Msg::SettingsKeyNotSaved, &[("detail", &e)]);
             let stored = session
                 .keys
                 .borrow()
@@ -1653,21 +1653,21 @@ fn store_key(session: &Session, row: i32, key: &SharedString) {
     }
 }
 
-/// **Remove**: removes the stored API key of row `row` and tells the tray process, which reads
-/// the service again (and so shows that the key is missing).
+/// **Remove**: removes the stored API key of row `row`, and the tray process is told, which reads
+/// the service again (and so shows that the key is missing) ([`Outside::remove_key`]).
 fn clear_key(session: &Session, row: i32) {
     let Some(provider) = key_service(session, row) else {
         return;
     };
-    if !session.native {
-        return;
-    }
     let credential = key_credential(&session.edits.borrow().draft(), provider);
     let strings = session.wording.borrow().strings();
-    match lastdrop_win::credentials::delete(&credential.target()) {
+    let removed = session
+        .outside
+        .borrow_mut()
+        .remove_key(provider, &credential.target());
+    match removed {
         Ok(()) => {
             log::info!("{provider:?} API key removed");
-            dialog::notify(Changes::key_of(provider));
             set_key_row(
                 session,
                 provider,
@@ -1677,11 +1677,7 @@ fn clear_key(session: &Session, row: i32) {
         }
         Err(e) => {
             log::warn!("cannot remove the {provider:?} key: {e}");
-            let status = text(
-                strings,
-                Msg::SettingsKeyNotRemoved,
-                &[("detail", &e.to_string())],
-            );
+            let status = text(strings, Msg::SettingsKeyNotRemoved, &[("detail", &e)]);
             set_key_row(session, provider, true, &status);
         }
     }
