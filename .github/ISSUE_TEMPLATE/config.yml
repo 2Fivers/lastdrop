@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Report a security problem
+    url: https://github.com/2Fivers/lastdrop/security/advisories/new
+    about: Privately, never in a public issue. See SECURITY.md.
+  - name: Support Lastdrop
+    url: https://github.com/2Fivers/lastdrop#support-lastdrop
+    about: GitHub Sponsors or Buy Me a Coffee.

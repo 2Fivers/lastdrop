@@ -1,0 +1,38 @@
+name: Support a new service
+description: Ask for an AI service whose usage or balance Lastdrop should show.
+labels: [enhancement]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        A service with a simple usage or balance endpoint and an API key may need only a JSON
+        file, no Rust: see [custom-services-spec](https://github.com/2Fivers/lastdrop/blob/main/docs/design/custom-services-spec.md)
+        and the examples in `crates/app/providers`. You can try one yourself in
+        `%APPDATA%\Lastdrop\providers`.
+
+        **Never include a token, cookie or API key** in this issue, not even an expired one.
+  - type: input
+    id: service
+    attributes:
+      label: Service
+      placeholder: "Name and website"
+    validations:
+      required: true
+  - type: input
+    id: plans
+    attributes:
+      label: Plan or plans
+      description: Which plans have limits or a balance worth showing?
+      placeholder: "Pro (monthly credits), pay as you go"
+  - type: textarea
+    id: where
+    attributes:
+      label: Where is the usage or balance visible today?
+      description: A link to the page, and what it shows (limits, when they reset, credits left).
+    validations:
+      required: true
+  - type: textarea
+    id: api
+    attributes:
+      label: Is there an official API for it?
+      description: A link to the docs if there is. Say so if you only know of an unofficial one.

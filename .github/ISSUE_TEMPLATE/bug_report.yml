@@ -1,0 +1,65 @@
+name: Bug report
+description: Something in Lastdrop does not work as it should.
+labels: [bug]
+body:
+  - type: input
+    id: version
+    attributes:
+      label: Lastdrop version
+      description: Tray menu ▸ About Lastdrop.
+      placeholder: "0.1.0"
+    validations:
+      required: true
+  - type: input
+    id: windows
+    attributes:
+      label: Windows version and display scale
+      description: Settings ▸ System ▸ About, and Settings ▸ System ▸ Display ▸ Scale.
+      placeholder: "Windows 11 24H2 (26100), 150 %"
+    validations:
+      required: true
+  - type: dropdown
+    id: install
+    attributes:
+      label: How did you install it?
+      options:
+        - Installer from GitHub Releases
+        - winget
+        - Built from source
+    validations:
+      required: true
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened, and what did you expect?
+      description: Name the service and plan if the problem is with one service. A screenshot helps.
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. Open the flyout
+        2. ...
+  - type: markdown
+    attributes:
+      value: |
+        > [!WARNING]
+        > **Before you paste a log:** logs are in `%LOCALAPPDATA%\Lastdrop\logs`. Lastdrop masks
+        > tokens in them, but read the log first and remove anything personal (account names,
+        > e-mail addresses, paths). **Never paste tokens, cookies or API keys**, here or anywhere
+        > else in the issue.
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs
+      description: The relevant lines only, after you have read them.
+      render: text
+  - type: checkboxes
+    id: no-secrets
+    attributes:
+      label: Privacy
+      options:
+        - label: I have read what I pasted and it contains no tokens, cookies, API keys or personal data.
+          required: true
