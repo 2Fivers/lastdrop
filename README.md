@@ -47,6 +47,11 @@ The installer is not code-signed yet, so Windows SmartScreen warns the first tim
 *More info ▸ Run anyway*. To check that GitHub built it from this repository:
 `gh attestation verify Lastdrop-Setup.exe --repo 2Fivers/lastdrop`.
 
+## Documentation
+
+The [user guide](docs/guide/README.md) covers setting up, reading the flyout, accounts, adding your
+own service, what Lastdrop reads and troubleshooting.
+
 ## Plan
 
 See [docs/ROADMAP.md](docs/ROADMAP.md) for providers, features, milestones and what is built,
