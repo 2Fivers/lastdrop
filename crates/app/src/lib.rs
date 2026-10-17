@@ -22,7 +22,8 @@
 //! - [`dialog`]: the dialog process, the requests between it and the tray process.
 //! - [`custom_services`]: the services described in JSON, read at start-up.
 //! - [`settings_window`]: the settings window's draft and callbacks (dialog process);
-//!   [`settings_accounts`]: its Accounts section (accounts-spec §6–§7).
+//!   [`settings_accounts`]: its Accounts section (accounts-spec §6–§7); [`settings_edits`]: its
+//!   change model (pending edits by field, commit, settings-spec §5).
 //! - [`writer`]: the file writer thread (history appends and compaction, settings and state
 //!   saves, in queue order).
 //! - [`settings_sync`]: the read-merge-write of `settings.json` under the settings lock, shared
@@ -58,6 +59,7 @@ pub mod preview;
 pub mod scheduler;
 pub mod secondary;
 pub mod settings_accounts;
+pub mod settings_edits;
 pub mod settings_sync;
 pub mod settings_window;
 pub mod state;

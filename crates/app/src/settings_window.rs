@@ -30,9 +30,7 @@ use lastdrop_core::grammar::strings::{capitalise, text};
 use lastdrop_core::grammar::{Language, LocaleFormat, Msg, Strings, TimeStyle};
 use lastdrop_core::model::{AccountKey, MeterKey, MeterNames, ProviderId, SourceKey, catalog};
 use lastdrop_core::secret::SecretString;
-use lastdrop_core::settings::{
-    Hotkey, ProviderEntry, ReadoutContent, RefreshInterval, Settings, SourceSettings,
-};
+use lastdrop_core::settings::{Hotkey, ProviderEntry, ReadoutContent, Settings, SourceSettings};
 use lastdrop_providers::io::CredentialName;
 use lastdrop_win::hotkey::HotkeyError;
 use slint::{ComponentHandle, ModelRc, SharedString, VecModel};
@@ -40,33 +38,13 @@ use slint::{ComponentHandle, ModelRc, SharedString, VecModel};
 use crate::dialog::{self, Changes};
 use crate::persist::{self, Paths, SavedState};
 use crate::settings_accounts::{self, AccountsInfo, MeterAccounts, NotAdded, SERVICES};
+use crate::settings_edits::{
+    INTERVALS, LEVELS, Shortcut, ShortcutProblem, interval_at, interval_index, language_at,
+    language_index, level_indices, levels_at, pins,
+};
 use crate::settings_sync::{SettingsFile, apply_onto};
 use crate::wiring::{self, toggle_in};
 use crate::{AppError, ui};
-
-/// The refresh interval choices in minutes (`None` = manual).
-pub const INTERVALS: [Option<u16>; 7] = [
-    None,
-    Some(1),
-    Some(2),
-    Some(5),
-    Some(10),
-    Some(15),
-    Some(30),
-];
-
-/// The notification level choices (N§2; `None` = off).
-pub const LEVELS: [Option<u8>; 9] = [
-    None,
-    Some(50),
-    Some(60),
-    Some(70),
-    Some(75),
-    Some(80),
-    Some(85),
-    Some(90),
-    Some(95),
-];
 
 /// Where the window opens.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -147,58 +125,6 @@ pub fn language_choices(ui_languages: &[String], strings: &dyn Strings) -> Vec<S
         .collect()
 }
 
-/// The [`language_choices`] index of a language setting: 0 follows Windows (so does a tag
-/// without a table), else the language's place in [`Language::ALL`] after it.
-pub fn language_index(setting: Option<&str>) -> i32 {
-    setting
-        .and_then(Language::from_tag)
-        .and_then(|l| Language::ALL.iter().position(|a| *a == l))
-        .and_then(|i| i32::try_from(i + 1).ok())
-        .unwrap_or(0)
-}
-
-/// The language setting of a [`language_choices`] index: `None` follows Windows, else the
-/// language's tag.
-pub fn language_at(index: i32) -> Option<String> {
-    let i = usize::try_from(index).ok()?.checked_sub(1)?;
-    Language::ALL.get(i).map(|l| l.tag().to_owned())
-}
-
-/// The [`LEVELS`] indices of the first two of `levels` (as `NotificationSettings::levels` gives
-/// them; a missing one is off), each the nearest choice.
-pub fn level_indices(levels: &[u8]) -> (i32, i32) {
-    let index = |level: Option<&u8>| {
-        let Some(&level) = level else {
-            return 0;
-        };
-        LEVELS
-            .iter()
-            .enumerate()
-            .filter_map(|(i, v)| v.map(|v| (i, v.abs_diff(level))))
-            .min_by_key(|(_, d)| *d)
-            .map_or(0, |(i, _)| i32::try_from(i).unwrap_or(0))
-    };
-    (index(levels.first()), index(levels.get(1)))
-}
-
-/// The levels of two [`LEVELS`] indices: the ones that are not off, ascending, each once.
-pub fn levels_at(first: i32, second: i32) -> Vec<u8> {
-    let level = |i: i32| {
-        usize::try_from(i)
-            .ok()
-            .and_then(|i| LEVELS.get(i))
-            .copied()
-            .flatten()
-    };
-    let mut levels: Vec<u8> = [level(first), level(second)]
-        .into_iter()
-        .flatten()
-        .collect();
-    levels.sort_unstable();
-    levels.dedup();
-    levels
-}
-
 /// The settings being edited.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Draft {
@@ -208,36 +134,6 @@ pub struct Draft {
     pub providers: Vec<ProviderId>,
     /// The meters listed, in order (row index → meter).
     pub meters: Vec<MeterKey>,
-}
-
-/// The index in [`INTERVALS`] of an interval (the nearest one for other minute values).
-pub fn interval_index(interval: RefreshInterval) -> usize {
-    match interval {
-        RefreshInterval::Manual => 0,
-        RefreshInterval::Minutes(m) => INTERVALS
-            .iter()
-            .enumerate()
-            .filter_map(|(i, v)| v.map(|v| (i, v.abs_diff(m))))
-            .min_by_key(|(_, d)| *d)
-            .map_or(3, |(i, _)| i),
-    }
-}
-
-/// The interval of an [`INTERVALS`] index.
-pub fn interval_at(index: i32) -> RefreshInterval {
-    let i = usize::try_from(index).unwrap_or(3).min(INTERVALS.len() - 1);
-    match INTERVALS[i] {
-        None => RefreshInterval::Manual,
-        Some(m) => RefreshInterval::Minutes(m),
-    }
-}
-
-/// The pins of `settings` (empty in auto mode).
-fn pins(settings: &Settings) -> Vec<MeterKey> {
-    match &settings.readout.content {
-        ReadoutContent::Pinned(p) => p.clone(),
-        ReadoutContent::Auto => Vec::new(),
-    }
 }
 
 /// The meters to list for `settings`: every enabled service's catalogue meters plus the meters
@@ -1263,33 +1159,6 @@ fn clear_key(session: &Session, row: i32) {
     window.set_status_text(status.into());
 }
 
-/// Why Apply kept the shortcut saved before.
-#[derive(Clone, Debug, PartialEq, Eq)]
-enum ShortcutProblem {
-    /// No modifier, or not a letter, a digit or F1–F24.
-    Invalid,
-    /// Registering it failed.
-    Refused(HotkeyError),
-}
-
-impl ShortcutProblem {
-    /// The line under the shortcut, in the language of `strings`.
-    fn message(&self, strings: &dyn Strings) -> String {
-        match self {
-            // Unsupported is what the window does not check: Shift alone with a letter or digit.
-            ShortcutProblem::Invalid | ShortcutProblem::Refused(HotkeyError::Unsupported(_)) => {
-                strings.template(Msg::SettingsShortcutInvalid).to_owned()
-            }
-            ShortcutProblem::Refused(HotkeyError::InUse) => {
-                strings.template(Msg::SettingsShortcutInUse).to_owned()
-            }
-            ShortcutProblem::Refused(HotkeyError::Win32(detail)) => {
-                text(strings, Msg::SettingsShortcutFailed, &[("detail", detail)])
-            }
-        }
-    }
-}
-
 /// The status line after Apply saved the settings: what it could not apply, if anything.
 fn saved_status(strings: &dyn Strings, shortcut_kept: bool, startup_kept: bool) -> &str {
     let msg = match (shortcut_kept, startup_kept) {
@@ -1303,28 +1172,31 @@ fn saved_status(strings: &dyn Strings, shortcut_kept: bool, startup_kept: bool) 
 
 /// The hotkey the window describes, or why it is not valid.
 fn hotkey_of(window: &ui::SettingsWindow) -> Result<Option<Hotkey>, ShortcutProblem> {
-    if !window.get_hotkey_enabled() {
-        return Ok(None);
-    }
-    let key = window.get_hotkey_key().trim().to_uppercase();
-    let hotkey = Hotkey {
+    Shortcut {
+        enabled: window.get_hotkey_enabled(),
         ctrl: window.get_hotkey_ctrl(),
         alt: window.get_hotkey_alt(),
         shift: window.get_hotkey_shift(),
         win: window.get_hotkey_win(),
-        key,
-    };
-    let valid_key = (hotkey.key.chars().count() == 1
-        && hotkey.key.chars().all(|c| c.is_ascii_alphanumeric()))
-        || hotkey
-            .key
-            .strip_prefix('F')
-            .and_then(|n| n.parse::<u8>().ok())
-            .is_some_and(|n| (1..=24).contains(&n));
-    if !valid_key || !(hotkey.ctrl || hotkey.alt || hotkey.shift || hotkey.win) {
-        return Err(ShortcutProblem::Invalid);
+        key: window.get_hotkey_key().to_string(),
     }
-    Ok(Some(hotkey))
+    .parse()
+}
+
+/// The line under the shortcut, in the language of `strings`.
+fn shortcut_message(problem: &ShortcutProblem, strings: &dyn Strings) -> String {
+    match problem {
+        // Unsupported is what the window does not check: Shift alone with a letter or digit.
+        ShortcutProblem::Invalid | ShortcutProblem::Refused(HotkeyError::Unsupported(_)) => {
+            strings.template(Msg::SettingsShortcutInvalid).to_owned()
+        }
+        ShortcutProblem::Refused(HotkeyError::InUse) => {
+            strings.template(Msg::SettingsShortcutInUse).to_owned()
+        }
+        ShortcutProblem::Refused(HotkeyError::Win32(detail)) => {
+            text(strings, Msg::SettingsShortcutFailed, &[("detail", detail)])
+        }
+    }
 }
 
 /// Apply: under the settings lock, what the window changed, onto `settings.json` as it is now
@@ -1439,7 +1311,9 @@ fn apply(session: &Session) {
             &[("detail", &e.to_string())],
         ),
     };
-    let hotkey_error = shortcut.map(|p| p.message(strings)).unwrap_or_default();
+    let hotkey_error = shortcut
+        .map(|p| shortcut_message(&p, strings))
+        .unwrap_or_default();
     window.set_hotkey_error(hotkey_error.into());
     window.set_status_text(status.into());
 }
@@ -1475,23 +1349,6 @@ mod tests {
     use lastdrop_core::settings::ProviderSettings;
 
     use crate::persist::SeenMeter;
-
-    #[test]
-    fn notification_levels_round_trip_and_snap_to_the_nearest_choice() {
-        assert_eq!(level_indices(&[80, 95]), (5, 8));
-        assert_eq!(levels_at(5, 8), [80, 95]);
-        assert_eq!(level_indices(&[]), (0, 0));
-        assert_eq!(levels_at(0, 0), Vec::<u8>::new());
-        assert_eq!(level_indices(&[90]), (7, 0));
-        // Picked in either order or twice: ascending, once.
-        assert_eq!(levels_at(8, 5), [80, 95]);
-        assert_eq!(levels_at(7, 7), [90]);
-        // Off for one of them, or an index out of range.
-        assert_eq!(levels_at(0, 6), [85]);
-        assert_eq!(levels_at(-1, 99), Vec::<u8>::new());
-        // A hand-edited 83 shows as the nearest choice.
-        assert_eq!(level_indices(&[83, 99]), (6, 8));
-    }
 
     #[test]
     fn choices_are_labelled_in_the_language_and_the_regional_format() {
@@ -1545,18 +1402,6 @@ mod tests {
     }
 
     #[test]
-    fn intervals_round_trip_and_snap_to_the_nearest_choice() {
-        for (i, _) in INTERVALS.iter().enumerate() {
-            let index = i32::try_from(i).expect("small");
-            assert_eq!(interval_index(interval_at(index)), i);
-        }
-        assert_eq!(interval_index(RefreshInterval::Minutes(4)), 3);
-        assert_eq!(interval_index(RefreshInterval::Minutes(25)), 6);
-        assert_eq!(interval_at(99), RefreshInterval::Minutes(30));
-        assert_eq!(interval_at(-1), RefreshInterval::Minutes(5));
-    }
-
-    #[test]
     fn meters_list_the_catalogue_and_reported_ones_of_enabled_services() {
         let settings = Settings {
             providers: vec![
@@ -1599,22 +1444,27 @@ mod tests {
     #[test]
     fn shortcut_problems_and_the_status_line_come_in_the_language() {
         assert_eq!(
-            ShortcutProblem::Refused(HotkeyError::InUse).message(&English),
+            shortcut_message(&ShortcutProblem::Refused(HotkeyError::InUse), &English),
             "The shortcut is already in use."
         );
         assert_eq!(
-            ShortcutProblem::Refused(HotkeyError::InUse).message(&Swedish),
+            shortcut_message(&ShortcutProblem::Refused(HotkeyError::InUse), &Swedish),
             "Kortkommandot används redan."
         );
         assert_eq!(
-            ShortcutProblem::Refused(HotkeyError::Win32("Access is denied.".to_owned()))
-                .message(&English),
+            shortcut_message(
+                &ShortcutProblem::Refused(HotkeyError::Win32("Access is denied.".to_owned())),
+                &English
+            ),
             "Couldn't register the shortcut: Access is denied."
         );
         // Shift alone with a letter is refused by the registration, not by the window.
         assert_eq!(
-            ShortcutProblem::Refused(HotkeyError::Unsupported("L".to_owned())).message(&Swedish),
-            ShortcutProblem::Invalid.message(&Swedish)
+            shortcut_message(
+                &ShortcutProblem::Refused(HotkeyError::Unsupported("L".to_owned())),
+                &Swedish
+            ),
+            shortcut_message(&ShortcutProblem::Invalid, &Swedish)
         );
         assert_eq!(saved_status(&English, false, false), "Saved.");
         assert_eq!(
