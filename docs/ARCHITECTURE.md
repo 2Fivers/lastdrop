@@ -319,6 +319,15 @@ Rules for every provider:
 
 - `cargo fmt`, `cargo clippy -D warnings`, `cargo test` on every change; CI on
   `windows-latest`.
+- Supply chain on every change: `cargo deny check` (`deny.toml`) fails on a RustSec advisory
+  (vulnerable, unmaintained, unsound or yanked), on a licence that cannot ship under
+  MIT OR Apache-2.0 (Slint's Royalty-free 2.0 is an exception for the Slint crates only) and
+  on any source but crates.io; duplicate versions are warnings. On pull requests,
+  dependency review blocks new dependencies with high-severity vulnerabilities or licences
+  outside the same policy (`.github/dependency-review-config.yml`). CodeQL scans the Rust
+  code and the workflows on every change and weekly.
+- Workflows: `permissions: contents: read` at the top, raised per job only where needed;
+  actions pinned by full SHA; `persist-credentials: false`; never `pull_request_target`.
 - Core logic and parsers are covered by unit tests; placement by the layout matrix.
 - Before a release: `tools/measure` within budget, a 24-hour soak with no growth in memory,
   GDI or USER handles, and the manual multi-monitor matrix.

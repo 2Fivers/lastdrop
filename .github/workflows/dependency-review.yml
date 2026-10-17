@@ -1,0 +1,31 @@
+name: dependency-review
+
+# Blocks a pull request that adds a dependency with a high-severity vulnerability or a licence
+# outside the policy in .github/dependency-review-config.yml (the same policy as deny.toml).
+# Needs the repository's dependency graph, which GitHub enables for public repositories.
+# Runs on `pull_request` only, never `pull_request_target`: a fork's code gets a read-only token.
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: dependency-review-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  review:
+    name: dependency review
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      # For the config file only; the action reads the dependency diff from the API.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - uses: actions/dependency-review-action@a1d282b36b6f3519aa1f3fc636f609c47dddb294 # v5.0.0
+        with:
+          config-file: ./.github/dependency-review-config.yml
