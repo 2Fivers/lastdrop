@@ -209,6 +209,59 @@ component CheckRow inherits Rectangle {
     }
 }
 
+// A pin slot's row (settings-spec §4): its header with its list beside it, the list under the
+// header in a narrow column, as wide as the column allows (the choices name a service, an account
+// and a meter). Placed by hand, so a resize keeps the list and its focus. A divider above.
+component PinSlotRow inherits Rectangle {
+    in property <string> header;
+    in property <bool> enabled: true;
+    in property <bool> narrow;
+    in property <length> indent;
+    in property <[string]> choices;
+    in-out property <int> current-index;
+    callback selected(int);
+    public function focus-list() {
+        list.focus();
+    }
+    property <length> inner: self.width - 32px - root.indent;
+    property <length> list-width: root.narrow ? min(self.inner, 360px) : min(340px, self.inner - 16px - 140px);
+    height: root.narrow
+        ? 10px + label.preferred-height + 8px + list.min-height + 12px
+        : max(48px, max(label.preferred-height, list.min-height) + 20px);
+    accessible-role: groupbox;
+    accessible-label: root.header;
+
+    Rectangle {
+        y: 0px;
+        height: 1px;
+        background: SettingsTheme.divider;
+    }
+    label := Text {
+        x: 16px + root.indent;
+        y: root.narrow ? 10px : (parent.height - self.height) / 2;
+        width: root.narrow ? parent.inner : parent.inner - root.list-width - 16px;
+        height: self.preferred-height;
+        text: root.header;
+        font-size: 14px;
+        color: root.enabled ? SettingsTheme.text-primary : SettingsTheme.text-disabled;
+        wrap: word-wrap;
+        accessible-role: none;
+    }
+    list := ComboBox {
+        x: root.narrow ? 16px + root.indent : parent.width - 16px - root.list-width;
+        y: root.narrow ? label.y + label.height + 8px : (parent.height - self.height) / 2;
+        width: root.list-width;
+        height: self.min-height;
+        model: root.choices;
+        current-index <=> root.current-index;
+        enabled: root.enabled;
+        accessible-label: root.header;
+        selected => {
+            root.selected(self.current-index);
+        }
+    }
+}
+
 // The first row of a service's card in the Meters list: its glyph and its name.
 component ServiceHeaderRow inherits Rectangle {
     in property <string> name;
@@ -1181,51 +1234,41 @@ export component SettingsWindow inherits Window {
                                         }
                                     }
                                     if root.readout-content-index == 1: VerticalLayout {
-                                        CardRow {
+                                        PinSlotRow {
                                             header: root.texts.pins-first;
-                                            divider: true;
-                                            indent: root.indent;
                                             enabled: root.readout-enabled;
+                                            narrow: root.narrow;
+                                            indent: root.indent;
+                                            choices: root.pin-first-choices;
+                                            current-index <=> root.pin-first-index;
+                                            selected(index) => {
+                                                root.pin-slot-selected(0, index);
+                                            }
                                             // The deep link focuses the first slot, also when
                                             // it came with the link's "Meters I choose".
                                             init => {
                                                 if (root.pins-focus-pending) {
                                                     root.pins-focus-pending = false;
-                                                    pin-first.focus();
+                                                    self.focus-list();
                                                 }
                                             }
                                             property <int> request: root.pins-request;
                                             changed request => {
                                                 if (root.pins-focus-pending) {
                                                     root.pins-focus-pending = false;
-                                                    pin-first.focus();
-                                                }
-                                            }
-                                            pin-first := ComboBox {
-                                                width: root.narrow ? 200px : 280px;
-                                                model: root.pin-first-choices;
-                                                current-index <=> root.pin-first-index;
-                                                enabled: root.readout-enabled;
-                                                accessible-label: root.texts.pins-first;
-                                                selected => {
-                                                    root.pin-slot-selected(0, self.current-index);
+                                                    self.focus-list();
                                                 }
                                             }
                                         }
-                                        CardRow {
+                                        PinSlotRow {
                                             header: root.texts.pins-second;
-                                            divider: true;
-                                            indent: root.indent;
                                             enabled: root.readout-enabled && root.pin-second-enabled;
-                                            ComboBox {
-                                                width: root.narrow ? 200px : 280px;
-                                                model: root.pin-second-choices;
-                                                current-index <=> root.pin-second-index;
-                                                enabled: root.readout-enabled && root.pin-second-enabled;
-                                                accessible-label: root.texts.pins-second;
-                                                selected => {
-                                                    root.pin-slot-selected(1, self.current-index);
-                                                }
+                                            narrow: root.narrow;
+                                            indent: root.indent;
+                                            choices: root.pin-second-choices;
+                                            current-index <=> root.pin-second-index;
+                                            selected(index) => {
+                                                root.pin-slot-selected(1, index);
                                             }
                                         }
                                         if root.choosing-pins || root.pin-note != "": VerticalLayout {
