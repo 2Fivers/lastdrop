@@ -177,7 +177,7 @@ settings.
 | Settings (no keys or tokens) | `%APPDATA%\Lastdrop\settings.json` |
 | Your service files, themes and prices | `%APPDATA%\Lastdrop\providers`, `themes`, `prices.json` |
 | Usage history: the numbers only, 90 days | `%LOCALAPPDATA%\Lastdrop\history` |
-| What the app remembers between runs: which meters it saw, what it notified, and a short hash of who each Claude Code or Codex folder is signed in to | `%LOCALAPPDATA%\Lastdrop\state.json` |
+| What the app remembers between runs: which meters it saw, what it notified (the last update it announced too), and a short hash of who each Claude Code or Codex folder is signed in to | `%LOCALAPPDATA%\Lastdrop\state.json` |
 | Logs, with tokens, keys and e-mail addresses masked | `%LOCALAPPDATA%\Lastdrop\logs` |
 | A downloaded update | `%LOCALAPPDATA%\Lastdrop\updates` |
 | API keys you saved | Windows Credential Manager |
