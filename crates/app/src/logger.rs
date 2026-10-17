@@ -1,7 +1,8 @@
 //! A tiny file logger for the `log` facade (no heavy logging stacks): one line per record to
-//! `%LOCALAPPDATA%\Lastdrop\logs\lastdrop.log` (the tray process) or `settings.log` (the dialog
-//! process, [`crate::dialog`]), rotated by size, local only, never sent anywhere. Each process
-//! writes its own file, so the two never share one.
+//! `%LOCALAPPDATA%\Lastdrop\logs\lastdrop.log` (the tray process), `settings.log` (the dialog
+//! process, [`crate::dialog`]) or `install.log` (the installer and uninstaller,
+//! [`crate::install`]), rotated by size, local only, never sent anywhere. Each process writes its
+//! own file, so no two share one.
 //!
 //! **Never log a secret** (ARCHITECTURE): callers log no tokens, keys, cookies, account ids or
 //! e-mail addresses; [`redact`] masks known shapes as a second line of defence on every line.
@@ -45,6 +46,9 @@ pub const APP_STEM: &str = "lastdrop";
 
 /// The dialog process's log file stem: `settings.log`, `settings.1.log`, …
 pub const DIALOG_STEM: &str = "settings";
+
+/// The installer's and uninstaller's log file stem: `install.log`, `install.1.log`, …
+pub const INSTALL_STEM: &str = "install";
 
 /// What the writer thread receives.
 enum Line {
@@ -628,6 +632,25 @@ mod tests {
             !dir.join(FILE_NAME).exists(),
             "the tray process's file is not touched"
         );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn the_installer_writes_its_own_file() {
+        let stems: std::collections::BTreeSet<&str> =
+            [APP_STEM, DIALOG_STEM, INSTALL_STEM].into_iter().collect();
+        assert_eq!(stems.len(), 3, "each process has a file of its own");
+        let dir = temp_dir("install");
+        let mut file = LogFile::open(dir.clone(), INSTALL_STEM).expect("open");
+        let (tx, rx) = mpsc::channel();
+        tx.send(Line::Text("install: Lastdrop 0.0.0 installed".to_owned()))
+            .expect("send");
+        tx.send(Line::Stop).expect("send");
+        file.run(&rx);
+        let log = std::fs::read_to_string(dir.join("install.log")).expect("install.log");
+        assert_eq!(log, "install: Lastdrop 0.0.0 installed\n");
+        assert!(!dir.join(FILE_NAME).exists(), "not the tray process's file");
+        assert!(!dir.join("settings.log").exists(), "not the dialog's file");
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

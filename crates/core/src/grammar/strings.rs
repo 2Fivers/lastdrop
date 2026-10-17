@@ -262,6 +262,7 @@ catalogue! {
         FlyoutVerdictExhausted = "flyout.verdict.exhausted",
         FlyoutVerdictStale = "flyout.verdict.stale",
         FlyoutVerdictSignIn = "flyout.verdict.signin",
+        FlyoutVerdictApiKey = "flyout.verdict.apikey",
         FlyoutVerdictPaused = "flyout.verdict.paused",
         FlyoutVerdictLoading = "flyout.verdict.loading",
         FlyoutVerdictMore = "flyout.verdict.more",

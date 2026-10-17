@@ -679,13 +679,11 @@ pub struct CardMenu {
 /// Main-thread runtime bookkeeping besides [`AppState`].
 #[derive(Default)]
 pub struct Runtime {
-    /// Updates (updates-spec): what is known, the daily check, the version a notification
-    /// announced (each once), and whether a check runs.
+    /// Updates (updates-spec): what is known, the daily check, and whether a check runs. The
+    /// version a notification announced is in [`AppState::update_announced`] (state file).
     pub update: RefCell<crate::updater::UpdateState>,
     /// See [`Runtime::update`].
     pub update_timer: slint::Timer,
-    /// See [`Runtime::update`].
-    pub update_announced: RefCell<Option<lastdrop_core::update::Version>>,
     /// See [`Runtime::update`].
     pub update_checking: Cell<bool>,
     /// The Lastdrop theme of the settings (themes-spec), applied over Windows' theme.

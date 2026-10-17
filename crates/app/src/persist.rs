@@ -14,6 +14,7 @@ use std::path::{Path, PathBuf};
 use lastdrop_core::model::{AccountIdentity, MeterKey, MeterNames, SourceKey, Unit};
 use lastdrop_core::notify::{Announced, NotifyMemory};
 use lastdrop_core::settings::{SETTINGS_VERSION, Settings};
+use lastdrop_core::update::Version;
 use serde::{Deserialize, Serialize};
 use windows::Win32::Storage::FileSystem::{
     MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH, MoveFileExW,
@@ -218,8 +219,9 @@ pub const STATE_VERSION: u32 = 1;
 /// that is not a setting. A cache: an unreadable file is ignored and rewritten. **No secrets**:
 /// meter keys (service, the account's key — `default` or `f-…`, never an e-mail address or an
 /// account id — and the meter id), the meters' display names, what notifications announced
-/// (levels, severities and reset times) and who each source was last signed in to, as the hash of
-/// `lastdrop_core::model::AccountIdentity` (accounts-spec §5).
+/// (levels, severities and reset times), who each source was last signed in to, as the hash of
+/// `lastdrop_core::model::AccountIdentity` (accounts-spec §5), and the release version an update
+/// notification announced.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct SavedState {
@@ -235,6 +237,11 @@ pub struct SavedState {
     /// knows the duplicates before the first job and notices a folder signed in to someone else
     /// meanwhile. Missing in a file of an older build: nothing known.
     pub identities: Vec<SavedIdentity>,
+    /// The release version an update notification announced last (`0.2.0`, updates-spec §1), so
+    /// a restart does not announce it again. Missing in a file of an older build, or not a
+    /// version: nothing announced.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub update_announced: Option<String>,
 }
 
 impl Default for SavedState {
@@ -244,6 +251,7 @@ impl Default for SavedState {
             seen: Vec::new(),
             notified: Vec::new(),
             identities: Vec::new(),
+            update_announced: None,
         }
     }
 }
@@ -295,7 +303,8 @@ pub type UnitMap = BTreeMap<MeterKey, Unit>;
 pub type SeenMap = BTreeMap<MeterKey, (MeterNames, bool)>;
 
 impl SavedState {
-    /// The state of `seen` (with the `units` of its balances), `notified` and `identities`.
+    /// The state of `seen` (with the `units` of its balances), `notified` and `identities`, with
+    /// no update announced.
     pub fn new(
         seen: &SeenMap,
         units: &UnitMap,
@@ -327,7 +336,13 @@ impl SavedState {
                     identity: identity.as_str().to_owned(),
                 })
                 .collect(),
+            update_announced: None,
         }
+    }
+
+    /// [`SavedState::update_announced`] as kept in memory.
+    pub fn update_announced(&self) -> Option<Version> {
+        self.update_announced.as_deref().and_then(Version::parse)
     }
 
     /// [`SavedState::identities`] as kept in memory, without entries that are not an identity.
@@ -543,13 +558,17 @@ mod tests {
                 code: "USD".to_owned(),
             },
         );
-        let state = SavedState::new(&seen, &units, &notified, &identities);
+        let state = SavedState {
+            update_announced: Some("0.2.0".to_owned()),
+            ..SavedState::new(&seen, &units, &notified, &identities)
+        };
         write_atomic(&path, &state_bytes(&state).expect("encode")).expect("write");
         let back = load_state(&path);
         assert_eq!(back, state);
         assert_eq!(back.seen_map(), seen);
         assert_eq!(back.notified_map(), notified);
         assert_eq!(back.identity_map(), identities);
+        assert_eq!(back.update_announced(), Version::parse("0.2.0"));
         // The file holds keys, names, what was announced and identity hashes only.
         let text = std::fs::read_to_string(&path).expect("read");
         assert!(text.contains("\"meter\": \"weekly:fable\""), "{text}");
@@ -559,10 +578,15 @@ mod tests {
             text.contains(&format!("\"identity\": \"{}\"", identity.as_str())),
             "{text}"
         );
-        // An older build's file has no notifications or identities: nothing known.
+        assert!(text.contains("\"update_announced\": \"0.2.0\""), "{text}");
+        // An older build's file has no notifications, identities or update: nothing known.
         std::fs::write(&path, br#"{ "version": 1, "seen": [] }"#).expect("write");
         assert_eq!(load_state(&path).notified_map(), NotifyMemory::new());
         assert_eq!(load_state(&path).identity_map(), IdentityMap::new());
+        assert_eq!(load_state(&path).update_announced(), None);
+        // A value that is not a version is nothing announced, not a broken file.
+        std::fs::write(&path, br#"{ "update_announced": "soon", "seen": [] }"#).expect("write");
+        assert_eq!(load_state(&path).update_announced(), None);
         // An entry that is not an identity is dropped, not the file.
         std::fs::write(
             &path,
