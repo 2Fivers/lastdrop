@@ -183,7 +183,7 @@ Status as of 2026-10-16.
 ## Settled
 
 - **Open source** (M5, 2026-10-17): Lastdrop is open source under MIT OR Apache-2.0 (the Rust
-  ecosystem's usual pair), copyright Adinosaur AB; contributions come in under the same terms
+  ecosystem's usual pair), copyright 2Fivers; contributions come in under the same terms
   (inbound = outbound, no CLA). Slint stays under its Royalty-free License 2.0, so a distributed
   build keeps `AboutSlint`. Supported through GitHub Sponsors and Buy Me a Coffee
   (`.github/FUNDING.yml`).

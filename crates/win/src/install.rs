@@ -33,7 +33,7 @@ use windows::core::{Interface, PCWSTR};
 pub const UNINSTALL_KEY: &str = r"Software\Microsoft\Windows\CurrentVersion\Uninstall\Lastdrop";
 
 /// The publisher shown in "Installed apps".
-pub const PUBLISHER: &str = "Adinosaur AB";
+pub const PUBLISHER: &str = "2Fivers";
 
 fn wide(s: &std::ffi::OsStr) -> Vec<u16> {
     s.encode_wide().chain(std::iter::once(0)).collect()

@@ -52,7 +52,7 @@ installer is per user, so a second local account is a clean machine for Lastdrop
 - [ ] Settings, accounts, history and themes are as before.
 - [ ] About Lastdrop shows the new version. Its title bar, Settings' and Usage history's show
       the app icon, and so do Alt+Tab and the taskbar button.
-- [ ] Settings ▸ Apps ▸ Installed apps lists Lastdrop with the version, Adinosaur AB and the
+- [ ] Settings ▸ Apps ▸ Installed apps lists Lastdrop with the version, 2Fivers and the
       icon; the Start menu entry has the icon.
 
 **B. A clean Windows user** (first run):
@@ -96,7 +96,7 @@ administrator terminal, then in a normal terminal (the install is per user)
 Submit with `wingetcreate submit dist\winget` (`winget install Microsoft.WingetCreate`; the
 first run signs in to GitHub). The first submission's pull request in `microsoft/winget-pkgs`
 asks for Microsoft's CLA: answer
-`@microsoft-github-policy-service agree company="Adinosaur AB"`. A moderator merges it after
+`@microsoft-github-policy-service agree company="2Fivers"`. A moderator merges it after
 the automated validation.
 
 ## Code signing

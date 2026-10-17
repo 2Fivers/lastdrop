@@ -67,7 +67,7 @@ the trademarks of their owners and are used only to say which service a reading 
 
 ## License
 
-Copyright © 2026 Adinosaur AB. Licensed under either of
+Copyright © 2026 2Fivers. Licensed under either of
 
 - Apache License, Version 2.0 ([LICENSE-APACHE](LICENSE-APACHE))
 - MIT license ([LICENSE-MIT](LICENSE-MIT))

@@ -10,7 +10,7 @@ exclude = ["spikes"]
 version = "0.1.0"
 edition = "2024"
 rust-version = "1.99"
-authors = ["Adinosaur AB"]
+authors = ["2Fivers"]
 license = "MIT OR Apache-2.0"
 publish = false
 

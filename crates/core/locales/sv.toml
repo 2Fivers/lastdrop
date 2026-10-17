@@ -494,7 +494,7 @@ lowercase_names = true
 "about.title" = "Om Lastdrop"
 "about.heading" = "Lastdrop {version}"
 "about.tagline" = "Hur mycket AI som finns kvar i tanken, ett klick bort."
-"about.copyright" = "© 2026 Adinosaur AB. Öppen källkod under licensen MIT eller Apache-2.0."
+"about.copyright" = "© 2026 2Fivers. Öppen källkod under licensen MIT eller Apache-2.0."
 # The licence names stay as their authors wrote them.
 "about.credits" = "Byggt med Slint (Royalty-free License 2.0), jiff, serde, ureq och windows-rs (MIT / Apache-2.0). Ingen telemetri: Lastdrop pratar bara med de tjänster vars användning den läser."
 "about.close" = "Stäng"
