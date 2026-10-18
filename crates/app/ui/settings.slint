@@ -1406,16 +1406,24 @@ export component SettingsWindow inherits Window {
                                                 root.pin-list-focused(1, focused);
                                             }
                                         }
-                                        if root.choosing-pins || root.pin-note != "": VerticalLayout {
-                                            padding-left: 16px + root.indent;
-                                            padding-right: 16px;
-                                            padding-bottom: 12px;
-                                            spacing: 4px;
-                                            if root.choosing-pins: PageNote {
-                                                text: root.texts.readout-choosing;
-                                            }
-                                            if root.pin-note != "": StatusNote {
-                                                text: root.pin-note;
+                                        // Placed by hand with a known width: in a layout that
+                                        // `if` creates, a wrapped note was measured as one line
+                                        // and its second line ran over the card's edge.
+                                        if root.choosing-pins || root.pin-note != "": Rectangle {
+                                            property <length> inner: self.width - 32px - root.indent;
+                                            height: pin-notes.preferred-height + 12px;
+                                            pin-notes := VerticalLayout {
+                                                x: 16px + root.indent;
+                                                y: 0px;
+                                                width: parent.inner;
+                                                height: self.preferred-height;
+                                                spacing: 4px;
+                                                if root.choosing-pins: PageNote {
+                                                    text: root.texts.readout-choosing;
+                                                }
+                                                if root.pin-note != "": StatusNote {
+                                                    text: root.pin-note;
+                                                }
                                             }
                                         }
                                     }

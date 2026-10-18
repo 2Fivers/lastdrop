@@ -157,6 +157,10 @@ pub struct RightCluster {
     pub glyph: Option<SeverityGlyph>,
     /// The text.
     pub text: String,
+    /// The text where the row has no room for [`RightCluster::text`] beside the whole meter
+    /// name (a long language): a reset's time alone (`Mon 09:00`, as the readout's `↺Mon`),
+    /// otherwise the text.
+    pub short: String,
 }
 
 /// A window meter row (F§4.4): name row 20 (name, right cluster, 12, value min 36), 4, bar
@@ -814,6 +818,7 @@ fn meter_row(a: &Assessment, service: &ServiceEval, cx: &TextContext<'_>) -> Met
     let plain = |words: String| RightCluster {
         kind: RightKind::Plain,
         glyph: None,
+        short: words.clone(),
         text: words,
     };
     let resets = |r| text(s, Msg::CardLineReset, &[("time", &card_time(r, cx))]);
@@ -822,12 +827,14 @@ fn meter_row(a: &Assessment, service: &ServiceEval, cx: &TextContext<'_>) -> Met
             kind: RightKind::Reset,
             glyph: None,
             text: resets(r),
+            short: card_time(r, cx),
         },
         None => plain(s.template(Msg::CardLineNoReset).to_owned()),
     };
     let say = |glyph: SeverityGlyph, words: String| RightCluster {
         kind: RightKind::Say,
         glyph: Some(glyph),
+        short: words.clone(),
         text: words,
     };
     let w = window(a);

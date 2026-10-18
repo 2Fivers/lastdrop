@@ -132,8 +132,8 @@ setups.
   use, slower when idle).
 - Notifications at thresholds (for example 80 % and 95 %) and when a window resets
   ([notifications-spec](design/notifications-spec.md)): built, with used up and low balances.
-- Language: English and Swedish to start: built, following Windows' display language unless
-  one is picked in settings. Every window is translated, the settings and about windows too;
+- Language: English, German, French, Spanish and Swedish: built, following Windows' display
+  language unless one is picked in settings. Every window is translated, the settings and about windows too;
   only Slint's own "Made with Slint" badge in the about window stays English. Another language
   is one TOML file in `crates/core/locales`, checked and compiled in by the build, with CLDR
   plural rules for whole numbers ([how](../crates/core/locales/README.md)).
@@ -172,7 +172,7 @@ Status as of 2026-10-16.
 | M1 | **First useful build** | Core, tray icon, taskbar readout, flyout, settings basics, autostart. Claude Code, Codex and Meshy. | Done, plus hover card, global hotkey, pause, and Settings and About in a dialog process of their own |
 | M2 | **More services** | Copilot, Cursor, Antigravity, OpenCode Go, Grok Build; declarative balance providers; multiple accounts for Claude Code and Codex. | Copilot, Cursor, Antigravity, OpenCode Go and Grok built ([providers-research](design/providers-research.md)); multiple accounts built ([accounts-spec](design/accounts-spec.md): who is signed in to each folder, the same account in two folders shown once, a folder signed in to someone else starts over, found folders, add and create accounts, hide personal info); declarative balance providers built ([custom-services-spec](design/custom-services-spec.md)). Done |
 | M3 | **Statistics** | History store, pace, forecasts, charts, threshold and reset notifications. | History store (90 days, one sample per meter per 5 minutes), pace, forecasts, a 14-day sparkline and notifications (levels, used up, resets, low balances) built; the usage history window built (each meter over time, use per day, active hours, [charts-spec](design/charts-spec.md)); tokens and cost per day and model built ([tokens-spec](design/tokens-spec.md)). Done |
-| M4 | **Make it yours** | Readout on every taskbar, themes and Theme Studio, languages, adaptive refresh. | Adaptive refresh built; English and Swedish, following Windows' display language or the setting, with numbers and times in the Windows regional format. The settings and about windows switch language too. The readout shows on every taskbar when chosen ([every-taskbar-spec](design/every-taskbar-spec.md); the multi-monitor matrix is a release check); themes and Theme Studio built ([themes-spec](design/themes-spec.md)). Done |
+| M4 | **Make it yours** | Readout on every taskbar, themes and Theme Studio, languages, adaptive refresh. | Adaptive refresh built; English, German, French, Spanish and Swedish, following Windows' display language or the setting, with numbers and times in the Windows regional format. The settings and about windows switch language too. The readout shows on every taskbar when chosen ([every-taskbar-spec](design/every-taskbar-spec.md); the multi-monitor matrix is a release check); themes and Theme Studio built ([themes-spec](design/themes-spec.md)). Done |
 | M5 | **v0.1** | Updates, code signing, installer; decide on distribution and licensing. | Installer (the app installs itself per user as `Lastdrop-Setup.exe`, with an "Installed apps" entry and `--uninstall`), updates built ([updates-spec](design/updates-spec.md)); releases built by GitHub Actions from the browser, with an install test and a provenance attestation ([RELEASING](RELEASING.md)); unsigned until a certificate exists; open source under MIT OR Apache-2.0; winget manifests prepared, the first release and its winget submission are left |
 
 ## Open questions

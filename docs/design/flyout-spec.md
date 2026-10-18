@@ -111,7 +111,7 @@ Mouse wheel, touchpad, keyboard: moving focus to a card scrolls it fully into vi
 | Part | Spec |
 |---|---|
 | Title | `Lastdrop`, Segoe UI Variable Text 14/20 semibold, TextPrimary, x = 16 |
-| Verdict | 8 px after the title, Segoe UI Variable Small 12/16, TextSecondary, one line, ellipsis. In trouble: severity glyph 12 (R§6.7) + 4 + text |
+| Verdict | 8 px after the title, Segoe UI Variable Small 12/16, TextSecondary, up to two lines (they fit the 40 px header), then an ellipsis: a long language's verdict wraps before it loses its time. In trouble: severity glyph 12 (R§6.7) + 4 + text |
 | Refresh | icon button 32 × 32, radius 4, U+E72C at 16 px TextPrimary, 4 px from the right edge, vertically centred |
 
 Verdict text (worst first: EXHAUSTED > CRITICAL > WARNING > STALE > OK; ` · N more` when more than one item is not OK):
@@ -195,6 +195,10 @@ Trouble line  margin-top 4, 12/16 TextSecondary, one line, ellipsis (only in the
 | LOADING | — ; value `–`; bar track only | — |
 | ENDED (R§3.9) | `Ended by 17:42` (TextSecondary, no glyph); value `–`; bar track only, no tick | — |
 
+- Where the whole name and the right cluster's full text do not fit the name row side by side (a long language:
+  `Woche · alle Modelle` beside `Zurücksetzung Mo 09:00`), a reset cluster shows its time alone after the glyph
+  (↺ `Mo 09:00`, as the readout's `↺Mon`), so the name keeps its words; other clusters keep their text and the
+  name takes the ellipsis. English and Swedish always fit.
 - The trouble line is one line with an ellipsis; the templates above fit 310 px in en-US with AM/PM (widest
   measured: `Nearly used up…` 308 px, `Empty ≈ 3:02 PM, 1 h 28 min before the 4:30 PM reset.` 296 px).
 - Flyout times and durations: the hover card's rule (R§5.0, R§8.2): Δ < 12 h → short time with the locale's AM/PM
@@ -215,7 +219,7 @@ Row 16:  [spent · burn 12/16, ellipsis] ........... 8 [until 12/16]
 | Unit | provider unit (`credits`), Segoe UI Variable Text 14/20, TextSecondary |
 | Forecast | Segoe UI Variable Text 14/20, TextPrimary, right-aligned: `≈ 9 days left` / `≈ 20 hours left` / `≈ 6 weeks left` / `More than 8 weeks left` / `No use in 7 days` / `Not enough history yet` (< 48 h); thresholds and flooring as R§5.5 (`< 2 days` → hours, `< 14 days` → days, `< 63 days` → weeks). WARNING/CRITICAL: severity glyph 12 + 4 + semibold. EXHAUSTED: ● `Empty` |
 | Spent · burn | `62% of last top-up used · 136 a day` (TextSecondary). The percentage is the readout's value for this meter (R§3.6), so the number in the taskbar is always findable here; ` · 136 a day` is omitted without a forecast. Left-aligned, ellipsis (it yields to Until) |
-| Until | `until ≈ Mon 19 Oct` (TextSecondary), 8 px from the left part, never cut; omitted without a forecast |
+| Until | `until ≈ Mon 19 Oct` (TextSecondary), 8 px from the left part, never cut; omitted without a forecast. Where the full spent · burn text and Until do not fit side by side (a long language), Until takes a 16 px row of its own under them, right-aligned |
 
 Rules for `days_left`, burn and severity: R§3.6–3.7 (warning < 7 days, critical < 2 days). A balance card has no bar:
 there is no window, so there is no pace to show.

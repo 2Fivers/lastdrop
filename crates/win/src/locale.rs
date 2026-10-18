@@ -1,10 +1,11 @@
 //! The user's regional format for the text grammar (R§5.2, R§5.6): `GetLocaleInfoEx(
 //! LOCALE_NAME_USER_DEFAULT, …)` for `LOCALE_SSHORTTIME`, `LOCALE_S1159`/`LOCALE_S2359`,
 //! `LOCALE_SABBREVDAYNAME1..7`, `LOCALE_SDAYNAME1..7`, `LOCALE_SABBREVMONTHNAME1..12`,
-//! `LOCALE_IPOSITIVEPERCENT`, `LOCALE_STHOUSAND`, `LOCALE_SDECIMAL`, and the day/month order from
-//! `LOCALE_SMONTHDAY` (falling back to `LOCALE_SLONGDATE`, then `LOCALE_SSHORTDATE`: sv-SE's short
-//! date is ISO `yyyy-MM-dd`, month first, while Swedes write `1 nov`). Re-read on
-//! `WM_SETTINGCHANGE` "intl". The user's own overrides in Settings › Region are honoured.
+//! `LOCALE_IPOSITIVEPERCENT`, `LOCALE_STHOUSAND`, `LOCALE_SDECIMAL`, and the day/month order and
+//! the day's suffix (de-DE `19. Okt`) from `LOCALE_SMONTHDAY` (falling back to `LOCALE_SLONGDATE`,
+//! then `LOCALE_SSHORTDATE`: sv-SE's short date is ISO `yyyy-MM-dd`, month first, while Swedes
+//! write `1 nov`). Re-read on `WM_SETTINGCHANGE` "intl". The user's own overrides in Settings ›
+//! Region are honoured.
 //!
 //! Anything Windows does not answer keeps the en-GB value of [`LocaleFormat::en_gb`].
 //!
@@ -59,11 +60,12 @@ pub fn read(tz: TimeZone) -> LocaleFormat {
             *slot = name;
         }
     }
-    if let Some(order) = [LOCALE_SMONTHDAY, LOCALE_SLONGDATE, LOCALE_SSHORTDATE]
+    if let Some((order, suffix)) = [LOCALE_SMONTHDAY, LOCALE_SLONGDATE, LOCALE_SSHORTDATE]
         .into_iter()
-        .find_map(|lctype| info(lctype).and_then(|p| day_month_order(&p)))
+        .find_map(|lctype| info(lctype).and_then(|p| day_month_format(&p)))
     {
         format.day_month = order;
+        format.day_suffix = suffix;
     }
     if let Some(pattern) = info(LOCALE_IPOSITIVEPERCENT).and_then(|s| percent_pattern(&s)) {
         format.percent = pattern;
@@ -232,9 +234,15 @@ fn parse_short_time(pattern: &str, am: String, pm: String) -> ClockFormat {
     }
 }
 
-/// Day/month order of a date pattern: the first day number (`d`/`dd`, not the `ddd`/`dddd`
-/// weekday names) against the first month (`M…`). `None` when either is missing.
-fn day_month_order(pattern: &str) -> Option<DayMonthOrder> {
+/// Day/month order of a date pattern and the day's suffix: the first day number (`d`/`dd`, not
+/// the `ddd`/`dddd` weekday names) against the first month (`M…`). `None` when either is missing.
+///
+/// The suffix is the text right after the day up to the first space (`.` in `d. MMMM`; nothing
+/// in `d 'de' MMMM`, whose word the abbreviated `19 oct.` leaves out). It counts only where it
+/// ends the pattern or leads to the month (not `, ` before the year in `MMMM d, yyyy`), and only
+/// when the month is a name: in numeric dates (`dd/MM/yyyy`, `M月d日`) the text after the day
+/// sits between numbers.
+fn day_month_format(pattern: &str) -> Option<(DayMonthOrder, String)> {
     let tokens = tokenize(pattern, &['d', 'M', 'y', 'g']);
     let day = tokens
         .iter()
@@ -242,11 +250,19 @@ fn day_month_order(pattern: &str) -> Option<DayMonthOrder> {
     let month = tokens
         .iter()
         .position(|t| matches!(t, Token::Field('M', _)))?;
-    Some(if day < month {
+    let order = if day < month {
         DayMonthOrder::DayMonth
     } else {
         DayMonthOrder::MonthDay
-    })
+    };
+    let month_name = matches!(tokens[month], Token::Field(_, 3..));
+    let suffix = match (tokens.get(day + 1), tokens.get(day + 2)) {
+        (Some(Token::Literal(text)), None | Some(Token::Field('M', _))) if month_name => {
+            text.chars().take_while(|c| !c.is_whitespace()).collect()
+        }
+        _ => String::new(),
+    };
+    Some((order, suffix))
 }
 
 /// `LOCALE_IPOSITIVEPERCENT`: 0 `# %`, 1 `#%`, 2 `%#`, 3 `% #`.
@@ -314,6 +330,14 @@ mod tests {
         assert_eq!((c.am.as_str(), c.pm.as_str()), ("AM", "PM"));
     }
 
+    fn day_month_order(pattern: &str) -> Option<DayMonthOrder> {
+        day_month_format(pattern).map(|(order, _)| order)
+    }
+
+    fn day_suffix(pattern: &str) -> Option<String> {
+        day_month_format(pattern).map(|(_, suffix)| suffix)
+    }
+
     #[test]
     fn day_month_order_skips_weekday_names_and_quotes() {
         assert_eq!(day_month_order("d MMMM"), Some(DayMonthOrder::DayMonth));
@@ -330,6 +354,30 @@ mod tests {
         assert_eq!(day_month_order("M'月'd'日'"), Some(DayMonthOrder::MonthDay));
         assert_eq!(day_month_order("yyyy-MM-dd"), Some(DayMonthOrder::MonthDay));
         assert_eq!(day_month_order("yyyy"), None);
+    }
+
+    #[test]
+    fn day_suffix_from_windows_month_day_patterns() {
+        // LOCALE_SMONTHDAY as Windows 11 gives it.
+        assert_eq!(day_suffix("d. MMMM").as_deref(), Some(".")); // de-DE
+        assert_eq!(day_suffix("d MMMM").as_deref(), Some("")); // fr-FR, en-GB
+        assert_eq!(day_suffix("d 'de' MMMM").as_deref(), Some("")); // es-ES
+        assert_eq!(day_suffix("'den 'd MMMM").as_deref(), Some("")); // sv-SE
+        assert_eq!(day_suffix("MMMM d").as_deref(), Some("")); // en-US
+        assert_eq!(day_suffix("MMMM d.").as_deref(), Some(".")); // hu-HU
+        assert_eq!(day_suffix("MMMM d 'd'.").as_deref(), Some("")); // lt-LT
+        assert_eq!(day_suffix("M月d日").as_deref(), Some("")); // ja-JP: numeric month
+        // The fallbacks: the long date keeps the day's suffix but not the separator before the
+        // year; the short date's text between numbers is no suffix.
+        assert_eq!(day_suffix("dddd, d. MMMM yyyy").as_deref(), Some("."));
+        assert_eq!(
+            day_suffix("dddd, d' de 'MMMM' de 'yyyy").as_deref(),
+            Some("")
+        );
+        assert_eq!(day_suffix("dddd, MMMM d, yyyy").as_deref(), Some(""));
+        assert_eq!(day_suffix("dd.MM.yyyy").as_deref(), Some(""));
+        assert_eq!(day_suffix("dd/MM/yyyy").as_deref(), Some(""));
+        assert_eq!(day_suffix("yyyy"), None);
     }
 
     #[test]

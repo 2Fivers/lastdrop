@@ -36,8 +36,8 @@ idle memory and flyout latency ([ADR 0001](docs/adr/0001-rust-and-slint-software
 The first useful build is done: tray icon, taskbar readout, flyout, hover card, settings and
 autostart, reading Claude, Codex, GitHub Copilot, Cursor, Google Antigravity, OpenCode Go, Grok and
 Meshy, with notifications when a limit
-reaches 80 % or 95 %, is used up or resets. It speaks English and Swedish, following Windows'
-display language unless one is picked in settings. Claude Code and Codex can have several
+reaches 80 % or 95 %, is used up or resets. It speaks English, German, French, Spanish and
+Swedish, following Windows' display language unless one is picked in settings. Claude Code and Codex can have several
 accounts, one per config folder. Services with a simple balance or usage API are described in a
 JSON file (DeepSeek, ElevenLabs and OpenRouter come with it). A usage history window charts each
 limit over the last 7, 30 or 90 days, the use per day and the hours of the week with the most use.

@@ -909,27 +909,43 @@ mod tests {
         }
     }
 
+    /// Each language's word for a spoken percentage (`{n} percent`).
+    fn percent_word(language: Language) -> &'static str {
+        match language {
+            Language::Swedish => "procent",
+            Language::German => "Prozent",
+            Language::French => "pour cent",
+            Language::Spanish => "por ciento",
+            _ => "percent",
+        }
+    }
+
     #[test]
     fn spoken_percentages_use_a_bare_number() {
         // `{pct}` carries the percent sign (`42%`), so `{pct} percent` would read "42% percent".
-        for m in Msg::ALL {
-            assert!(
-                !English.template(*m).contains("{pct} percent"),
-                "{}",
-                m.key()
-            );
-            assert!(
-                !Swedish.template(*m).contains("{pct} procent"),
-                "{}",
-                m.key()
-            );
+        for l in Language::ALL {
+            let word = percent_word(l);
+            for m in Msg::ALL {
+                let t = l.strings().template(*m);
+                for pct in ["{pct}", "{p}", "{e}", "{left}"] {
+                    assert!(!t.contains(&format!("{pct} {word}")), "{}: {t}", m.key());
+                }
+            }
         }
+    }
+
+    /// `t` ends in an abbreviation's full stop: one to four letters before it (`auj.`, `Tsd.`).
+    fn ends_in_abbreviation(t: &str) -> bool {
+        t.strip_suffix('.')
+            .and_then(|s| s.split(|c: char| !c.is_alphabetic()).next_back())
+            .is_some_and(|word| (1..=4).contains(&word.chars().count()))
     }
 
     #[test]
     fn every_language_keeps_the_shape_of_each_english_template() {
         // Fragments joined to other text keep their leading space or separator, sentences
         // their full stop, so a joined line reads in every language as the English one does.
+        // A text English ends without one may end in an abbreviation's (fr `auj.`, de `Tsd.`).
         for l in Language::ALL {
             let strings = l.strings();
             for m in Msg::ALL {
@@ -937,20 +953,44 @@ mod tests {
                 let what = format!("{}: {}: {t:?}", l.tag(), m.key());
                 assert_eq!(en.starts_with(' '), t.starts_with(' '), "{what}");
                 assert_eq!(en.starts_with(", "), t.starts_with(", "), "{what}");
-                assert_eq!(en.ends_with('.'), t.ends_with('.'), "{what}");
+                assert!(
+                    en.ends_with('.') == t.ends_with('.')
+                        || (!en.ends_with('.') && ends_in_abbreviation(t)),
+                    "{what}"
+                );
                 assert_eq!(en.ends_with('…'), t.ends_with('…'), "{what}");
             }
         }
+        assert!(ends_in_abbreviation("{n} Tsd."));
+        assert!(ends_in_abbreviation("auj."));
+        assert!(!ends_in_abbreviation("Connexion expirée."));
+        assert!(!ends_in_abbreviation("Hors ligne."));
     }
 
     #[test]
-    fn swedish_never_says_percent_left() {
+    fn no_language_says_percent_left() {
         // R§5: percent is always used. The only share left is the OK card's `{left}` at the
-        // reset, as in English.
-        for m in Msg::ALL {
-            let sv = Swedish.template(*m);
-            for pct in ["{pct}", "{p}", "{e}", "{n} procent"] {
-                assert!(!sv.contains(&format!("{pct} kvar")), "{}: {sv}", m.key());
+        // reset, as in English. `%` stands for a percentage in each language's ways of saying
+        // that something is left.
+        let left = |l: Language| -> &'static [&'static str] {
+            match l {
+                Language::Swedish => &["% kvar"],
+                Language::German => &["% übrig", "noch %", "Noch %"],
+                Language::French => &["% restant", "reste %", "Reste %"],
+                Language::Spanish => &["% restante", "queda %", "Queda %", "quedan %", "Quedan %"],
+                _ => &["% left"],
+            }
+        };
+        for l in Language::ALL {
+            let spoken = format!("{{n}} {}", percent_word(l));
+            for m in Msg::ALL {
+                let t = l.strings().template(*m);
+                for pct in ["{pct}", "{p}", "{e}", spoken.as_str()] {
+                    for pattern in left(l) {
+                        let said = pattern.replace('%', pct);
+                        assert!(!t.contains(&said), "{}: {}: {t}", l.tag(), m.key());
+                    }
+                }
             }
         }
     }
@@ -1002,6 +1042,48 @@ mod tests {
     }
 
     #[test]
+    fn german_french_and_spanish_serve_every_region() {
+        let ui = |tags: &[&str]| tags.iter().map(|t| (*t).to_owned()).collect::<Vec<_>>();
+        for (tags, language) in [
+            (["de-DE", "de-AT", "de-CH"], Language::German),
+            (["fr-FR", "fr-CA", "fr-BE"], Language::French),
+            (["es-ES", "es-MX", "es-419"], Language::Spanish),
+        ] {
+            for tag in tags {
+                assert_eq!(Language::from_tag(tag), Some(language), "{tag}");
+                // As Windows' display language, alone or before another one with a table.
+                assert_eq!(Language::resolve(None, &ui(&[tag])), language, "{tag}");
+                assert_eq!(
+                    Language::resolve(None, &ui(&[tag, "en-US"])),
+                    language,
+                    "{tag}"
+                );
+                assert_eq!(
+                    Language::resolve(None, &ui(&["qaa-DE", tag, "sv-SE"])),
+                    language,
+                    "{tag}"
+                );
+                // The setting wins over Windows.
+                assert_eq!(
+                    Language::resolve(Some("en"), &ui(&[tag])),
+                    Language::English
+                );
+            }
+        }
+        assert_eq!(
+            Language::resolve(Some("fr"), &ui(&["de-DE"])),
+            Language::French
+        );
+        assert_eq!(
+            Language::resolve(None, &ui(&["en-US", "de-DE"])),
+            Language::English
+        );
+        assert_eq!(Language::German.native_name(), "Deutsch");
+        assert_eq!(Language::French.native_name(), "Français");
+        assert_eq!(Language::Spanish.native_name(), "Español");
+    }
+
+    #[test]
     fn counts_take_the_language_plural_form() {
         assert_eq!(Swedish.plural(1), Plural::One);
         assert_eq!(Swedish.plural(0), Plural::Other);
@@ -1010,5 +1092,19 @@ mod tests {
         assert_eq!(count(&Swedish, PluralMsg::UnitMinute, 5), "5 minuter");
         assert_eq!(count(&English, PluralMsg::UnitWeek, 1), "1 week");
         assert_eq!(count(&English, PluralMsg::UnitWeek, 0), "0 weeks");
+        // French counts 0 with the singular (CLDR `zero-one`); German and Spanish only 1.
+        assert_eq!(French.plural(0), Plural::One);
+        assert_eq!(
+            count(&French, PluralMsg::SettingsAccountsCount, 0),
+            "0\u{A0}compte"
+        );
+        assert_eq!(
+            count(&French, PluralMsg::SettingsAccountsCount, 2),
+            "2\u{A0}comptes"
+        );
+        assert_eq!(count(&German, PluralMsg::UnitDay, 0), "0 Tage");
+        assert_eq!(count(&German, PluralMsg::UnitDay, 1), "1 Tag");
+        assert_eq!(count(&Spanish, PluralMsg::UnitDay, 1), "1 día");
+        assert_eq!(count(&Spanish, PluralMsg::UnitDay, 0), "0 días");
     }
 }

@@ -552,11 +552,7 @@ pub(super) mod tests {
             &mut EvalMemory::default(),
         );
         localize(&mut eval, language.strings());
-        let locale = if language == Language::Swedish {
-            LocaleFormat::sv_se(zone())
-        } else {
-            LocaleFormat::en_gb(zone())
-        };
+        let locale = LocaleFormat::of_language(language, zone());
         build_readout(
             &eval,
             &BuildContext {

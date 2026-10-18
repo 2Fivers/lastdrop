@@ -5,6 +5,8 @@
 
 use jiff::tz::TimeZone;
 
+use super::strings::Language;
+
 /// Clock format from `LOCALE_SSHORTTIME` (R§5.2): pattern contains `H` → 24 h; `HH` vs `H`
 /// decides the leading zero; `tt`/`t` is the AM/PM designator.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -64,6 +66,10 @@ pub struct LocaleFormat {
     pub months_abbrev: [String; 12],
     /// Day/month order in short dates.
     pub day_month: DayMonthOrder,
+    /// What Windows writes right after the day number in a day and month (`LOCALE_SMONTHDAY`, up
+    /// to the first space): `.` in de-DE (`d. MMMM` → `19. Okt`); empty in en, sv-SE, fr-FR and
+    /// es-ES, whose `d 'de' MMMM` puts a word there that the abbreviated `19 oct.` leaves out.
+    pub day_suffix: String,
     /// Percent sign placement.
     pub percent: PercentPattern,
     /// Digit grouping separator (`LOCALE_STHOUSAND`: `,` en; U+202F sv-SE, R§5.6).
@@ -105,6 +111,7 @@ impl LocaleFormat {
                 "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
             ]),
             day_month: DayMonthOrder::DayMonth,
+            day_suffix: String::new(),
             percent: PercentPattern::NumberPercent,
             group_separator: ",".to_owned(),
             decimal_separator: ".".to_owned(),
@@ -153,9 +160,124 @@ impl LocaleFormat {
                 "dec",
             ]),
             day_month: DayMonthOrder::DayMonth,
+            day_suffix: String::new(),
             percent: PercentPattern::NumberSpacePercent,
             group_separator: "\u{202F}".to_owned(),
             decimal_separator: ",".to_owned(),
+        }
+    }
+
+    /// de-DE as Windows gives it: 24 h (`09:00`), `Mo`, `19. Mrz`, `42 %` with U+202F, `1.240`
+    /// and `4,2`.
+    pub fn de_de(tz: TimeZone) -> LocaleFormat {
+        LocaleFormat {
+            name: "de-DE".to_owned(),
+            tz,
+            clock: ClockFormat {
+                hour24: true,
+                leading_zero: true,
+                separator: ":".to_owned(),
+                am: String::new(),
+                pm: String::new(),
+                designator_first: false,
+            },
+            weekdays_abbrev: strings(["Mo", "Di", "Mi", "Do", "Fr", "Sa", "So"]),
+            weekdays_full: strings([
+                "Montag",
+                "Dienstag",
+                "Mittwoch",
+                "Donnerstag",
+                "Freitag",
+                "Samstag",
+                "Sonntag",
+            ]),
+            months_abbrev: strings([
+                "Jan", "Feb", "Mrz", "Apr", "Mai", "Jun", "Jul", "Aug", "Sep", "Okt", "Nov", "Dez",
+            ]),
+            day_month: DayMonthOrder::DayMonth,
+            day_suffix: ".".to_owned(),
+            percent: PercentPattern::NumberSpacePercent,
+            group_separator: ".".to_owned(),
+            decimal_separator: ",".to_owned(),
+        }
+    }
+
+    /// fr-FR as Windows gives it: 24 h (`09:00`), `lun.`, `févr.`, `42 %` and `1 240` with
+    /// U+202F, `4,2`.
+    pub fn fr_fr(tz: TimeZone) -> LocaleFormat {
+        LocaleFormat {
+            name: "fr-FR".to_owned(),
+            tz,
+            clock: ClockFormat {
+                hour24: true,
+                leading_zero: true,
+                separator: ":".to_owned(),
+                am: String::new(),
+                pm: String::new(),
+                designator_first: false,
+            },
+            weekdays_abbrev: strings(["lun.", "mar.", "mer.", "jeu.", "ven.", "sam.", "dim."]),
+            weekdays_full: strings([
+                "lundi", "mardi", "mercredi", "jeudi", "vendredi", "samedi", "dimanche",
+            ]),
+            months_abbrev: strings([
+                "janv.", "févr.", "mars", "avr.", "mai", "juin", "juil.", "août", "sept.", "oct.",
+                "nov.", "déc.",
+            ]),
+            day_month: DayMonthOrder::DayMonth,
+            day_suffix: String::new(),
+            percent: PercentPattern::NumberSpacePercent,
+            group_separator: "\u{202F}".to_owned(),
+            decimal_separator: ",".to_owned(),
+        }
+    }
+
+    /// es-ES as Windows gives it: 24 h without a leading zero (`9:00`), `lu.`, `ene.`, `42 %`
+    /// with U+202F, `1.240` and `4,2`.
+    pub fn es_es(tz: TimeZone) -> LocaleFormat {
+        LocaleFormat {
+            name: "es-ES".to_owned(),
+            tz,
+            clock: ClockFormat {
+                hour24: true,
+                leading_zero: false,
+                separator: ":".to_owned(),
+                am: String::new(),
+                pm: String::new(),
+                designator_first: false,
+            },
+            weekdays_abbrev: strings(["lu.", "ma.", "mi.", "ju.", "vi.", "sá.", "do."]),
+            weekdays_full: strings([
+                "lunes",
+                "martes",
+                "miércoles",
+                "jueves",
+                "viernes",
+                "sábado",
+                "domingo",
+            ]),
+            months_abbrev: strings([
+                "ene.", "feb.", "mar.", "abr.", "may.", "jun.", "jul.", "ago.", "sep.", "oct.",
+                "nov.", "dic.",
+            ]),
+            day_month: DayMonthOrder::DayMonth,
+            day_suffix: String::new(),
+            percent: PercentPattern::NumberSpacePercent,
+            group_separator: ".".to_owned(),
+            decimal_separator: ",".to_owned(),
+        }
+    }
+
+    /// The regional format of `language`'s main region (en-GB for English and for a language
+    /// without a preset), for the demo and the previews. The app itself reads Windows' format,
+    /// which is a setting apart from the language.
+    pub fn of_language(language: Language, tz: TimeZone) -> LocaleFormat {
+        match language {
+            Language::Swedish => LocaleFormat::sv_se(tz),
+            Language::German => LocaleFormat::de_de(tz),
+            Language::French => LocaleFormat::fr_fr(tz),
+            Language::Spanish => LocaleFormat::es_es(tz),
+            _ => LocaleFormat::en_gb(tz),
         }
     }
 }
