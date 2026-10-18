@@ -14,6 +14,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use lastdrop_app::demo::Demo;
+use lastdrop_app::dialog::CheckResult;
 use lastdrop_app::settings_accounts::folder_id;
 use lastdrop_app::settings_edits::MemoryOutside;
 use lastdrop_app::settings_window::{self as sw, Focus, Inputs};
@@ -280,6 +281,31 @@ fn settings_pages_instant_apply_and_deep_links() {
         hotkey(false, false, true, false, "F7")
     );
 
+    // ---- Check now (settings-spec §4): Tab passes the daily check to Check now; Space asks,
+    // and the version card says so until the tray process answers, then what it found. Without
+    // an answer within a minute, the notification is to say it.
+    press(&window, Key::Tab);
+    press(&window, Key::Tab);
+    assert_eq!(window.get_updates_status(), "");
+    press(&window, " ");
+    assert_eq!(window.get_updates_status(), "Checking for updates…");
+    sw::check_answered(CheckResult::UpToDate);
+    assert_eq!(window.get_updates_status(), "You have the newest version.");
+    press(&window, " ");
+    assert_eq!(window.get_updates_status(), "Checking for updates…");
+    wait(&window, 59_000);
+    assert_eq!(window.get_updates_status(), "Checking for updates…");
+    wait(&window, 1_000);
+    assert_eq!(
+        window.get_updates_status(),
+        "Asked. A notification says what was found."
+    );
+    // A late answer still says what was found.
+    sw::check_answered(CheckResult::Failed);
+    assert_eq!(
+        window.get_updates_status(),
+        "Couldn't check for updates. The notification says why."
+    );
     // Ctrl+Tab puts the focus back in the pane.
     ctrl(&window, Key::Tab);
     assert_eq!(window.get_page(), sw::PAGE_SERVICES);

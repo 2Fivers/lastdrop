@@ -367,10 +367,13 @@ enum SettingsView {
     Pins,
     /// General with a refused shortcut, and the InfoBar of a write that failed on closing.
     Errors,
+    /// General scrolled to its end: the shortcut on (Ctrl + Alt + L) and Check now's answer, a
+    /// newer version.
+    Updates,
 }
 
 /// The settings window's previews: each page, then the states, at both sizes.
-const SETTINGS_VIEWS: [(&str, SettingsView); 8] = [
+const SETTINGS_VIEWS: [(&str, SettingsView); 9] = [
     (
         "services",
         SettingsView::Page(crate::settings_window::PAGE_SERVICES),
@@ -391,6 +394,7 @@ const SETTINGS_VIEWS: [(&str, SettingsView); 8] = [
     ("keys", SettingsView::Keys),
     ("pins", SettingsView::Pins),
     ("errors", SettingsView::Errors),
+    ("updates", SettingsView::Updates),
 ];
 
 /// Windows' "Night sky" contrast colours (the `--contrast` preview).
@@ -525,6 +529,18 @@ fn render_settings(
                     window.invoke_interval_selected(1);
                     // Closing commits at once: the shortcut is refused, the write fails.
                     window.invoke_dismiss();
+                }
+                SettingsView::Updates => {
+                    window.set_hotkey_enabled(true);
+                    window.invoke_hotkey_edited();
+                    window.invoke_check_updates();
+                    let mut newer = lastdrop_core::update::Version::current();
+                    newer.minor += 1;
+                    newer.patch = 0;
+                    sw::check_answered(crate::dialog::CheckResult::available(&newer));
+                    // Laid out first, so the end is where the shortcut's row has put it.
+                    let _ = window.window().take_snapshot();
+                    window.invoke_show_general_end();
                 }
             }
             slint::platform::update_timers_and_animations();

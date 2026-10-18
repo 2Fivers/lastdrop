@@ -529,7 +529,7 @@ export component SettingsWindow inherits Window {
     in property <string> hotkey-preview;
     in property <string> hotkey-error;
     in property <bool> hotkey-retry;
-    // Updates (updates-spec §1): the daily check, and what "Check now" did.
+    // Updates (updates-spec §1): the daily check, and what "Check now" found so far.
     in-out property <bool> updates-check;
     in property <string> updates-status;
 
@@ -651,6 +651,12 @@ export component SettingsWindow inherits Window {
         if (!focus-found) {
             nav.focus();
         }
+    }
+
+    // The --preview-settings render of General's end: the shortcut and the updates.
+    public function show-general-end() {
+        root.select-page(3);
+        general-sv.content-y = min(0px, general-sv.visible-height - general-page.preferred-height);
     }
 
     // Scrolls the Services page so `y` (a position in it) is 12 px below the top.
@@ -1723,6 +1729,7 @@ export component SettingsWindow inherits Window {
                                     CardRow {
                                         header: root.texts.version;
                                         description: root.updates-status;
+                                        live: true;
                                         Button {
                                             text: root.texts.updates-now;
                                             clicked => {

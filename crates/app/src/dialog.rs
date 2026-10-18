@@ -18,6 +18,8 @@
 //! - What the dialog changed reaches the tray process as one posted message ([`notify`],
 //!   [`Changes`]): it re-reads `settings.json` and applies it, or lifts the sign-in stop of a
 //!   service whose API key was saved or removed.
+//! - Settings ▸ Check now is answered the other way: the tray process posts what it found to the
+//!   dialog listener ([`answer_check`], [`CheckResult`]), and the version card shows it.
 //!
 //! Threading: the main thread runs the Slint event loop and every window; the log has its own
 //! writer thread ([`crate::logger`], file `settings.log`).
@@ -31,6 +33,7 @@ use lastdrop_core::custom;
 use lastdrop_core::grammar::strings::text;
 use lastdrop_core::grammar::{Language, Msg, Strings};
 use lastdrop_core::model::{ProviderId, fnv1a64};
+use lastdrop_core::update::Version;
 use lastdrop_win::single_instance::{self, Instance, InstanceGuard};
 use slint::ComponentHandle;
 use slint::winit_030::WinitWindowAccessor;
@@ -51,6 +54,95 @@ pub const FORWARD_WAIT: Duration = Duration::from_secs(2);
 /// dialog's: its low byte is none of theirs, so [`DialogKind::from_wparam`] finds nothing for it,
 /// and a dialog process from before it (0.1.x) logs it as an unknown request and goes on.
 pub const CLOSE_REQUEST: usize = 0xFF;
+
+/// The low byte of the `WPARAM` that answers Settings ▸ Check now ([`CheckResult::to_wparam`]).
+/// Like [`CLOSE_REQUEST`] it is no dialog's, so a dialog process from before it (0.1.x) logs it
+/// as an unknown request and goes on.
+pub const CHECK_ANSWER: usize = 0xFE;
+
+/// What Settings ▸ Check now found (updates-spec §1), as the tray process answers the dialog
+/// process ([`answer_check`]); the notification says it too, with the details.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum CheckResult {
+    /// This is the newest version.
+    UpToDate,
+    /// A newer version is out: which one, `None` when its number does not fit the message
+    /// ([`CheckResult::to_wparam`]).
+    Available(Option<Version>),
+    /// The check failed.
+    Failed,
+}
+
+impl CheckResult {
+    /// Where the outcome is (bits 8–9: 1 up to date, 2 available, 3 failed).
+    const OUTCOME_SHIFT: u32 = 8;
+    /// Where the version of an available release is: major in bits 10–15, minor in 16–23, patch
+    /// in 24–31 (all zero: not said). 32 bits, so the message is the same in a 32-bit build.
+    const MAJOR_SHIFT: u32 = 10;
+    /// See [`CheckResult::MAJOR_SHIFT`].
+    const MINOR_SHIFT: u32 = 16;
+    /// See [`CheckResult::MAJOR_SHIFT`].
+    const PATCH_SHIFT: u32 = 24;
+
+    /// A newer version, `version` (without a pre-release part, which the message does not carry).
+    pub fn available(version: &Version) -> CheckResult {
+        CheckResult::Available(Some(Version {
+            pre: None,
+            ..version.clone()
+        }))
+    }
+
+    /// The answer as the dialog request's `WPARAM`: [`CHECK_ANSWER`] in the low byte, then the
+    /// outcome and the version. A version past 63.255.255 is not said.
+    pub fn to_wparam(&self) -> usize {
+        let (outcome, version) = match self {
+            CheckResult::UpToDate => (1, 0),
+            CheckResult::Available(version) => {
+                let packed = version
+                    .as_ref()
+                    .filter(|v| v.major < 64 && v.minor < 256 && v.patch < 256)
+                    .and_then(|v| {
+                        let [major, minor, patch] =
+                            [v.major, v.minor, v.patch].map(|n| usize::try_from(n).ok());
+                        Some(
+                            major? << CheckResult::MAJOR_SHIFT
+                                | minor? << CheckResult::MINOR_SHIFT
+                                | patch? << CheckResult::PATCH_SHIFT,
+                        )
+                    })
+                    .unwrap_or(0);
+                (2, packed)
+            }
+            CheckResult::Failed => (3, 0),
+        };
+        CHECK_ANSWER | outcome << CheckResult::OUTCOME_SHIFT | version
+    }
+
+    /// The answer of a posted `WPARAM`; `None` for anything else (a dialog request).
+    pub fn from_wparam(wparam: usize) -> Option<CheckResult> {
+        if wparam & 0xFF != CHECK_ANSWER {
+            return None;
+        }
+        let field = |shift: u32, bits: u32| {
+            u32::try_from((wparam >> shift) & ((1 << bits) - 1)).unwrap_or(0)
+        };
+        match field(CheckResult::OUTCOME_SHIFT, 2) {
+            1 => Some(CheckResult::UpToDate),
+            2 => {
+                let version = Version {
+                    major: field(CheckResult::MAJOR_SHIFT, 6),
+                    minor: field(CheckResult::MINOR_SHIFT, 8),
+                    patch: field(CheckResult::PATCH_SHIFT, 8),
+                    pre: None,
+                };
+                let said = version.major + version.minor + version.patch > 0;
+                Some(CheckResult::Available(said.then_some(version)))
+            }
+            3 => Some(CheckResult::Failed),
+            _ => None,
+        }
+    }
+}
 
 /// A dialog of the dialog process.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -276,13 +368,29 @@ pub fn spawn(kind: DialogKind) -> std::io::Result<()> {
     Ok(())
 }
 
-/// From the dialog process: tells the tray process what changed. Not running is fine: it reads
-/// `settings.json` and Credential Manager when it starts.
-pub fn notify(changes: Changes) {
+/// From the dialog process: tells the tray process what changed; whether it was told. Not
+/// running is fine: it reads `settings.json` and Credential Manager when it starts.
+pub fn notify(changes: Changes) -> bool {
     match single_instance::signal_settings_changed(changes.to_wparam()) {
+        Ok(true) => true,
+        Ok(false) => {
+            log::info!("Lastdrop is not running; it reads the change when it starts");
+            false
+        }
+        Err(e) => {
+            log::warn!("cannot tell Lastdrop about the change: {e}");
+            false
+        }
+    }
+}
+
+/// From the tray process: tells the dialog process what Settings ▸ Check now found. No dialog
+/// process (the settings window closed meanwhile) is fine: the notification says it too.
+pub fn answer_check(result: &CheckResult) {
+    match single_instance::post_dialog(result.to_wparam()) {
         Ok(true) => {}
-        Ok(false) => log::info!("Lastdrop is not running; it reads the change when it starts"),
-        Err(e) => log::warn!("cannot tell Lastdrop about the change: {e}"),
+        Ok(false) => log::info!("update: no settings window to answer"),
+        Err(e) => log::warn!("update: cannot answer the settings window: {e}"),
     }
 }
 
@@ -353,6 +461,11 @@ fn run_dialogs(guard: &InstanceGuard, paths: &Paths, kind: DialogKind) -> Result
             if wparam == CLOSE_REQUEST {
                 log::info!("asked to close (an install or uninstall)");
                 close_all();
+                return;
+            }
+            if let Some(result) = CheckResult::from_wparam(wparam) {
+                log::info!("update check answered: {result:?}");
+                settings_window::check_answered(result);
                 return;
             }
             match DialogKind::from_wparam(wparam) {
@@ -575,6 +688,39 @@ mod tests {
             .chain(DialogKind::ALL)
         {
             assert_ne!(kind.to_wparam() & 0xFF, CLOSE_REQUEST & 0xFF, "{kind:?}");
+            assert_ne!(kind.to_wparam() & 0xFF, CHECK_ANSWER, "{kind:?}");
+        }
+        assert_eq!(CheckResult::from_wparam(CLOSE_REQUEST), None);
+    }
+
+    #[test]
+    fn check_answers_round_trip_and_are_no_dialog() {
+        let v = |s: &str| Version::parse(s).expect("a version");
+        for result in [
+            CheckResult::UpToDate,
+            CheckResult::Failed,
+            CheckResult::available(&v("0.2.0")),
+            CheckResult::available(&v("63.255.255")),
+            CheckResult::available(&v("1.0.7")),
+        ] {
+            let wparam = result.to_wparam();
+            assert_eq!(CheckResult::from_wparam(wparam), Some(result.clone()));
+            assert_eq!(DialogKind::from_wparam(wparam), None, "{result:?}");
+            assert!(u32::try_from(wparam).is_ok(), "fits a 32-bit WPARAM");
+        }
+        assert_eq!(
+            CheckResult::from_wparam(CheckResult::available(&v("0.3.0-rc.1")).to_wparam()),
+            Some(CheckResult::available(&v("0.3.0"))),
+            "the pre-release part is not sent"
+        );
+        assert_eq!(
+            CheckResult::from_wparam(CheckResult::available(&v("64.0.0")).to_wparam()),
+            Some(CheckResult::Available(None)),
+            "a number that does not fit is not said"
+        );
+        assert_eq!(CheckResult::from_wparam(CHECK_ANSWER), None, "no outcome");
+        for kind in DialogKind::ALL {
+            assert_eq!(CheckResult::from_wparam(kind.to_wparam()), None);
         }
     }
 
