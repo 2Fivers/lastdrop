@@ -2459,7 +2459,7 @@ pub fn card_data(card: &CardModel, scale: f64, menu: &CardMenu) -> ui::CardData 
         age: card.age.as_str().into(),
         msg_kind,
         msg_lead: msg_lead.into(),
-        msg_text: msg_text.into(),
+        msg_text: wrapping(msg_text),
         msg_action: msg_action.into(),
         meters: model(Vec::new()),
         is_balance: false,
@@ -2511,7 +2511,7 @@ pub fn card_data(card: &CardModel, scale: f64, menu: &CardMenu) -> ui::CardData 
 pub fn set_flyout(window: &ui::Flyout, model: &FlyoutModel, scale: f64, menus: &[CardMenu]) {
     let empty = CardMenu::default();
     window.set_title_text(model.title.as_str().into());
-    window.set_verdict_text(model.verdict.text.as_str().into());
+    window.set_verdict_text(wrapping(&model.verdict.text));
     window.set_verdict_glyph(severity_glyph(model.verdict.glyph));
     window.set_refreshing(model.refreshing);
     window.set_refresh_name(model.refresh_name.as_str().into());
@@ -2592,11 +2592,24 @@ fn card_meter_data(meter: &CardMeter, scale: f64) -> ui::CardMeterData {
     }
 }
 
+/// A translated text for a Slint `Text` that wraps. Slint 1.18.1 lays text out with parley
+/// 0.11, which hangs a no-break space (U+00A0) that overflows the line as it hangs a space, and
+/// breaks after it: `reicht nur noch 11` / `min`. A four-per-em space (U+2005, about as wide)
+/// is no space to parley, and the word joiner (U+2060) after it takes away its break
+/// opportunity (UAX #14 LB11), so a number keeps its unit and a French colon its word.
+pub fn wrapping(text: &str) -> SharedString {
+    if text.contains('\u{A0}') {
+        text.replace('\u{A0}', "\u{2005}\u{2060}").into()
+    } else {
+        text.into()
+    }
+}
+
 /// One "Also tracked" line.
 fn also_line_data(line: &AlsoLine) -> ui::AlsoLineData {
     ui::AlsoLineData {
         glyph: glyph_data(&line.glyph),
-        label: line.label.as_str().into(),
+        label: wrapping(&line.label),
         value: line.value.as_str().into(),
         value_semibold: line.value_semibold,
         time_glyph: match line.time.glyph {
@@ -2621,8 +2634,8 @@ fn also_line_data(line: &AlsoLine) -> ui::AlsoLineData {
 /// line, the sentence on); the window then drops lines that do not fit (R§8.1).
 pub fn set_hover_card(window: &ui::HoverCard, model: &HoverCardModel, scale: f64) {
     window.set_header_glyph(severity_glyph(model.header.glyph));
-    window.set_title_text(model.header.title.as_str().into());
-    window.set_sentence(model.sentence.as_str().into());
+    window.set_title_text(wrapping(&model.header.title));
+    window.set_sentence(wrapping(&model.sentence));
     window.set_show_sentence(true);
     window.set_services(model_rc(
         model
@@ -2737,6 +2750,26 @@ mod tests {
     use super::*;
     use lastdrop_core::grammar::English;
     use lastdrop_core::model::{AccountKey, MeterId, ProviderId};
+
+    #[test]
+    fn a_wrapping_text_keeps_its_no_break_spaces_together() {
+        let kept = "\u{2005}\u{2060}";
+        assert_eq!(
+            wrapping("Claude\u{A0}: seit 47\u{A0}min").as_str(),
+            format!("Claude{kept}: seit 47{kept}min")
+        );
+        assert_eq!(
+            wrapping("runs out in 11 min").as_str(),
+            "runs out in 11 min"
+        );
+
+        // The German last credit's title, which wrapped between `11` and `min`.
+        let demo = crate::demo::Demo::scenario(false, crate::demo::Scenario::LastCredit)
+            .in_language(lastdrop_core::grammar::Language::German);
+        let title = demo.hover_card().header.title;
+        assert!(title.ends_with("11\u{A0}min"), "{title}");
+        assert!(wrapping(&title).ends_with(&format!("11{kept}min")));
+    }
 
     #[test]
     fn minute_tick_is_the_next_boundary_plus_250_ms() {
