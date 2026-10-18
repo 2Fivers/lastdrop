@@ -306,9 +306,10 @@ fn card_balance(a: &Assessment, b: &BalanceAssessment, cx: &TextContext<'_>) -> 
                 &[("burn", &amount(stats.burn_per_day, cx.locale))],
             )
         }),
+        // An empty balance keeps its rate but has no date to last until.
         until: stats
             .t_out
-            .filter(|_| has_forecast)
+            .filter(|_| has_forecast && !stats.exhausted)
             .map(|t| text(s, Msg::CardBalanceUntil, &[("date", &card_date(t, cx))])),
     }
 }

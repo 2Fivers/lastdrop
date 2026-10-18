@@ -219,7 +219,7 @@ Row 16:  [spent · burn 12/16, ellipsis] ........... 8 [until 12/16]
 | Unit | provider unit (`credits`), Segoe UI Variable Text 14/20, TextSecondary |
 | Forecast | Segoe UI Variable Text 14/20, TextPrimary, right-aligned: `≈ 9 days left` / `≈ 20 hours left` / `≈ 6 weeks left` / `More than 8 weeks left` / `No use in 7 days` / `Not enough history yet` (< 48 h); thresholds and flooring as R§5.5 (`< 2 days` → hours, `< 14 days` → days, `< 63 days` → weeks). WARNING/CRITICAL: severity glyph 12 + 4 + semibold. EXHAUSTED: ● `Empty` |
 | Spent · burn | `62% of last top-up used · 136 a day` (TextSecondary). The percentage is the readout's value for this meter (R§3.6), so the number in the taskbar is always findable here; ` · 136 a day` is omitted without a forecast. Left-aligned, ellipsis (it yields to Until) |
-| Until | `until ≈ Mon 19 Oct` (TextSecondary), 8 px from the left part, never cut; omitted without a forecast. Where the full spent · burn text and Until do not fit side by side (a long language), Until takes a 16 px row of its own under them, right-aligned |
+| Until | `until ≈ Mon 19 Oct` (TextSecondary), 8 px from the left part, never cut; omitted without a forecast and when EXHAUSTED (the burn stays: it says how fast a top-up goes). Where the full spent · burn text and Until do not fit side by side (a long language), Until takes a 16 px row of its own under them, right-aligned |
 
 Rules for `days_left`, burn and severity: R§3.6–3.7 (warning < 7 days, critical < 2 days). A balance card has no bar:
 there is no window, so there is no pace to show.
@@ -337,7 +337,7 @@ Digits are tabular (R§5.6). The spike shows `Segoe UI Variable Text` resolves i
 | Refresh | button | `Refresh all services` |
 | Card | groupbox (or list-item in a list if unavailable) | `Claude, Max plan, updated 1 minute ago` (+ `, offline` / `, sign-in expired`) |
 | Meter row | progress-indicator | label = readout row sentence (R§11), value `42`, min 0, max 100 |
-| Balance body | text | `1,240 credits left, 62 percent of the last top-up used, about 9 days at 136 a day` |
+| Balance body | text | `1,240 credits left, 62 percent of the last top-up used, about 9 days at 136 a day`; without a forecast or EXHAUSTED the row sentence (`Meshy: 0 credits left.`) |
 | Sparkline | image | §6 |
 | Message hyperlink | button | its text |
 | History | button | `Usage history` |

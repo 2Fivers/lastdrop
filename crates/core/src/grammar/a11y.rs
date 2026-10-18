@@ -71,9 +71,11 @@ pub(crate) fn balance_sentence(
     };
     let amount = amount(b.amount, cx.locale);
     let unit = unit_word(&b.unit, b.amount, cx.strings);
+    // An empty balance has no time left to speak of (`days_left` is 0, not "about 1 minute").
     let duration = b
         .stats
         .days_left
+        .filter(|_| !b.stats.exhausted)
         .and_then(|d| duration_from_hours(d * 24.0))
         .map(|d| spoken_duration(d, cx.strings));
     match duration {

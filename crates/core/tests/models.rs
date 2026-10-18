@@ -594,6 +594,81 @@ mod balance_units {
     }
 }
 
+// ---- the last credit and an empty balance -------------------------------------------------------
+
+mod last_credit {
+    use super::*;
+    use lastdrop_core::grammar::Language;
+    use lastdrop_core::grammar::a11y::row_sentence;
+
+    /// Meshy alone at `amount` credits after R§13's history (136 a day), at `now()`.
+    fn meshy_at(amount: f64) -> (Evaluation, History, Settings) {
+        let settings = settings_with(&[ProviderId::Meshy]);
+        let mut h = History::new();
+        h.insert(key(ProviderId::Meshy, "credits"), meshy_history(amount));
+        let eval = eval_once(&[Svc::new(meshy(amount, now()))], &settings, &h, now());
+        (eval, h, settings)
+    }
+
+    fn context<'a>(
+        l: Language,
+        locale: &'a LocaleFormat,
+        settings: &'a Settings,
+    ) -> BuildContext<'a> {
+        BuildContext {
+            text: TextContext {
+                now: now(),
+                time_style: TimeStyle::Clock,
+                locale,
+                strings: l.strings(),
+            },
+            settings,
+        }
+    }
+
+    /// An empty balance says what is left and nothing about time: its `days_left` is 0, which
+    /// the duration's floor turned into "about 1 minute". The rate stays, the date it lasts
+    /// until goes.
+    #[test]
+    fn an_empty_balance_claims_no_time_left() {
+        const SAID: [(Language, &str, &str); 5] = [
+            (Language::English, "Meshy: 0 credits left.", "Empty"),
+            (Language::Swedish, "Meshy: 0 krediter kvar.", "Tomt"),
+            (Language::German, "Meshy: noch 0 Credits.", "Leer"),
+            (Language::French, "Meshy\u{A0}: reste 0 crédit.", "Vide"),
+            (Language::Spanish, "Meshy: saldo de 0 créditos.", "Agotado"),
+        ];
+        let (eval, h, settings) = meshy_at(0.0);
+        let (service, a) = eval
+            .assessment(&key(ProviderId::Meshy, "credits"))
+            .expect("assessed");
+        assert_eq!(a.state, RowState::Exhausted);
+        for (l, said, empty) in SAID {
+            let locale = LocaleFormat::of_language(l, zone());
+            let cx = context(l, &locale, &settings);
+            let what = l.tag();
+            assert_eq!(row_sentence(a, service, &cx.text), said, "{what}");
+
+            let flyout = build_flyout(&eval, &h, false, &cx);
+            let CardBody::Balance(b) = &flyout.cards[0].body else {
+                panic!("balance expected");
+            };
+            assert_eq!(b.forecast, empty, "{what}");
+            assert_eq!(b.a11y, said, "{what}");
+            assert_eq!(b.until, None, "{what}");
+            assert!(b.spent.contains("136"), "{what}: {}", b.spent);
+
+            let card = build_hover_card(&eval, HoverAnchor::Readout, &eval.readout_rows, &cx);
+            assert_eq!(card.sentence, said, "{what}");
+            let CardMeter::Balance(m) = &card.services[0].meters[0] else {
+                panic!("balance expected");
+            };
+            assert_eq!(m.until, None, "{what}");
+            assert!(m.rate_line.is_some(), "{what}");
+        }
+    }
+}
+
 // ---- readout model ---------------------------------------------------------------------------
 
 mod readout {

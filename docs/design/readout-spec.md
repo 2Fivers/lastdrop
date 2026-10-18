@@ -695,7 +695,7 @@ A tooltip-style card over the readout or the tray icon; the readout's legend.
 | Sentence | margin-top 4; 12/16 regular, TextPrimary; wraps; templates in Appendix B |
 | Service section | margin-top 12, 1 px divider, padding-top 10; service row 16 high: provider glyph 16 + 6 + name 12/16 semibold + 6 + plan 12/16 TextSecondary, age right-aligned 12/16 TextSecondary (`Updated 1 min ago`; stale: `Last reading 12:42`) |
 | Meter block (window) | margin-top 10. Row 16: name 12/16 semibold left, `42% used` right (semibold when the meter is in trouble). Bar 296 wide, row 11, 1 px margin above and below. Line 16: tick key + `55% of time gone` (TextSecondary) left, forecast right. Line 16: reset glyph + `Resets 14:56` left, `in 2 h 14 min` right. IDLE: tick line `window not started`, reset line `Starts with your next use`, nothing right on either. `L` unknown: tick line `window length unknown`. `R` none (not IDLE): reset line `No reset time given`. ENDED (§3.9): `–` instead of `42% used`, reset line `Ended by 17:42`, nothing right |
-| Meter block (balance) | margin-top 10. Row 16: name (`Credits`) 12/16 semibold left, `62% of top-up used` right (semibold in trouble). Bar 296, no tick. Line 16: `1,240 of 3,260 credits left` (TextSecondary) left, forecast right: `lasts ≈ 9 days` / `runs out ≈ Thu` (semibold, WARNING/CRITICAL) / `empty` / `no use in 7 days` / `not enough history yet`. Line 16: `136 a day, last 7 days` left, `until ≈ Mon 19 Oct` right (both omitted without a forecast) |
+| Meter block (balance) | margin-top 10. Row 16: name (`Credits`) 12/16 semibold left, `62% of top-up used` right (semibold in trouble). Bar 296, no tick. Line 16: `1,240 of 3,260 credits left` (TextSecondary) left, forecast right: `lasts ≈ 9 days` / `runs out ≈ Thu` (semibold, WARNING/CRITICAL) / `empty` / `no use in 7 days` / `not enough history yet`. Line 16: `136 a day, last 7 days` left, `until ≈ Mon 19 Oct` right (both omitted without a forecast; EXHAUSTED keeps the rate and drops Until) |
 | Also tracked | margin-top 12, divider, padding-top 10; header `Also tracked` 12/16 TextSecondary; then every enabled meter that is not a readout row: the 4 highest by rank (§3.10, balances at any severity), listed in service/meter order, then `+N more`. One 20 px line each: glyph 12, 6, `{service} {short_name}` (`Claude 5-hour`, `Codex weekly`, `Meshy credits`), value right (`42%`; balance: the amount `1,240`; semibold in trouble), then a left-aligned column, as wide as its widest entry and at least 56 px, with the time part of that meter's two-row readout cell (`↺14:56`, ▲ `Out 15:20`, ● `12 min left`, ● `Back 16:30`, `≈ 9 days`, `–`) |
 
 - **Tick key**: a 1 × 9 px line in TextPrimary, 3 px left margin, 6 px right margin, in front of
@@ -833,6 +833,7 @@ locale uses it.
 - `Claude: offline, last reading 47 minutes ago. Then: 5-hour session 42 percent used, weekly 61 percent used.`
 - `Claude: sign-in expired, last reading 47 minutes ago. Select to open Lastdrop and see how to sign in.`
 - `Meshy: 1,240 credits left, about 9 days at the current rate.`
+- `Meshy: 0 credits left.` (EXHAUSTED: what is left and nothing about time)
 
 Raise `UIA_LiveRegionChangedEventId` on the root only when a row's severity **rises**, a service turns stale or fresh,
 or a window resets — not on value changes. The tray icon's accessible name is `szTip` (§9.3).

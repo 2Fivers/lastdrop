@@ -1002,7 +1002,9 @@ fn balance_body(a: &Assessment, service: &ServiceEval, cx: &TextContext<'_>) -> 
     if days.is_some() {
         spent.push_str(&text(s, Msg::FlyoutBalanceBurn, &[("burn", &burn)]));
     }
-    let a11y = match days {
+    // An empty balance keeps its rate but has no time left and no date to last until.
+    let left = days.filter(|_| !stats.exhausted);
+    let a11y = match left {
         Some(d) => text(
             s,
             Msg::FlyoutBalanceName,
@@ -1033,7 +1035,7 @@ fn balance_body(a: &Assessment, service: &ServiceEval, cx: &TextContext<'_>) -> 
         spent,
         until: stats
             .t_out
-            .filter(|_| days.is_some())
+            .filter(|_| left.is_some())
             .map(|t| text(s, Msg::FlyoutBalanceUntil, &[("date", &card_date(t, cx))])),
         a11y,
     }
