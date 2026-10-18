@@ -66,6 +66,10 @@ pub struct LocaleFormat {
     pub months_abbrev: [String; 12],
     /// Day/month order in short dates.
     pub day_month: DayMonthOrder,
+    /// What Windows writes right after the day number in a day and month (`LOCALE_SMONTHDAY`, up
+    /// to the first space): `.` in de-DE (`d. MMMM` → `19. Okt`); empty in en, sv-SE, fr-FR and
+    /// es-ES, whose `d 'de' MMMM` puts a word there that the abbreviated `19 oct.` leaves out.
+    pub day_suffix: String,
     /// Percent sign placement.
     pub percent: PercentPattern,
     /// Digit grouping separator (`LOCALE_STHOUSAND`: `,` en; U+202F sv-SE, R§5.6).
@@ -107,6 +111,7 @@ impl LocaleFormat {
                 "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
             ]),
             day_month: DayMonthOrder::DayMonth,
+            day_suffix: String::new(),
             percent: PercentPattern::NumberPercent,
             group_separator: ",".to_owned(),
             decimal_separator: ".".to_owned(),
@@ -155,14 +160,15 @@ impl LocaleFormat {
                 "dec",
             ]),
             day_month: DayMonthOrder::DayMonth,
+            day_suffix: String::new(),
             percent: PercentPattern::NumberSpacePercent,
             group_separator: "\u{202F}".to_owned(),
             decimal_separator: ",".to_owned(),
         }
     }
 
-    /// de-DE as Windows gives it: 24 h (`09:00`), `Mo`, `Mrz`, `42 %` with U+202F, `1.240` and
-    /// `4,2`.
+    /// de-DE as Windows gives it: 24 h (`09:00`), `Mo`, `19. Mrz`, `42 %` with U+202F, `1.240`
+    /// and `4,2`.
     pub fn de_de(tz: TimeZone) -> LocaleFormat {
         LocaleFormat {
             name: "de-DE".to_owned(),
@@ -189,6 +195,7 @@ impl LocaleFormat {
                 "Jan", "Feb", "Mrz", "Apr", "Mai", "Jun", "Jul", "Aug", "Sep", "Okt", "Nov", "Dez",
             ]),
             day_month: DayMonthOrder::DayMonth,
+            day_suffix: ".".to_owned(),
             percent: PercentPattern::NumberSpacePercent,
             group_separator: ".".to_owned(),
             decimal_separator: ",".to_owned(),
@@ -218,6 +225,7 @@ impl LocaleFormat {
                 "nov.", "déc.",
             ]),
             day_month: DayMonthOrder::DayMonth,
+            day_suffix: String::new(),
             percent: PercentPattern::NumberSpacePercent,
             group_separator: "\u{202F}".to_owned(),
             decimal_separator: ",".to_owned(),
@@ -253,6 +261,7 @@ impl LocaleFormat {
                 "nov.", "dic.",
             ]),
             day_month: DayMonthOrder::DayMonth,
+            day_suffix: String::new(),
             percent: PercentPattern::NumberSpacePercent,
             group_separator: ".".to_owned(),
             decimal_separator: ",".to_owned(),

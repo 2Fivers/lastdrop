@@ -768,8 +768,8 @@ mod tests {
 
     #[test]
     fn the_mock_in_german() {
-        // de-DE: `42 %` with U+202F, `1.240`, `Mo`, `Okt`; a number and its unit held together
-        // by U+00A0; `9 Tage` takes the plural.
+        // de-DE: `42 %` with U+202F, `1.240`, `Mo`, `19. Okt`; a number and its unit held
+        // together by U+00A0; `9 Tage` takes the plural.
         let de = shown_in(Language::German);
         assert_eq!(de.verdict, "Alles reicht bis zur Zurücksetzung");
         assert_eq!(
@@ -800,7 +800,7 @@ mod tests {
             (
                 "1.240".into(),
                 "Reicht noch ≈ 9 Tage".into(),
-                "bis ≈ Mo 19 Okt".into()
+                "bis ≈ Mo 19. Okt".into()
             )
         );
         assert_eq!(

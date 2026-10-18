@@ -75,14 +75,16 @@ pub(crate) fn weekday_full(t: Timestamp, locale: &LocaleFormat) -> &str {
     &locale.weekdays_full[usize::try_from(day).unwrap_or(0) % 7]
 }
 
-/// Day and abbreviated month in the locale's order (`1 Nov`, `Nov 1`).
+/// Day and abbreviated month in the locale's order, the day with its suffix (`1 Nov`, `Nov 1`,
+/// de-DE `1. Nov`).
 pub(crate) fn day_month(t: Timestamp, locale: &LocaleFormat) -> String {
     let date = local_date(t, locale);
     let month = usize::try_from(date.month() - 1).unwrap_or(0) % 12;
     let month = &locale.months_abbrev[month];
+    let day = format!("{}{}", date.day(), locale.day_suffix);
     match locale.day_month {
-        DayMonthOrder::DayMonth => format!("{} {month}", date.day()),
-        DayMonthOrder::MonthDay => format!("{month} {}", date.day()),
+        DayMonthOrder::DayMonth => format!("{day} {month}"),
+        DayMonthOrder::MonthDay => format!("{month} {day}"),
     }
 }
 
@@ -195,8 +197,8 @@ pub fn card_time(t: Timestamp, cx: &TextContext<'_>) -> String {
     }
 }
 
-/// Weekday + date without a time (`Mon 19 Oct`, `Mon Oct 19`): the balance "until" line
-/// (R§8.2, F§4.5).
+/// Weekday + date without a time (`Mon 19 Oct`, `Mon Oct 19`, de-DE `Mo 19. Okt`): the balance
+/// "until" line (R§8.2, F§4.5).
 pub fn card_date(t: Timestamp, cx: &TextContext<'_>) -> String {
     let shown = round_min(t);
     format!(
@@ -465,6 +467,22 @@ mod tests {
         assert_eq!(card_time(at(10, 0, 5, 0), &cx(now, &gb)), "Today 00:05");
         assert_eq!(card_time(at(8, 12, 42, 0), &cx(now, &gb)), "Thu 12:42");
         assert_eq!(card_time(at(1, 12, 42, 0), &cx(now, &gb)), "Thu 1 Oct");
+    }
+
+    #[test]
+    fn german_dates_keep_the_dot_after_the_day() {
+        let de = LocaleFormat::de_de(tz());
+        let now = at(10, 12, 42, 0);
+        assert_eq!(day_month(at(19, 9, 0, 0), &de), "19. Okt");
+        assert_eq!(day_month(at(1, 9, 0, 0), &de), "1. Okt");
+        assert_eq!(card_date(at(19, 9, 0, 0), &cx(now, &de)), "Mo 19. Okt");
+        assert_eq!(card_time(at(19, 9, 0, 0), &cx(now, &de)), "Mo 19. Okt");
+        // Month first, the suffix still follows the day (hu-HU `MMMM d.`).
+        let month_first = LocaleFormat {
+            day_month: DayMonthOrder::MonthDay,
+            ..de
+        };
+        assert_eq!(day_month(at(19, 9, 0, 0), &month_first), "Okt 19.");
     }
 
     #[test]
