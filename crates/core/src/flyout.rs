@@ -18,7 +18,7 @@ use crate::grammar::a11y::{row_sentence, runout_point};
 use crate::grammar::cells::{course_pct, pct, resets_at, t_out};
 use crate::grammar::meters::localized;
 use crate::grammar::numbers::{
-    amount, amount_with_unit, balance_forecast_long, percent, unit_word,
+    amount, amount_with_unit, balance_forecast_long, balance_left, percent, unit_word,
 };
 use crate::grammar::strings::{Msg, capitalise, text};
 use crate::grammar::time::{
@@ -34,7 +34,7 @@ use crate::stats::{
     ResetView, RowState, Sample, ServiceEval, StaleReason, instance_of, runway_minutes,
     same_window_instance,
 };
-use crate::util::{duration_from_hours, round_i32, sub};
+use crate::util::{round_i32, sub};
 
 /// Days before today in the sparkline (14 days ending today).
 const SPARK_DAYS_BEFORE_TODAY: i64 = SPARK_DAYS as i64 - 1;
@@ -634,6 +634,8 @@ fn verdict(eval: &Evaluation, cx: &TextContext<'_>) -> Verdict {
                 ],
             );
             let pct_text = percent(pct(a), cx.locale);
+            // A balance has its own verdicts: its name may be plural (`Meshy credits`).
+            let is_balance = balance(a).is_some();
             let level = || {
                 text(
                     s,
@@ -650,6 +652,9 @@ fn verdict(eval: &Evaluation, cx: &TextContext<'_>) -> Verdict {
                             Msg::FlyoutVerdictExhausted,
                             &[("label", &label), ("time", &card_time(r, cx))],
                         ),
+                        None if is_balance => {
+                            text(s, Msg::FlyoutVerdictBalanceEmpty, &[("label", &label)])
+                        }
                         None => level(),
                     },
                 ),
@@ -661,7 +666,11 @@ fn verdict(eval: &Evaluation, cx: &TextContext<'_>) -> Verdict {
                             let c = countdown(n, CountdownForm::Compact, s);
                             text(
                                 s,
-                                Msg::FlyoutVerdictRunway,
+                                if is_balance {
+                                    Msg::FlyoutVerdictBalanceRunway
+                                } else {
+                                    Msg::FlyoutVerdictRunway
+                                },
                                 &[("label", &label), ("countdown", &c)],
                             )
                         }
@@ -673,7 +682,11 @@ fn verdict(eval: &Evaluation, cx: &TextContext<'_>) -> Verdict {
                     match (t_out(a), course_pct(a)) {
                         (Some(t), _) => text(
                             s,
-                            Msg::FlyoutVerdictWarning,
+                            if is_balance {
+                                Msg::FlyoutVerdictBalanceWarning
+                            } else {
+                                Msg::FlyoutVerdictWarning
+                            },
                             &[("label", &label), ("time", &runout_point(a, t, cx))],
                         ),
                         // Held by hysteresis without a run-out before the reset (R§5.3).
@@ -990,7 +1003,7 @@ fn balance_body(a: &Assessment, service: &ServiceEval, cx: &TextContext<'_>) -> 
     let forecast = if stats.exhausted {
         s.template(Msg::Empty).to_owned()
     } else {
-        balance_forecast_long(stats, s)
+        balance_forecast_long(stats, cx.now, s)
     };
     let forecast_glyph = match a.state {
         RowState::Warning => Some(SeverityGlyph::Warning),
@@ -998,11 +1011,12 @@ fn balance_body(a: &Assessment, service: &ServiceEval, cx: &TextContext<'_>) -> 
         _ => None,
     };
     let mut spent = text(s, Msg::FlyoutBalanceSpent, &[("pct", &pct_text)]);
-    let days = stats.days_left.and_then(|d| duration_from_hours(d * 24.0));
-    if days.is_some() {
+    if stats.days_left.is_some() {
         spent.push_str(&text(s, Msg::FlyoutBalanceBurn, &[("burn", &burn)]));
     }
-    let a11y = match days {
+    // An empty balance keeps its rate but has no time left and no date to last until.
+    let left = balance_left(stats, cx.now);
+    let a11y = match left {
         Some(d) => text(
             s,
             Msg::FlyoutBalanceName,
@@ -1033,7 +1047,7 @@ fn balance_body(a: &Assessment, service: &ServiceEval, cx: &TextContext<'_>) -> 
         spent,
         until: stats
             .t_out
-            .filter(|_| days.is_some())
+            .filter(|_| left.is_some())
             .map(|t| text(s, Msg::FlyoutBalanceUntil, &[("date", &card_date(t, cx))])),
         a11y,
     }

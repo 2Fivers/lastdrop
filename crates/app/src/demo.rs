@@ -948,45 +948,46 @@ mod tests {
         use lastdrop_core::readout::hovercard::CardMeter;
 
         // The flyout's unit and spoken label, the hover card's sentence and its line counting
-        // the top-up (in the plural: `1 of 2,021 credits left`).
+        // the top-up (in the plural: `1 of 2,021 credits left`). 10.6 minutes are left, which every
+        // text counts as the countdown does: 11 minutes.
         let shown = [
             (
                 Language::English,
                 "credit",
-                "1 credit left, 99 percent of the last top-up used, about 10 minutes at 136 a day",
-                "Meshy: 1 credit left, about 10 minutes at the current rate.",
+                "1 credit left, 99 percent of the last top-up used, about 11 minutes at 136 a day",
+                "Meshy: 1 credit left, about 11 minutes at the current rate.",
                 "1 of 2,021 credits left",
             ),
             (
                 Language::Swedish,
                 "kredit",
-                "1 kredit kvar, 99 procent av senaste påfyllningen använt, ungefär 10 minuter med \
+                "1 kredit kvar, 99 procent av senaste påfyllningen använt, ungefär 11 minuter med \
                  136 per dag",
-                "Meshy: 1 kredit kvar, ungefär 10 minuter i nuvarande takt.",
+                "Meshy: 1 kredit kvar, ungefär 11 minuter i nuvarande takt.",
                 "1 av 2\u{202F}021 krediter kvar",
             ),
             (
                 Language::German,
                 "Credit",
                 "Noch 1 Credit, 99 Prozent der letzten Aufladung verbraucht, reicht bei 136 pro Tag \
-                 etwa 10 Minuten",
-                "Meshy: noch 1 Credit, reicht beim aktuellen Tempo etwa 10 Minuten.",
+                 etwa 11 Minuten",
+                "Meshy: noch 1 Credit, reicht beim aktuellen Tempo etwa 11 Minuten.",
                 "1 von 2.021\u{A0}Credits übrig",
             ),
             (
                 Language::French,
                 "crédit",
                 "Reste 1 crédit, dernière recharge utilisée à 99 pour cent, de quoi tenir environ \
-                 10 minutes à raison de 136 par jour",
-                "Meshy\u{A0}: reste 1 crédit, de quoi tenir environ 10 minutes au rythme actuel.",
+                 11 minutes à raison de 136 par jour",
+                "Meshy\u{A0}: reste 1 crédit, de quoi tenir environ 11 minutes au rythme actuel.",
                 "Reste 1 sur 2\u{202F}021 crédits",
             ),
             (
                 Language::Spanish,
                 "crédito",
                 "Saldo de 1 crédito, usado el 99 por ciento de la última recarga, aproximadamente \
-                 10 minutos a 136 al día",
-                "Meshy: saldo de 1 crédito, aproximadamente 10 minutos al ritmo actual.",
+                 11 minutos a 136 al día",
+                "Meshy: saldo de 1 crédito, aproximadamente 11 minutos al ritmo actual.",
                 "Saldo: 1 de 2.021 créditos",
             ),
         ];

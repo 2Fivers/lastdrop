@@ -581,36 +581,37 @@ fn a_balance_announces_each_rise_until_it_is_ok_again() {
 
 #[test]
 fn a_low_balance_counts_its_last_credits_in_every_language() {
-    // 1 and 2 credits at 136 a day: critical, ≈ 1 hour left (R§5.5). 0 is used up.
+    // 1 and 2 credits at 136 a day: critical, 11 and 21 minutes left as the countdown counts them
+    // (R§3.5), not R§5.5's floor of 1 hour. 0 is used up.
     let bodies = [
         (
             Language::English,
-            "1 credit left, about 1 hour at your use of the last 7 days.",
-            "2 credits left, about 1 hour at your use of the last 7 days.",
+            "1 credit left, about 11 minutes at your use of the last 7 days.",
+            "2 credits left, about 21 minutes at your use of the last 7 days.",
             "Top it up to keep using Meshy.",
         ),
         (
             Language::Swedish,
-            "1 kredit kvar, ungefär 1 timme med din användning de senaste 7 dagarna.",
-            "2 krediter kvar, ungefär 1 timme med din användning de senaste 7 dagarna.",
+            "1 kredit kvar, ungefär 11 minuter med din användning de senaste 7 dagarna.",
+            "2 krediter kvar, ungefär 21 minuter med din användning de senaste 7 dagarna.",
             "Fyll på för att fortsätta använda Meshy.",
         ),
         (
             Language::German,
-            "Noch 1\u{A0}Credit, reicht bei Ihrer Nutzung der letzten 7\u{A0}Tage etwa 1 Stunde.",
-            "Noch 2\u{A0}Credits, reicht bei Ihrer Nutzung der letzten 7\u{A0}Tage etwa 1 Stunde.",
+            "Noch 1\u{A0}Credit, reicht bei Ihrer Nutzung der letzten 7\u{A0}Tage etwa 11 Minuten.",
+            "Noch 2\u{A0}Credits, reicht bei Ihrer Nutzung der letzten 7\u{A0}Tage etwa 21 Minuten.",
             "Laden Sie Guthaben auf, um Meshy weiter zu nutzen.",
         ),
         (
             Language::French,
-            "Reste 1 crédit, de quoi tenir environ 1 heure au rythme des 7 derniers jours.",
-            "Reste 2 crédits, de quoi tenir environ 1 heure au rythme des 7 derniers jours.",
+            "Reste 1 crédit, de quoi tenir environ 11 minutes au rythme des 7 derniers jours.",
+            "Reste 2 crédits, de quoi tenir environ 21 minutes au rythme des 7 derniers jours.",
             "Rechargez pour continuer à utiliser Meshy.",
         ),
         (
             Language::Spanish,
-            "Saldo de 1 crédito, aproximadamente 1 hora según tu uso de los últimos 7 días.",
-            "Saldo de 2 créditos, aproximadamente 1 hora según tu uso de los últimos 7 días.",
+            "Saldo de 1 crédito, aproximadamente 11 minutos según tu uso de los últimos 7 días.",
+            "Saldo de 2 créditos, aproximadamente 21 minutos según tu uso de los últimos 7 días.",
             "Recarga saldo para seguir usando Meshy.",
         ),
     ];

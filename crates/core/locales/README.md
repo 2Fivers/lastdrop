@@ -52,6 +52,9 @@ it is one of Windows' display languages. Nothing in the code needs to change.
 - **Short tokens** (`5h`, `Wk`, `{n}d`) sit in the taskbar readout. Keep them as short as the
   English ones. Widths are measured from the strings, so nothing is cut off, but a longer token
   takes room from the bar.
+- **No-break spaces** (`\u00A0`) keep two words on one line: a number and its unit
+  (`11\u00A0min`), a French colon and its word (`Claude\u00A0:`). The flyout and the hover card
+  keep them together where their texts wrap (`wiring::wrapping` in the app).
 - **Not in these files:** numbers, percent signs, times, weekday and month names come from the
   Windows regional format.
 

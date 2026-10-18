@@ -374,7 +374,7 @@ fn body(kind: NoticeKind, service: &ServiceEval, a: &Assessment, cx: &TextContex
         (AssessedMeter::Balance(b), _) => {
             let left = amount(b.amount, cx.locale);
             let unit = unit_word(&b.unit, b.amount, s);
-            match balance_duration_words(&b.stats, s) {
+            match balance_duration_words(&b.stats, cx.now, s) {
                 Some(words) => text(
                     s,
                     Msg::NoticeBodyBalance,

@@ -405,6 +405,12 @@ runs_out && otherwise (WARNING)   → "Out " TIME(round_min(t_out))
 `days_left` < 2 → `≈Nh` (floor hours, ≥ 1); < 14 → `≈Nd` (floor); < 63 → `≈Nw` (floor weeks); ≥ 63 → `≈9w+`.
 No burn in 7 days, or less than 48 h of history → `–`.
 
+The words for the same duration (flyout forecast F§4.5, hover card `lasts ≈`, notices, §11 sentences) follow these
+thresholds, except below an hour: there they count the countdown's minutes, `N` of §3.5 while `N ≤ 59`
+(`≈ 11 minutes left`, `about 11 minutes`), so they agree with `11 min left` and `runs out in 11 min`. Only the token
+keeps the floor of 1 hour; a balance that close is CRITICAL, and the readout shows its countdown instead. An empty
+balance has no duration (§11: `Meshy: 0 credits left.`).
+
 ### 5.6 Percent and numbers
 
 - Locale percent pattern (`LOCALE_IPOSITIVEPERCENT`): en `42%`; sv-SE `42 %` with U+202F NARROW NO-BREAK SPACE.
@@ -695,7 +701,7 @@ A tooltip-style card over the readout or the tray icon; the readout's legend.
 | Sentence | margin-top 4; 12/16 regular, TextPrimary; wraps; templates in Appendix B |
 | Service section | margin-top 12, 1 px divider, padding-top 10; service row 16 high: provider glyph 16 + 6 + name 12/16 semibold + 6 + plan 12/16 TextSecondary, age right-aligned 12/16 TextSecondary (`Updated 1 min ago`; stale: `Last reading 12:42`) |
 | Meter block (window) | margin-top 10. Row 16: name 12/16 semibold left, `42% used` right (semibold when the meter is in trouble). Bar 296 wide, row 11, 1 px margin above and below. Line 16: tick key + `55% of time gone` (TextSecondary) left, forecast right. Line 16: reset glyph + `Resets 14:56` left, `in 2 h 14 min` right. IDLE: tick line `window not started`, reset line `Starts with your next use`, nothing right on either. `L` unknown: tick line `window length unknown`. `R` none (not IDLE): reset line `No reset time given`. ENDED (§3.9): `–` instead of `42% used`, reset line `Ended by 17:42`, nothing right |
-| Meter block (balance) | margin-top 10. Row 16: name (`Credits`) 12/16 semibold left, `62% of top-up used` right (semibold in trouble). Bar 296, no tick. Line 16: `1,240 of 3,260 credits left` (TextSecondary) left, forecast right: `lasts ≈ 9 days` / `runs out ≈ Thu` (semibold, WARNING/CRITICAL) / `empty` / `no use in 7 days` / `not enough history yet`. Line 16: `136 a day, last 7 days` left, `until ≈ Mon 19 Oct` right (both omitted without a forecast) |
+| Meter block (balance) | margin-top 10. Row 16: name (`Credits`) 12/16 semibold left, `62% of top-up used` right (semibold in trouble). Bar 296, no tick. Line 16: `1,240 of 3,260 credits left` (TextSecondary) left, forecast right: `lasts ≈ 9 days` / `runs out ≈ Thu` (semibold, WARNING/CRITICAL) / `empty` / `no use in 7 days` / `not enough history yet`. Line 16: `136 a day, last 7 days` left, `until ≈ Mon 19 Oct` right (both omitted without a forecast; EXHAUSTED keeps the rate and drops Until) |
 | Also tracked | margin-top 12, divider, padding-top 10; header `Also tracked` 12/16 TextSecondary; then every enabled meter that is not a readout row: the 4 highest by rank (§3.10, balances at any severity), listed in service/meter order, then `+N more`. One 20 px line each: glyph 12, 6, `{service} {short_name}` (`Claude 5-hour`, `Codex weekly`, `Meshy credits`), value right (`42%`; balance: the amount `1,240`; semibold in trouble), then a left-aligned column, as wide as its widest entry and at least 56 px, with the time part of that meter's two-row readout cell (`↺14:56`, ▲ `Out 15:20`, ● `12 min left`, ● `Back 16:30`, `≈ 9 days`, `–`) |
 
 - **Tick key**: a 1 × 9 px line in TextPrimary, 3 px left margin, 6 px right margin, in front of
@@ -778,7 +784,8 @@ No fade animation in M1.
 
 `szTip` (≤ 127 chars), used by Narrator and as the fallback tooltip:
 `Lastdrop: Claude weekly 61% used, resets Mon 09:00` · `Lastdrop: Claude 5-hour runs out in 12 min` ·
-`Lastdrop: Claude offline, last reading 47 min ago`. Updated with every change.
+`Lastdrop: Claude offline, last reading 47 min ago`; a balance: `Lastdrop: Meshy credits will run out in 11 min`,
+`Lastdrop: Meshy credits used up`. Updated with every change.
 
 ## 10. Interactions
 
@@ -833,6 +840,7 @@ locale uses it.
 - `Claude: offline, last reading 47 minutes ago. Then: 5-hour session 42 percent used, weekly 61 percent used.`
 - `Claude: sign-in expired, last reading 47 minutes ago. Select to open Lastdrop and see how to sign in.`
 - `Meshy: 1,240 credits left, about 9 days at the current rate.`
+- `Meshy: 0 credits left.` (EXHAUSTED: what is left and nothing about time)
 
 Raise `UIA_LiveRegionChangedEventId` on the root only when a row's severity **rises**, a service turns stale or fresh,
 or a window resets — not on value changes. The tray icon's accessible name is `szTip` (§9.3).
@@ -976,6 +984,7 @@ and §8.2.
 | card.title.critical.runway | `{meter} limit runs out in {duration}` (§5.0: `12 min`, `6 h 10 min`) |
 | card.title.critical.level | `{meter} limit is {pct}% used` |
 | card.title.exhausted | `{meter} limit is used up until {time}` |
+| card.title.balance.warning / runway / empty | `{meter} will run out ≈ {time}` / `{meter} will run out in {duration}` / `{meter} used up`: a balance has no limit, and its name may be plural (`credits`); several services: `Meshy credits will run out …` |
 | card.title.stale / signin | `No new reading from {service} for {age}` / `{service} needs you to sign in again` |
 | card.sentence.ok | `{All limits are / It is} being used more slowly than time passes. At your recent pace about {100−p}% {of the session / of the week} will be left when {they reset / it resets}.` Only what is known is said: the pace part needs `e` in every shown window, the "at your recent pace" part a valid forecast in at least one and speaks only of windows with `R`; with neither the sentence is empty |
 | card.sentence.warning | `You're using it faster than time passes: {pct}% used with {e}% of the window gone. At the pace of the last {S} it runs out {duration} before the {time} reset.` + ` The {other} limit is fine.` |
