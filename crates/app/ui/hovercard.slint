@@ -59,9 +59,23 @@ component Small inherits Text {
 }
 
 // R§8.2 meter block: margin-top 10. Row 16 (name, value); bar 296 × row 11 with 1 px above and
-// below; tick line 16; reset line 16. Every window block shows both keys, every time.
+// below; tick line 16; reset line 16. Every window block shows both keys, every time. Where a
+// line's right part does not fit beside its left part with 6 px between (a long language), it
+// takes a line of its own under it, right-aligned, so neither is cut.
 component MeterBlock inherits VerticalLayout {
     in property <CardMeterData> data;
+    // The inner width (R§8.2: the bar's 296).
+    property <length> block-width: 296px;
+    property <string> left-text: root.data.is-balance ? root.data.left-line : root.data.elapsed-line;
+    property <string> lower-left: root.data.is-balance ? root.data.rate-line : root.data.reset-line;
+    property <string> lower-right: root.data.is-balance ? root.data.until : root.data.reset-in;
+    // The tick key is 10 px, the reset key 11 + 3.
+    property <bool> forecast-beside: root.data.forecast == ""
+        || (root.data.is-balance ? 0px : 10px) + left-probe.preferred-width + 6px
+            + forecast-probe.preferred-width <= root.block-width;
+    property <bool> lower-beside: root.lower-right == ""
+        || (root.data.is-balance ? 0px : 14px) + lower-left-probe.preferred-width + 6px
+            + lower-right-probe.preferred-width <= root.block-width;
     padding-top: 10px;
 
     HorizontalLayout {
@@ -103,16 +117,48 @@ component MeterBlock inherits VerticalLayout {
             }
         }
         Small {
-            text: root.data.is-balance ? root.data.left-line : root.data.elapsed-line;
+            text: root.left-text;
             overflow: elide;
             horizontal-stretch: 1;
         }
-        Small {
+        // Measure the four texts for `forecast-beside` and `lower-beside`; 0 px wide, outside
+        // any layout.
+        Rectangle {
+            width: 0px;
+            left-probe := Small {
+                visible: false;
+                text: root.left-text;
+            }
+            forecast-probe := Small {
+                visible: false;
+                text: root.data.forecast;
+                font-weight: root.data.forecast-semibold ? 600 : 400;
+            }
+            lower-left-probe := Small {
+                visible: false;
+                text: root.lower-left;
+            }
+            lower-right-probe := Small {
+                visible: false;
+                text: root.lower-right;
+            }
+        }
+        if root.forecast-beside: Rectangle {
+            width: 6px;
+        }
+        if root.forecast-beside: Small {
             text: root.data.forecast;
             font-weight: root.data.forecast-semibold ? 600 : 400;
             color: root.data.forecast-semibold ? Theme.text-primary : Theme.text-secondary;
             horizontal-stretch: 0;
         }
+    }
+    if !root.forecast-beside: Small {
+        height: 16px;
+        text: root.data.forecast;
+        font-weight: root.data.forecast-semibold ? 600 : 400;
+        color: root.data.forecast-semibold ? Theme.text-primary : Theme.text-secondary;
+        horizontal-alignment: right;
     }
     if !root.data.is-balance || root.data.rate-line != "" || root.data.until != "": HorizontalLayout {
         height: 16px;
@@ -128,14 +174,22 @@ component MeterBlock inherits VerticalLayout {
             }
         }
         Small {
-            text: root.data.is-balance ? root.data.rate-line : root.data.reset-line;
+            text: root.lower-left;
             overflow: elide;
             horizontal-stretch: 1;
         }
-        Small {
-            text: root.data.is-balance ? root.data.until : root.data.reset-in;
+        if root.lower-beside: Rectangle {
+            width: 6px;
+        }
+        if root.lower-beside: Small {
+            text: root.lower-right;
             horizontal-stretch: 0;
         }
+    }
+    if !root.lower-beside: Small {
+        height: 16px;
+        text: root.lower-right;
+        horizontal-alignment: right;
     }
 }
 
@@ -326,8 +380,12 @@ export component HoverCard inherits Window {
                     text: root.also-header;
                 }
             }
+            // A label too long for its line (a long language) wraps to a second one.
             for line[i] in root.also: HorizontalLayout {
-                height: i < root.also-visible ? 20px : 0px;
+                property <bool> two-lines: label-probe.preferred-width
+                    > root.width - 24px - 18px - value-text.preferred-width - 8px
+                        - root.also-time-width;
+                height: i < root.also-visible ? (self.two-lines ? 36px : 20px) : 0px;
                 visible: i < root.also-visible;
                 VerticalLayout {
                     alignment: center;
@@ -338,14 +396,21 @@ export component HoverCard inherits Window {
                 }
                 Rectangle {
                     width: 6px;
+                    // Measures the label for `two-lines`; outside any layout.
+                    label-probe := Small {
+                        visible: false;
+                        text: line.label;
+                    }
                 }
                 Small {
                     text: line.label;
                     color: Theme.text-primary;
+                    wrap: word-wrap;
+                    max-lines: 2;
                     overflow: elide;
                     horizontal-stretch: 1;
                 }
-                Small {
+                value-text := Small {
                     text: line.value;
                     font-weight: line.value-semibold ? 600 : 400;
                     color: Theme.text-primary;

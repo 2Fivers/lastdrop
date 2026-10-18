@@ -10,7 +10,8 @@ import {
 
 // One window meter row (F§4.4). right-kind (F§11): 0 reset (↺ + text, TextSecondary), 1 say
 // (severity glyph by right-glyph + semibold text), 2 none (no glyph; text in TextSecondary, empty
-// while LOADING).
+// while LOADING). right-short: the right cluster's text when the row has no room for right-text
+// beside the whole name (a reset's time alone, as the readout's `↺14:56`; else right-text).
 export struct MeterData {
     name: string,
     value: string,
@@ -18,6 +19,7 @@ export struct MeterData {
     right-kind: int,
     right-glyph: Tone,
     right-text: string,
+    right-short: string,
     line: string,
     tone: Tone,
     bar: BarGeom,
@@ -94,9 +96,17 @@ component PlanBadge inherits HorizontalLayout {
 }
 
 // F§4.4: name row 20 (name, right cluster, 12, value min 36), 4, bar 310 × 9, trouble line 4 + 16.
-// A theme can hide the right cluster, the bar and the trouble line (themes-spec §2).
+// A theme can hide the right cluster, the bar and the trouble line (themes-spec §2). Where the
+// name and the right cluster's full text do not fit side by side (a long language: `Woche · alle
+// Modelle` beside `Zurücksetzung Mo 09:00`), the cluster shows right-short, so the name keeps
+// its words; the hover card still says the whole of it.
 component MeterRow inherits VerticalLayout {
     in property <MeterData> data;
+    // The name row's width: the card's inner width (F§4.1: 310, a compact theme 318).
+    property <length> row-width: Theme.compact ? 318px : 310px;
+    property <bool> right-full: name-text.preferred-width
+        + (root.data.right-kind == 2 ? 0px : 16px) + right-probe.preferred-width
+        + 12px + max(36px, value-text.preferred-width) <= root.row-width;
     spacing: 4px;
     accessible-role: progress-indicator;
     accessible-label: root.data.a11y;
@@ -106,7 +116,7 @@ component MeterRow inherits VerticalLayout {
 
     HorizontalLayout {
         height: 20px;
-        Text {
+        name-text := Text {
             text: root.data.name;
             font-family: Theme.font-text;
             font-size: 14px;
@@ -115,6 +125,18 @@ component MeterRow inherits VerticalLayout {
             horizontal-stretch: 1;
             vertical-alignment: center;
             accessible-role: none;
+        }
+        // Measures right-text for `right-full`; 0 px wide, its text outside any layout.
+        Rectangle {
+            width: 0px;
+            right-probe := Text {
+                visible: false;
+                text: root.data.right-text;
+                font-family: Theme.font-small;
+                letter-spacing: Theme.small-tracking;
+                font-size: 12px;
+                font-weight: root.data.right-kind == 1 ? 600 : 400;
+            }
         }
         if Theme.show-resets: HorizontalLayout {
             spacing: 4px;
@@ -134,7 +156,7 @@ component MeterRow inherits VerticalLayout {
                 }
             }
             Text {
-                text: root.data.right-text;
+                text: root.right-full ? root.data.right-text : root.data.right-short;
                 font-family: Theme.font-small;
                 letter-spacing: Theme.small-tracking;
                 font-size: 12px;
@@ -147,7 +169,7 @@ component MeterRow inherits VerticalLayout {
         Rectangle {
             width: 12px;
         }
-        Text {
+        value-text := Text {
             text: root.data.value;
             min-width: 36px;
             horizontal-alignment: right;
@@ -177,8 +199,14 @@ component MeterRow inherits VerticalLayout {
 }
 
 // F§4.5: row 28 (amount 20/28, 6, unit 14/20, forecast right), 2, row 16 (spent · burn, 8, until).
+// Where spent · burn and until do not fit side by side (a long language), until takes a row of
+// its own under them, right-aligned, so neither is cut.
 component BalanceBody inherits VerticalLayout {
     in property <CardData> data;
+    // The card's inner width (F§4.1: 310, a compact theme 318).
+    property <length> row-width: Theme.compact ? 318px : 310px;
+    property <bool> until-beside: burn-text.preferred-width + 8px + until-probe.preferred-width
+        <= root.row-width;
     spacing: 2px;
     accessible-role: text;
     accessible-label: root.data.balance-a11y;
@@ -188,6 +216,14 @@ component BalanceBody inherits VerticalLayout {
     // descent minus the 20 px box's).
     Rectangle {
         height: 28px;
+        // Measures until for `until-beside`; outside any layout.
+        until-probe := Text {
+            visible: false;
+            text: root.data.until;
+            font-family: Theme.font-small;
+            letter-spacing: Theme.small-tracking;
+            font-size: 12px;
+        }
         amount := Text {
             x: 0px;
             y: 0px;
@@ -239,7 +275,7 @@ component BalanceBody inherits VerticalLayout {
     HorizontalLayout {
         height: 16px;
         spacing: 8px;
-        Text {
+        burn-text := Text {
             text: root.data.burn;
             font-family: Theme.font-small;
             letter-spacing: Theme.small-tracking;
@@ -250,7 +286,7 @@ component BalanceBody inherits VerticalLayout {
             vertical-alignment: center;
             accessible-role: none;
         }
-        if root.data.until != "": Text {
+        if root.data.until != "" && root.until-beside: Text {
             text: root.data.until;
             font-family: Theme.font-small;
             letter-spacing: Theme.small-tracking;
@@ -260,6 +296,17 @@ component BalanceBody inherits VerticalLayout {
             vertical-alignment: center;
             accessible-role: none;
         }
+    }
+    if root.data.until != "" && !root.until-beside: Text {
+        height: 16px;
+        text: root.data.until;
+        font-family: Theme.font-small;
+        letter-spacing: Theme.small-tracking;
+        font-size: 12px;
+        color: Theme.text-secondary;
+        horizontal-alignment: right;
+        vertical-alignment: center;
+        accessible-role: none;
     }
 }
 
@@ -741,12 +788,16 @@ export component Flyout inherits Window {
                             size: 12px;
                         }
                     }
+                    // Two 16 px lines fit the 40 px header: a long language's verdict wraps
+                    // before it is cut (`… épuisé vers 15:18` keeps its time).
                     Text {
                         text: root.verdict-text;
                         font-family: Theme.font-small;
                         letter-spacing: Theme.small-tracking;
                         font-size: 12px;
                         color: Theme.text-secondary;
+                        wrap: word-wrap;
+                        max-lines: 2;
                         overflow: elide;
                         horizontal-stretch: 1;
                         vertical-alignment: center;

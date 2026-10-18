@@ -705,6 +705,9 @@ A tooltip-style card over the readout or the tray icon; the readout's legend.
 - Forecast text (right of the tick line): `on course for 78% at reset` (OK with a valid forecast; `p` rounded,
   clamped to 99 %), `lasts to the reset` (OK, rate 0), `no forecast yet` (guards), `runs out ≈ 15:20` (WARNING or
   CRITICAL, semibold), `used up` (EXHAUSTED), nothing for STALE.
+- Where a line's right part (the forecast, `in 2 h 14 min`) does not fit beside its left part with 6 px between
+  (a long language), it takes a 16 px line of its own under it, right-aligned, so neither is cut. An "Also
+  tracked" label too long for its line wraps to a second one (the line is then 36 px).
 - Times in the card and the flyout (one rule, `round_min`, §5.0): Δ < 12 h → the full short time with AM/PM where the
   locale has it (`2:56 PM`); same local date → `Today 18:00`; date ≤ today + 6 → weekday + time (`Mon 09:00`);
   later → weekday + date, no time (`Sun 1 Nov`). Durations per §5.0: `in 45 min`, `in 2 h 14 min`, `in 1 d 20 h`,

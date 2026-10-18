@@ -2417,6 +2417,7 @@ pub fn meter_data(row: &MeterRowModel, scale: f64) -> ui::MeterData {
             _ => ui::Tone::Calm,
         },
         right_text: row.right.text.as_str().into(),
+        right_short: row.right.short.as_str().into(),
         line: row.line.as_deref().unwrap_or_default().into(),
         tone: tone(row.tone),
         bar,
