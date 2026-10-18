@@ -141,8 +141,8 @@ fn settings_pages_instant_apply_and_deep_links() {
     let window = open(&outside);
     assert_eq!(window.get_page(), sw::PAGE_SERVICES, "Services first");
 
-    // ---- The navigation pane: one Tab stop; the arrow keys, Home and End move the selection.
-    press(&window, Key::Tab);
+    // ---- The navigation pane: it has the focus when the window opens, so the arrow keys, Home
+    // and End move the selection at once; one Tab stop.
     press(&window, Key::DownArrow);
     assert_eq!(window.get_page(), sw::PAGE_DISPLAY);
     press(&window, Key::End);
@@ -515,6 +515,23 @@ fn settings_pages_instant_apply_and_deep_links() {
     window.invoke_dismiss();
     assert!(!sw::is_open());
 
+    // ---- The accounts deep link with no found folder: Services, and the pane takes the focus,
+    // which was on the page just hidden (where no key would reach the window): Down moves the
+    // selection.
+    let mut inputs = demo_inputs();
+    inputs.accounts.found.clear();
+    let window = open_with(&outside, inputs);
+    press(&window, Key::End);
+    press(&window, Key::Tab);
+    assert_eq!(window.get_page(), sw::PAGE_GENERAL);
+    sw::reveal(Focus::Accounts);
+    frame(&window);
+    assert_eq!(window.get_page(), sw::PAGE_SERVICES);
+    press(&window, Key::DownArrow);
+    assert_eq!(window.get_page(), sw::PAGE_DISPLAY);
+    window.invoke_dismiss();
+    assert!(!sw::is_open());
+
     pin_slots();
     meter_visibility();
 }
@@ -785,10 +802,10 @@ fn meter_visibility() {
         "neither account's weekly limit can be pinned: {choices:?}"
     );
 
-    // Every service off: the empty state, whose link goes to Services. Tab reaches the pane,
-    // Down shows Display; Tab passes the theme list, Theme Studio…, Open themes folder, the
-    // times, the readout's two switches and its content (automatic: no slots) to the link;
-    // Space follows it.
+    // Every service off: the empty state, whose link goes to Services. The pane has the focus
+    // (the window opened with it), Down shows Display; Tab passes the theme list, Theme
+    // Studio…, Open themes folder, the times, the readout's two switches and its content
+    // (automatic: no slots) to the link; Space follows it.
     for row in services(&window) {
         if row.enabled {
             window.invoke_provider_toggled(service_row(&window, &row.id), false);
@@ -796,7 +813,6 @@ fn meter_visibility() {
     }
     wait(&window, 300);
     assert_eq!(window.get_meter_groups().row_count(), 0);
-    press(&window, Key::Tab);
     press(&window, Key::DownArrow);
     assert_eq!(window.get_page(), sw::PAGE_DISPLAY);
     for _ in 0..8 {

@@ -11,7 +11,7 @@
 // accessibility tree) and keep their scroll position.
 
 import { Button, CheckBox, LineEdit, ComboBox, ScrollView, Switch, Palette } from "std-widgets.slint";
-import { SettingsTheme, SettingsFocusRect, NavItem, GroupHeading, PageNote, CardRow, StackedRow, SettingsCard, ExpanderHeader, InfoBar, SettingsLink } from "settings_controls.slint";
+import { SettingsTheme, SettingsFocusRect, NavItem, GroupHeading, PageNote, StatusNote, CardRow, StackedRow, SettingsCard, ExpanderHeader, InfoBar, SettingsLink } from "settings_controls.slint";
 import { GlyphData, ProviderGlyph } from "common.slint";
 
 export { SettingsTheme }
@@ -182,11 +182,14 @@ export struct SettingsTexts {
     not-saved-title: string,
 }
 
-// A line saying what went wrong in a card.
+// A line saying what went wrong in a card (the shortcut, start with Windows): a live region, so
+// a screen reader says it when it appears or changes (settings-spec §8).
 component ErrorNote inherits Text {
     font-size: 12px;
     color: SettingsTheme.critical;
     wrap: word-wrap;
+    accessible-role: text;
+    accessible-live-region: polite;
 }
 
 // A row of a grouped card holding one check box with its own label.
@@ -347,6 +350,10 @@ export component SettingsWindow inherits Window {
     min-height: 520px;
     background: SettingsTheme.page-fill;
     default-font-family: "Segoe UI Variable Text";
+    // The pane has the focus when the window opens (as WinUI's NavigationView): without a focused
+    // item no key reaches the window, so Ctrl+Tab, the arrow keys and Escape would do nothing
+    // until Tab. Its focus rectangle waits for keyboard use.
+    forward-focus: nav;
 
     in property <SettingsTexts> texts;
     // The page shown: 0 Services, 1 Display, 2 Notifications, 3 General.
@@ -536,11 +543,15 @@ export component SettingsWindow inherits Window {
 
     // Deep link to the accounts (the first run found more folders, accounts-spec §6): the
     // Services page; once the service of `reveal-block` is expanded (Rust expands it), the page
-    // scrolls to it and its first found folder's Add takes the focus.
+    // scrolls to it and its first found folder's Add takes the focus. Without a found folder the
+    // pane takes it: the focus may be on the page just hidden, where no key reaches the window.
     public function reveal-accounts(focus-found: bool) {
         root.select-page(0);
         root.reveal-found = focus-found;
         root.reveal-request += 1;
+        if (!focus-found) {
+            nav.focus();
+        }
     }
 
     // Scrolls the Services page so `y` (a position in it) is 12 px below the top.
@@ -968,7 +979,7 @@ export component SettingsWindow inherits Window {
                                                     padding-left: 16px + root.indent;
                                                     padding-right: 16px;
                                                     padding-bottom: 12px;
-                                                    PageNote {
+                                                    StatusNote {
                                                         text: root.block-status[row.block];
                                                     }
                                                 }
@@ -1035,7 +1046,7 @@ export component SettingsWindow inherits Window {
                                                     }
                                                 }
                                             }
-                                            if root.api-keys[row.key-row].status != "": PageNote {
+                                            if root.api-keys[row.key-row].status != "": StatusNote {
                                                 text: root.api-keys[row.key-row].status;
                                             }
                                             PageNote {
@@ -1298,7 +1309,7 @@ export component SettingsWindow inherits Window {
                                             if root.choosing-pins: PageNote {
                                                 text: root.texts.readout-choosing;
                                             }
-                                            if root.pin-note != "": PageNote {
+                                            if root.pin-note != "": StatusNote {
                                                 text: root.pin-note;
                                             }
                                         }
