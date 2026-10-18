@@ -634,6 +634,8 @@ fn verdict(eval: &Evaluation, cx: &TextContext<'_>) -> Verdict {
                 ],
             );
             let pct_text = percent(pct(a), cx.locale);
+            // A balance has its own verdicts: its name may be plural (`Meshy credits`).
+            let is_balance = balance(a).is_some();
             let level = || {
                 text(
                     s,
@@ -650,6 +652,9 @@ fn verdict(eval: &Evaluation, cx: &TextContext<'_>) -> Verdict {
                             Msg::FlyoutVerdictExhausted,
                             &[("label", &label), ("time", &card_time(r, cx))],
                         ),
+                        None if is_balance => {
+                            text(s, Msg::FlyoutVerdictBalanceEmpty, &[("label", &label)])
+                        }
                         None => level(),
                     },
                 ),
@@ -661,7 +666,11 @@ fn verdict(eval: &Evaluation, cx: &TextContext<'_>) -> Verdict {
                             let c = countdown(n, CountdownForm::Compact, s);
                             text(
                                 s,
-                                Msg::FlyoutVerdictRunway,
+                                if is_balance {
+                                    Msg::FlyoutVerdictBalanceRunway
+                                } else {
+                                    Msg::FlyoutVerdictRunway
+                                },
                                 &[("label", &label), ("countdown", &c)],
                             )
                         }
@@ -673,7 +682,11 @@ fn verdict(eval: &Evaluation, cx: &TextContext<'_>) -> Verdict {
                     match (t_out(a), course_pct(a)) {
                         (Some(t), _) => text(
                             s,
-                            Msg::FlyoutVerdictWarning,
+                            if is_balance {
+                                Msg::FlyoutVerdictBalanceWarning
+                            } else {
+                                Msg::FlyoutVerdictWarning
+                            },
                             &[("label", &label), ("time", &runout_point(a, t, cx))],
                         ),
                         // Held by hysteresis without a run-out before the reset (R§5.3).

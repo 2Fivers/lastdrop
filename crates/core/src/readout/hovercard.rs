@@ -666,6 +666,7 @@ fn trouble_header(
         .map(|f| long(f.trailing, cx))
         .unwrap_or_default();
     let is_balance = balance(a).is_some();
+    // A balance has its own titles: no "limit", and a name that may be plural (`credits`).
     let (glyph, title, sentence) = match a.state {
         RowState::Exhausted => {
             let title = match reset {
@@ -674,6 +675,7 @@ fn trouble_header(
                     Msg::CardTitleExhausted,
                     &[("meter", &meter), ("time", &card_time(r, cx))],
                 ),
+                None if is_balance => text(s, Msg::CardTitleBalanceEmpty, &[("meter", &meter)]),
                 None => text(
                     s,
                     Msg::CardTitleCriticalLevel,
@@ -716,7 +718,11 @@ fn trouble_header(
             let title = match t_out(a) {
                 Some(t) => text(
                     s,
-                    Msg::CardTitleCriticalRunway,
+                    if is_balance {
+                        Msg::CardTitleBalanceRunway
+                    } else {
+                        Msg::CardTitleCriticalRunway
+                    },
                     &[
                         ("meter", &meter),
                         (
@@ -767,6 +773,11 @@ fn trouble_header(
             };
             let time = t_out(a).map(|t| runout_point(a, t, cx)).unwrap_or_default();
             let title = match (&course, several) {
+                (None, _) if is_balance => text(
+                    s,
+                    Msg::CardTitleBalanceWarning,
+                    &[("meter", &meter), ("time", &time)],
+                ),
                 (Some(p), true) => text(
                     s,
                     Msg::CardTitleWarningCourseService,

@@ -610,6 +610,13 @@ mod last_credit {
         (eval, h, settings)
     }
 
+    /// `eval` with every meter named in `l`, as the app shows it.
+    fn named_in(eval: &Evaluation, l: Language) -> Evaluation {
+        let mut eval = eval.clone();
+        lastdrop_core::grammar::meters::localize(&mut eval, l.strings());
+        eval
+    }
+
     fn context<'a>(
         l: Language,
         locale: &'a LocaleFormat,
@@ -724,6 +731,142 @@ mod last_credit {
             assert_eq!(card.sentence, said, "{what}");
             let title = card.header.title.replace('\u{A0}', " ");
             assert!(title.contains(" 11 min"), "{what}: {title}");
+        }
+    }
+
+    /// A balance has no limit, and its name may be plural (`credits`): its titles, verdicts and
+    /// tray tooltips have their own templates. English says `Credits will run out in 11 min`
+    /// rather than `Credits limit runs out …` or `Meshy credits runs out …`; the other languages
+    /// name the balance with a singular noun (`Credit-Guthaben`) and keep their wording.
+    #[test]
+    fn balance_titles_read_naturally_in_every_language() {
+        // [hover card title, flyout verdict, tray tooltip] at 620 credits (WARNING, out on
+        // Thursday), 1 (CRITICAL, 11 minutes) and 0 (EXHAUSTED).
+        const SAID: [(Language, [[&str; 3]; 3]); 5] = [
+            (
+                Language::English,
+                [
+                    [
+                        "Credits will run out ≈ Thu",
+                        "Meshy credits will run out ≈ Thu",
+                        "Lastdrop: Meshy credits will run out ≈ Thu",
+                    ],
+                    [
+                        "Credits will run out in 11 min",
+                        "Meshy credits will run out in 11 min",
+                        "Lastdrop: Meshy credits will run out in 11 min",
+                    ],
+                    [
+                        "Credits used up",
+                        "Meshy credits used up",
+                        "Lastdrop: Meshy credits used up",
+                    ],
+                ],
+            ),
+            (
+                Language::Swedish,
+                [
+                    [
+                        "Krediterna tar slut tors",
+                        "Krediterna för Meshy tar slut tors",
+                        "Lastdrop: krediterna för Meshy tar slut tors",
+                    ],
+                    [
+                        "Krediterna tar slut om 11 min",
+                        "Krediterna för Meshy tar slut om 11 min",
+                        "Lastdrop: krediterna för Meshy tar slut om 11 min",
+                    ],
+                    [
+                        "Krediterna är slut",
+                        "Krediterna för Meshy är slut",
+                        "Lastdrop: krediterna för Meshy är slut",
+                    ],
+                ],
+            ),
+            (
+                Language::German,
+                [
+                    [
+                        "Credit-Guthaben reicht nur bis Do",
+                        "Meshy: Credit-Guthaben leer ab Do",
+                        "Lastdrop: Credit-Guthaben von Meshy reicht nur bis Do",
+                    ],
+                    [
+                        "Credit-Guthaben reicht nur noch 11\u{A0}min",
+                        "Meshy: Credit-Guthaben leer in 11\u{A0}min",
+                        "Lastdrop: Credit-Guthaben von Meshy reicht nur noch 11\u{A0}min",
+                    ],
+                    [
+                        "Credit-Guthaben aufgebraucht",
+                        "Meshy: Credit-Guthaben leer",
+                        "Lastdrop: Credit-Guthaben von Meshy aufgebraucht",
+                    ],
+                ],
+            ),
+            (
+                Language::French,
+                [
+                    [
+                        "Solde de crédits épuisé vers jeu.",
+                        "Solde de crédits (Meshy) épuisé vers jeu.",
+                        "Lastdrop\u{A0}: solde de crédits (Meshy) épuisé vers jeu.",
+                    ],
+                    [
+                        "Solde de crédits épuisé dans 11\u{A0}min",
+                        "Solde de crédits (Meshy) épuisé dans 11\u{A0}min",
+                        "Lastdrop\u{A0}: solde de crédits (Meshy) épuisé dans 11\u{A0}min",
+                    ],
+                    [
+                        "Solde de crédits épuisé",
+                        "Solde de crédits (Meshy) épuisé",
+                        "Lastdrop\u{A0}: solde de crédits (Meshy) épuisé",
+                    ],
+                ],
+            ),
+            (
+                Language::Spanish,
+                [
+                    [
+                        "Saldo de créditos se agota ≈\u{A0}ju.",
+                        "Meshy: saldo de créditos se agota ≈\u{A0}ju.",
+                        "Lastdrop: saldo de créditos en Meshy se agota ≈\u{A0}ju.",
+                    ],
+                    [
+                        "Saldo de créditos se agota en 11\u{A0}min",
+                        "Meshy: saldo de créditos se agota en 11\u{A0}min",
+                        "Lastdrop: saldo de créditos en Meshy se agota en 11\u{A0}min",
+                    ],
+                    [
+                        "Saldo de créditos agotado",
+                        "Meshy: saldo de créditos agotado",
+                        "Lastdrop: saldo de créditos en Meshy agotado",
+                    ],
+                ],
+            ),
+        ];
+        let states = [
+            (620.0, RowState::Warning),
+            (1.0, RowState::CriticalRunway),
+            (0.0, RowState::Exhausted),
+        ];
+        for (i, (amount, state)) in states.into_iter().enumerate() {
+            let (eval, h, settings) = meshy_at(amount);
+            let (_, a) = eval
+                .assessment(&key(ProviderId::Meshy, "credits"))
+                .expect("assessed");
+            assert_eq!(a.state, state, "{amount}");
+            for (l, said) in SAID {
+                let eval = named_in(&eval, l);
+                let locale = LocaleFormat::of_language(l, zone());
+                let cx = context(l, &locale, &settings);
+                let [title, verdict, tooltip] = said[i];
+                let what = format!("{}: {amount}", l.tag());
+                let card = build_hover_card(&eval, HoverAnchor::Readout, &eval.readout_rows, &cx);
+                assert_eq!(card.header.title, title, "{what}");
+                let flyout = build_flyout(&eval, &h, false, &cx);
+                assert_eq!(flyout.verdict.text, verdict, "{what}");
+                assert_eq!(build_tray(&eval, &cx).tooltip, tooltip, "{what}");
+            }
         }
     }
 }

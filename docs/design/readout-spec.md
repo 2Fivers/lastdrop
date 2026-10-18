@@ -784,7 +784,8 @@ No fade animation in M1.
 
 `szTip` (≤ 127 chars), used by Narrator and as the fallback tooltip:
 `Lastdrop: Claude weekly 61% used, resets Mon 09:00` · `Lastdrop: Claude 5-hour runs out in 12 min` ·
-`Lastdrop: Claude offline, last reading 47 min ago`. Updated with every change.
+`Lastdrop: Claude offline, last reading 47 min ago`; a balance: `Lastdrop: Meshy credits will run out in 11 min`,
+`Lastdrop: Meshy credits used up`. Updated with every change.
 
 ## 10. Interactions
 
@@ -983,6 +984,7 @@ and §8.2.
 | card.title.critical.runway | `{meter} limit runs out in {duration}` (§5.0: `12 min`, `6 h 10 min`) |
 | card.title.critical.level | `{meter} limit is {pct}% used` |
 | card.title.exhausted | `{meter} limit is used up until {time}` |
+| card.title.balance.warning / runway / empty | `{meter} will run out ≈ {time}` / `{meter} will run out in {duration}` / `{meter} used up`: a balance has no limit, and its name may be plural (`credits`); several services: `Meshy credits will run out …` |
 | card.title.stale / signin | `No new reading from {service} for {age}` / `{service} needs you to sign in again` |
 | card.sentence.ok | `{All limits are / It is} being used more slowly than time passes. At your recent pace about {100−p}% {of the session / of the week} will be left when {they reset / it resets}.` Only what is known is said: the pace part needs `e` in every shown window, the "at your recent pace" part a valid forecast in at least one and speaks only of windows with `R`; with neither the sentence is empty |
 | card.sentence.warning | `You're using it faster than time passes: {pct}% used with {e}% of the window gone. At the pace of the last {S} it runs out {duration} before the {time} reset.` + ` The {other} limit is fine.` |

@@ -304,6 +304,8 @@ pub fn tray_tooltip(eval: &Evaluation, cx: &TextContext<'_>) -> String {
         text(cx.strings, msg, &refs)
     };
     let reset = resets_at(a);
+    // A balance has its own texts: its name may be plural (`Meshy credits`).
+    let is_balance = matches!(a.meter, AssessedMeter::Balance(_));
     // An ENDED winner (every candidate tells nothing now) is described by its service's
     // staleness, as a STALE row would be; fresh, there is nothing to say.
     let state = match (a.state, service.freshness) {
@@ -336,6 +338,9 @@ pub fn tray_tooltip(eval: &Evaluation, cx: &TextContext<'_>) -> String {
         },
         RowState::OkNoReset | RowState::Idle | RowState::OkBalance => say(Msg::TrayNoReset, &[]),
         RowState::Warning => match t_out(a) {
+            Some(t) if is_balance => {
+                say(Msg::TrayBalanceWarning, &[("time", runout_point(a, t, cx))])
+            }
             Some(t) => say(Msg::TrayWarning, &[("time", runout_point(a, t, cx))]),
             None => say(Msg::TrayLevel, &[]),
         },
@@ -343,7 +348,11 @@ pub fn tray_tooltip(eval: &Evaluation, cx: &TextContext<'_>) -> String {
             Some(t) => {
                 let n = runway_minutes(cx.now, t);
                 say(
-                    Msg::TrayRunway,
+                    if is_balance {
+                        Msg::TrayBalanceRunway
+                    } else {
+                        Msg::TrayRunway
+                    },
                     &[("duration", countdown(n, CountdownForm::Compact, cx.strings))],
                 )
             }
@@ -352,6 +361,7 @@ pub fn tray_tooltip(eval: &Evaluation, cx: &TextContext<'_>) -> String {
         RowState::CriticalLevel => say(Msg::TrayLevel, &[]),
         RowState::Exhausted => match reset {
             Some(r) => say(Msg::TrayExhausted, &[("time", card_time(r, cx))]),
+            None if is_balance => say(Msg::TrayBalanceEmpty, &[]),
             None => say(Msg::TrayLevel, &[]),
         },
     };
