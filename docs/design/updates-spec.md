@@ -16,7 +16,9 @@ References: ARCHITECTURE "App", ROADMAP "Principles" (no telemetry).
 - **When:** two minutes after start-up, then every 24 hours while the app runs, if Settings ▸
   Updates ▸ *Check for updates once a day* is on (`updates.check`, default on). *Check now* in
   Settings asks the tray process to check at once (`Changes::check_updates`); a notification then
-  says what was found, also when nothing was or the check failed.
+  says what was found, also when nothing was or the check failed, and the tray process answers
+  the settings window, whose version card says it too (`dialog::answer_check`, settings-spec
+  §4). A *Check now* while a check runs is answered by that check; during a download, at once.
 - **Privacy:** the only request Lastdrop makes that is not to a service whose usage it reads.
   It sends nothing about the user: GitHub sees the address and `User-Agent: Lastdrop/<version>`.
   Turning the check off stops it entirely.

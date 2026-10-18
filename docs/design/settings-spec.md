@@ -26,7 +26,8 @@ instant apply. It is built in phases; this spec describes what is built:
   service" (§4).
 - **Built** (phase 4): the Display page's theme card with **Open themes folder**, the two pin
   slots and the meters per service (§4).
-- **Later** (§10): the shortcut editor with a preview, the version card's result.
+- **Built** (phase 5): the shortcut editor with its preview and the version card's answer (§4),
+  the keyboard and accessibility pass (§8), the previews' documentation (§9).
 
 ## 2. Shell
 
@@ -38,8 +39,8 @@ instant apply. It is built in phases; this spec describes what is built:
   **Display**, **Notifications**, **General** (sv: **Tjänster**, **Visning**, **Aviseringar**,
   **Allmänt**). Items are 36 px with a 16 px Segoe Fluent icon and a 14 px label, radius 4;
   hover: a subtle fill; selected: a subtle fill and a 3 × 16 px accent pill at the left edge. The
-  pane is a tab list (items: tabs); its keyboard focus rectangle is drawn on the selected item
-  only after keyboard use.
+  pane is a tab list (items: tabs) and has the keyboard focus when the window opens (§8); its
+  keyboard focus rectangle is drawn on the selected item only after keyboard use.
 - **Content pane**: the page's title (28 px semibold, Segoe UI Variable Display) and, for
   Services and Display, a one-line description (14 px, secondary); side padding 32 px (24 px
   when the pane is narrower than 560 px); content as wide as the pane allows up to 720 px,
@@ -241,9 +242,35 @@ off).
 "Language" — "Numbers and times follow the regional format in Windows." — list; "Refresh
 usage" / "Hämta användningsdata" — "How often Lastdrop reads your services" — list (ends the
 "Uppdatering"/"Uppdateringar" clash); "Keyboard shortcut" — "Open the flyout from anywhere" —
-switch, and while on a row of Ctrl, Alt, Shift, Win and the key box, with the problem and **Try
-again** under it (§5.2); **Updates**: "Check for updates once a day" (switch), "Lastdrop
-{version}" with **Check now** (the status stays "Asked. A notification says what was found.").
+switch; **Updates**: "Check for updates once a day" (switch), "Lastdrop {version}" with **Check
+now** and what it found.
+
+- **The shortcut editor** (`ShortcutEditor`), while the shortcut is on: the modifiers as toggle
+  buttons **Ctrl**, **Alt**, **Shift**, **Win** (sv **Skift**; pressed: the accent fill), the key
+  box with its label **Key** (sv **Tangent**) beside them, under them when they do not share a
+  line (placed by hand, so a resize keeps the box and its focus), and under both the shortcut
+  they make in 14 px semibold: "Ctrl + Alt + L" — the modifiers in Windows' order by the
+  `settings.shortcut.*` names of the window's language, the key upper case, "Ctrl + …" while
+  there is no key (`settings_window::shortcut_preview`). Then the problem and **Try again**
+  (§5.2). Every toggle and every keystroke is a shortcut edit (§5.1, §5.2).
+- **The version card's answer**: nothing until **Check now** is pressed (and again when the
+  window reopens), then a line under the version:
+
+  | When | Line |
+  |---|---|
+  | Asked, no answer yet | "Checking for updates…" |
+  | Up to date | "You have the newest version." |
+  | A newer version | "Lastdrop {version} is available. Install it from the flyout." |
+  | The check failed | "Couldn't check for updates. The notification says why." |
+  | The tray process is not running | "Lastdrop isn't running, so it can't check. Start Lastdrop and try again." |
+  | No answer within a minute (`CHECK_WAIT`), or a version the answer cannot carry | "Asked. A notification says what was found." |
+
+  **Check now** asks the tray process (`Changes::check_updates`), which checks — a check that
+  runs already answers it too, and during a download it is answered at once — and answers the
+  dialog process (`dialog::answer_check`): the dialog request's message with a `WPARAM` whose
+  low byte, `0xFE` (`dialog::CHECK_ANSWER`), is no dialog's, then the outcome and the offered
+  version in 32 bits (`dialog::CheckResult`; a version past 63.255.255 is not said). The
+  notification says it as before (updates-spec §1). A later answer replaces the line.
 
 ## 5. Apply model
 
@@ -268,8 +295,9 @@ The window shows the **draft**: the base with the pending edits applied.
 - **Normalised when pending**: a value a combo box cannot show — a language this build has no
   table for (shown as "Same as Windows"), levels the level boxes cannot show (a hand-edited 83),
   an interval between the choices (4 min shows as 5 min) — stays as stored until the user picks
-  another choice. The shortcut is parsed and validated (a letter, a digit or F1–F24, trimmed and
-  upper case; at least one modifier).
+  another choice. The shortcut is parsed and validated by the registration's rules, before
+  anything is tried: a letter, a digit or F1–F24 (trimmed and upper case, `F01` as `F1`), at
+  least one modifier, Shift alone only with F1–F24.
 - **Per account**: pending aliases, alias editors and their timers are keyed by `SourceKey`
   (service + account key), never by the account key alone: Claude's and Codex's default accounts
   are both `default`.
@@ -347,7 +375,7 @@ expander closes and when the page changes.
 ### 5.7 Tests
 
 `settings_edits` tests: the normalisations (unknown language, odd levels, interval, shortcut
-parse); a commit writes only the pending fields onto the file as it is; an alias committed by its
+parse: Shift alone only with F1–F24, `F01` as `F1`); a commit writes only the pending fields onto the file as it is; an alias committed by its
 pause while a shortcut is being composed (alias saved, shortcut not); an account action does not
 commit an alias being typed; a refused shortcut is not tried again by an unrelated commit or by
 closing, only by Try again or a newer edit, and not on closing after a commit whose write failed;
@@ -444,10 +472,17 @@ writer's change.
 
 - Tab order: the pane, then the page shown, top to bottom; nothing on a hidden page or in a
   closed expander.
+- **The pane has the focus when the window opens** (`forward-focus`, as WinUI's NavigationView):
+  Slint sends keys only to the focused item, so without it Ctrl+Tab, the arrow keys and Escape
+  would do nothing until Tab. A deep link that shows a page without focusing one of its controls
+  (the accounts with no found folder) gives the pane the focus, which may have been on the page
+  just hidden.
 - Every switch, list and box has an accessible name from its card ("Show usage in the taskbar",
   "Alias of Work", "Remove account Work", "First meter", "Show Claude weekly limit", "Save the
   Meshy API key"); a found folder's **Add** names its folder; an expander's chevron what it shows
-  ("Claude accounts", "Meshy API key"); a card of the Meters list its service.
+  ("Claude accounts", "Meshy API key"); a card of the Meters list its service. The shortcut's
+  modifiers are toggle buttons (UI Automation's Toggle pattern) named by their keys, its box
+  **Key**.
 - When the row holding the focus goes, the focus moves on in its block: after **Remove** to the
   next account's alias box, after a found folder's **Add** to the next found folder's Add, else to
   **Add folder…** (also when the write failed: the adding stays pending and its row is gone);
@@ -456,22 +491,34 @@ writer's change.
   catches up; the found folders, like the accounts, are updated in place (by folder), so the
   other rows, and the handlers that move the focus, stay.
 - Focus rectangles on the pane and the expander's chevron only after keyboard use.
-- The InfoBar is a live region; the expander's chevron reports expanded or collapsed.
+- **Live regions**: the InfoBar is an assertive one. Polite ones: what the last action did
+  (`StatusNote`: "Account added.", an API key's status, the pin note), what went wrong in a card
+  (`ErrorNote`: the shortcut, start with Windows), the shortcut's preview and the version card's
+  line (`CardRow`'s `live`). A live region is also said when it appears, so a line still shown is
+  said again when its page is shown.
+- The expander's chevron reports expanded or collapsed.
 - Contrast themes: §3.3.
 
 ## 9. Verification
 
 - **Previews**: `lastdrop.exe --demo --preview-settings <png>` renders each page's viewport —
-  `services`, `display`, `notifications`, `general` — and four states — `accounts` (the
+  `services`, `display`, `notifications`, `general` — and five states — `accounts` (the
   accounts deep link), `keys` (Meshy's and OpenCode Go's API keys expanded), `pins` (the pins
   deep link: choosing, the first slot focused), `errors` (General with a refused shortcut and
-  the InfoBar of a write that failed on closing) — at 880 × 680 and 680 × 520 into
+  the InfoBar of a write that failed on closing), `updates` (General's end: the shortcut on and
+  Check now's answer, a newer version) — at 880 × 680 and 680 × 520 into
   `<stem>-<view>-<w>x<h>.png` next to `<png>`. With `--language sv`, `--dark`, `--contrast`
-  (Windows' "Night sky" contrast colours) and `--scale`. No files are read or written: the
-  demo's invented accounts, the described services Lastdrop ships (turned off) and an in-memory
-  `settings.json` and key store.
+  (Windows' "Night sky" contrast colours) and `--scale` (1.5 and 2 are checked: nothing clips).
+  No files are read or written: the demo's invented accounts, the described services Lastdrop
+  ships (turned off) and an in-memory `settings.json` and key store. CONTRIBUTING.md
+  ("Previews") lists every preview and option.
 - **Interaction test** (`crates/app/tests/settings_ui.rs`, headless, the test's own clock): the
-  pane's keys and Ctrl+Tab; Tab from the pane lands on the page shown; a burst of edits on two
+  pane's keys at once (it has the focus when the window opens) and Ctrl+Tab; Tab from the pane
+  lands on the page shown; the shortcut from the keyboard (Tab to its switch, Space, Tab to
+  Shift, Space, the preview following; Shift alone with a letter not valid and not tried; the
+  key box, F7 saved) and Check now (Space, "Checking for updates…", the answer, the fallback
+  after a minute, a late answer); the accounts deep link with no found folder giving the pane
+  the focus; a burst of edits on two
   pages commits once, 250 ms after its last edit, the registry before the file; a change the
   tray wrote meanwhile shows after the next commit in a focused combo box without an edit, which
   keeps the focus; an alias commits after its 800 ms pause, not before; both deep links (page,
@@ -496,11 +543,7 @@ writer's change.
   type though Claude has two accounts, the short names and accessible names, hiding a type
   saved once for the service and gone from the slots for every account; with every service off
   the empty state, whose link Tab reaches from the pane and Space follows to Services.
-- Unit tests: §5.7 and §6.4.
+- Unit tests: §5.7 and §6.4; the shortcut's preview and the version card's lines
+  (`settings_window`), the check answer's message (`dialog`).
 - **Manual**: keyboard only, Narrator, 100/150/200 % scaling, Windows text size 150 %, a
   contrast theme.
-
-## 10. Later phases
-
-- **Polish**: the shortcut editor with a live preview ("Ctrl + Alt + L"), the version card's
-  result, a Narrator and DPI pass, the preview CLI's documentation.

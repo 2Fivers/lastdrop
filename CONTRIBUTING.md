@@ -37,9 +37,50 @@ cargo build --release -p lastdrop --locked
 ```
 
 All four must pass; CI runs the same on every pull request. To see the UI without real
-accounts: `lastdrop.exe --demo --preview-flyout flyout.png` (and `--preview-hovercard`,
-`--preview-settings`, `--preview-about`, `--preview-history`). Keep `--demo`: without it the
-previews read your own accounts and history.
+accounts: `lastdrop.exe --demo --preview-flyout flyout.png` (and the other previews below).
+Keep `--demo`: without it the previews read your own accounts and history.
+
+### Previews
+
+A preview renders a window headless (nothing appears on screen, nothing takes the focus) and
+saves it as a PNG. With `--demo` the data is invented and no file is read or written.
+
+| Flag | Renders |
+|---|---|
+| `--preview-flyout <png>` | the flyout |
+| `--preview-hovercard <png>` | the hover card |
+| `--preview-settings <png>` | the settings window: a PNG per view and size (below) |
+| `--preview-about <png>` | the about window |
+| `--preview-history <png>` | the usage history window |
+| `--preview-theme-studio <png>` | Theme Studio, starting from `--theme` |
+
+| Option | Effect |
+|---|---|
+| `--language <tag>` | the language of a file in `crates/core/locales` (`en`, `sv`, …); with `--demo` its regional format too. Default: English with `--demo`. |
+| `--dark` | Windows' dark app mode. |
+| `--scale <factor>` | the display scale, 0.5 to 4: `1.5` is 150 %, `2` is 200 %. The PNG has that many pixels per logical pixel. |
+| `--contrast` | the settings window in a contrast theme (Windows' "Night sky" colours). |
+| `--theme <id>` | the flyout's and the hover card's theme (themes-spec). |
+| `--demo-scenario <normal\|warning\|stale\|signin>` | which state the demo's services are in. |
+
+`--preview-settings <dir>\settings.png` writes `<dir>\settings-<view>-<w>x<h>.png` for every view
+at the window's preferred size, 880 × 680, and its smallest, 680 × 520 (logical px; the files
+are `--scale` times that):
+
+| View | Shows |
+|---|---|
+| `services`, `display`, `notifications`, `general` | each page as it opens |
+| `accounts` | the first run's deep link: the accounts with a folder found on this PC |
+| `keys` | Meshy's and OpenCode Go's API keys expanded |
+| `pins` | the tray menu's "Pinned meters…": the taskbar's meters being chosen |
+| `errors` | General with a refused shortcut and the InfoBar of a save that failed |
+| `updates` | the end of General: the shortcut on and what Check now found |
+
+For example, the Swedish settings window in dark mode at 150 %:
+
+```
+lastdrop.exe --demo --language sv --dark --scale 1.5 --preview-settings out\settings.png
+```
 
 The README's screenshots come from the same demo data. `pwsh tools\screenshots\screenshots.ps1`
 builds the app and renders them again into `docs\assets\screenshots`, light and dark (the first
