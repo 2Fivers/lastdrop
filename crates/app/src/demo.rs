@@ -51,16 +51,20 @@ pub enum Scenario {
     Stale,
     /// Codex's sign-in expired (F§4.3 SIGN_IN message line).
     SignIn,
+    /// Meshy is down to its last credit, about 10 minutes at its pace: the unit in the singular
+    /// beside a critical forecast.
+    LastCredit,
 }
 
 impl Scenario {
-    /// Parses `normal`, `warning`, `stale` or `signin`.
+    /// Parses `normal`, `warning`, `stale`, `signin` or `lastcredit`.
     pub fn parse(name: &str) -> Option<Scenario> {
         match name.to_ascii_lowercase().as_str() {
             "normal" | "ok" => Some(Scenario::Normal),
             "warning" | "warn" => Some(Scenario::Warning),
             "stale" => Some(Scenario::Stale),
             "signin" | "sign-in" => Some(Scenario::SignIn),
+            "lastcredit" | "last-credit" => Some(Scenario::LastCredit),
             _ => None,
         }
     }
@@ -226,7 +230,7 @@ impl Demo {
     /// The demo world of `scenario`.
     pub fn scenario(dark: bool, scenario: Scenario) -> Demo {
         let later = match scenario {
-            Scenario::Normal | Scenario::SignIn => 0,
+            Scenario::Normal | Scenario::SignIn | Scenario::LastCredit => 0,
             Scenario::Warning => 63,
             Scenario::Stale => 47,
         };
@@ -264,11 +268,15 @@ impl Demo {
 
         let mut meshy = snapshot(ProviderId::Meshy, "Pro", meshy_at);
         let credits = catalog(ProviderId::Meshy)[0];
+        let meshy_left = match scenario {
+            Scenario::LastCredit => 1.0,
+            _ => 1240.0,
+        };
         meshy.balances = vec![Balance {
             id: credits.meter_id(),
             names: credits.names(),
             order: credits.order,
-            amount: 1240.0,
+            amount: meshy_left,
             unit: Unit::Credits,
             last_top_up: None,
         }];
@@ -316,14 +324,15 @@ impl Demo {
                 codex_at,
             ),
         );
-        // Meshy: a top-up to 3,260 on 25 Sep (R§13 `ref`), 468 spent on 26 Sep, then the days
-        // above at 10:00; the latest reading at 12:41.
+        // Meshy: a top-up to 3,260 on 25 Sep (R§13 `ref`; 2,021 for the last credit), 468 spent
+        // on 26 Sep, then the days above at 10:00; the latest reading at 12:41.
+        let top_up = meshy_left + 468.0 + MESHY_DAYS.iter().sum::<f64>();
         let mut credits_history = vec![
             Sample::balance(local(-5, 8, 0), 400.0),
-            Sample::balance(local(-5, 8, 5), 3260.0),
-            Sample::balance(local(-4, 10, 0), 2792.0),
+            Sample::balance(local(-5, 8, 5), top_up),
+            Sample::balance(local(-4, 10, 0), top_up - 468.0),
         ];
-        let mut amount = 2792.0;
+        let mut amount = top_up - 468.0;
         for (k, spent) in MESHY_DAYS.iter().enumerate() {
             let day = i8::try_from(k).unwrap_or(0) - 3;
             credits_history.push(Sample::balance(local(day, 9, 0), amount));
@@ -367,7 +376,7 @@ impl Demo {
             Scenario::SignIn => {
                 services[1].status.last_failure = Some((plus(now, -1), FailureKind::Auth));
             }
-            Scenario::Normal | Scenario::Warning => {}
+            Scenario::Normal | Scenario::Warning | Scenario::LastCredit => {}
         }
 
         Demo {
@@ -932,5 +941,76 @@ mod tests {
                 "Meshy: saldo de créditos"
             ]
         );
+    }
+
+    #[test]
+    fn the_last_credit_in_every_language() {
+        use lastdrop_core::readout::hovercard::CardMeter;
+
+        // The flyout's unit and spoken label, the hover card's sentence and its line counting
+        // the top-up (in the plural: `1 of 2,021 credits left`).
+        let shown = [
+            (
+                Language::English,
+                "credit",
+                "1 credit left, 99 percent of the last top-up used, about 10 minutes at 136 a day",
+                "Meshy: 1 credit left, about 10 minutes at the current rate.",
+                "1 of 2,021 credits left",
+            ),
+            (
+                Language::Swedish,
+                "kredit",
+                "1 kredit kvar, 99 procent av senaste påfyllningen använt, ungefär 10 minuter med \
+                 136 per dag",
+                "Meshy: 1 kredit kvar, ungefär 10 minuter i nuvarande takt.",
+                "1 av 2\u{202F}021 krediter kvar",
+            ),
+            (
+                Language::German,
+                "Credit",
+                "Noch 1 Credit, 99 Prozent der letzten Aufladung verbraucht, reicht bei 136 pro Tag \
+                 etwa 10 Minuten",
+                "Meshy: noch 1 Credit, reicht beim aktuellen Tempo etwa 10 Minuten.",
+                "1 von 2.021\u{A0}Credits übrig",
+            ),
+            (
+                Language::French,
+                "crédit",
+                "Reste 1 crédit, dernière recharge utilisée à 99 pour cent, de quoi tenir environ \
+                 10 minutes à raison de 136 par jour",
+                "Meshy\u{A0}: reste 1 crédit, de quoi tenir environ 10 minutes au rythme actuel.",
+                "Reste 1 sur 2\u{202F}021 crédits",
+            ),
+            (
+                Language::Spanish,
+                "crédito",
+                "Saldo de 1 crédito, usado el 99 por ciento de la última recarga, aproximadamente \
+                 10 minutos a 136 al día",
+                "Meshy: saldo de 1 crédito, aproximadamente 10 minutos al ritmo actual.",
+                "Saldo: 1 de 2.021 créditos",
+            ),
+        ];
+        for (language, unit, label, sentence, left) in shown {
+            let demo = Demo::scenario(false, Scenario::LastCredit).in_language(language);
+            let flyout = demo.flyout();
+            let CardBody::Balance(b) = &flyout.cards[2].body else {
+                panic!("Meshy is a balance");
+            };
+            assert_eq!((b.amount.as_str(), b.unit.as_str()), ("1", unit));
+            assert_eq!(b.a11y, label);
+            let card = demo.hover_card();
+            assert_eq!(card.sentence, sentence);
+            let lines: Vec<&str> = card
+                .services
+                .iter()
+                .flat_map(|s| &s.meters)
+                .filter_map(|m| match m {
+                    CardMeter::Balance(b) => Some(b.left_line.as_str()),
+                    CardMeter::Window(_) => None,
+                })
+                .collect();
+            assert_eq!(lines, [left]);
+        }
+        assert_eq!(Scenario::parse("Last-Credit"), Some(Scenario::LastCredit));
     }
 }
