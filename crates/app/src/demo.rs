@@ -918,7 +918,7 @@ mod tests {
         assert_eq!(
             es.warning,
             (
-                "Claude: límite de 5 horas se agota 15:18".into(),
+                "Claude: límite de 5 horas se agota ≈\u{A0}15:18".into(),
                 "Fin 15:18".into()
             )
         );
