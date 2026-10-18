@@ -148,22 +148,31 @@ export component GroupHeading inherits Text {
     accessible-role: text;
 }
 
-// A short secondary text on a page (a group's description, a status line).
+// A short secondary text on a page (a group's description, a hint).
 export component PageNote inherits Text {
     font-size: 12px;
     color: SettingsTheme.text-secondary;
     wrap: word-wrap;
 }
 
+// What the last action did ("Account added.", "Key saved. …"): a PageNote that is a live region,
+// so a screen reader says it when it appears or changes (settings-spec §8).
+export component StatusNote inherits PageNote {
+    accessible-role: text;
+    accessible-live-region: polite;
+}
+
 // One row of a card (settings-spec §3.1): [20 px icon] header (14 px) and description (12 px,
 // secondary, wraps) · the trailing controls (the children), centred. At least 48 px high, 64 px
 // with a description; text wraps, never clips. `enabled: false` dims the texts of a dependent
-// row (its controls are disabled by the page).
+// row (its controls are disabled by the page). `live`: the description is a status that changes
+// (what Check now found), a live region a screen reader says when it appears or changes.
 export component CardRow inherits Rectangle {
     in property <string> header;
     in property <string> description;
     in property <string> icon;
     in property <bool> enabled: true;
+    in property <bool> live;
     // A divider above (every row of a grouped card but the first).
     in property <bool> divider;
     // More room on the left: a row inside an expander (settings-spec §3.2).
@@ -171,7 +180,7 @@ export component CardRow inherits Rectangle {
     min-height: root.description == "" ? 48px : 64px;
     accessible-role: groupbox;
     accessible-label: root.header;
-    accessible-description: root.description;
+    accessible-description: root.live ? "" : root.description;
 
     if root.divider: Rectangle {
         y: 0px;
@@ -204,12 +213,20 @@ export component CardRow inherits Rectangle {
                 wrap: word-wrap;
                 accessible-role: none;
             }
-            if root.description != "": Text {
+            if root.description != "" && !root.live: Text {
                 text: root.description;
                 font-size: 12px;
                 color: root.enabled ? SettingsTheme.text-secondary : SettingsTheme.text-disabled;
                 wrap: word-wrap;
                 accessible-role: none;
+            }
+            if root.description != "" && root.live: Text {
+                text: root.description;
+                font-size: 12px;
+                color: root.enabled ? SettingsTheme.text-secondary : SettingsTheme.text-disabled;
+                wrap: word-wrap;
+                accessible-role: text;
+                accessible-live-region: polite;
             }
         }
         HorizontalLayout {

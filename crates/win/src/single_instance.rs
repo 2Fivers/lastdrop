@@ -7,9 +7,10 @@
 //!   `FindWindowExW(HWND_MESSAGE, …)` and posts the registered message [`ACTIVATE_MESSAGE`].
 //! - **Dialogs** (the short-lived dialog process: settings, about): the same pattern with its own
 //!   mutex ([`DIALOG_MUTEX_NAME`]), class ([`DIALOG_LISTENER_CLASS`]) and message
-//!   ([`DIALOG_MESSAGE`]). The message's `WPARAM` says which dialog a second launch wants, or
-//!   asks the dialog process to close its windows (the installer, [`post_dialog`]); the app crate
-//!   defines the values.
+//!   ([`DIALOG_MESSAGE`]). The message's `WPARAM` says which dialog a second launch wants, asks
+//!   the dialog process to close its windows (the installer, [`post_dialog`]) or answers the
+//!   settings window's update check (the tray process, [`post_dialog`]); the app crate defines
+//!   the values.
 //! - **Settings changed**: the tray process listens (class [`SETTINGS_CHANGED_CLASS`]) for
 //!   [`SETTINGS_CHANGED_MESSAGE`], which the dialog process posts after it wrote
 //!   `settings.json` or the Meshy key. The `WPARAM` carries flags the app crate defines.
@@ -130,9 +131,10 @@ pub fn signal_dialog(request: usize) -> std::io::Result<bool> {
     signal_named(DIALOG_LISTENER_CLASS, DIALOG_MESSAGE, request, true)
 }
 
-/// From the installer: posts `request` (its `WPARAM`) to the running dialog process without
-/// passing the foreground right on (nothing is to come to the front). `Ok(false)` when no dialog
-/// listener was found (no dialog process, or one still starting or already ending).
+/// From the installer or the tray process: posts `request` (its `WPARAM`) to the running dialog
+/// process without passing the foreground right on (nothing is to come to the front). `Ok(false)`
+/// when no dialog listener was found (no dialog process, or one still starting or already
+/// ending).
 pub fn post_dialog(request: usize) -> std::io::Result<bool> {
     signal_named(DIALOG_LISTENER_CLASS, DIALOG_MESSAGE, request, false)
 }

@@ -97,8 +97,8 @@ pub struct Args {
     pub preview_about: Option<PathBuf>,
     /// `--preview-history <png>`: the usage history window with the demo's history (`--demo`).
     pub preview_history: Option<PathBuf>,
-    /// `--demo`: with `--preview-flyout` / `--preview-hovercard`, use the built-in demo data ([`demo`]): no network, no
-    /// files, no Windows settings.
+    /// `--demo`: with the `--preview-*` flags, use the built-in demo data ([`demo`]): no network,
+    /// no files, no Windows settings.
     pub demo: bool,
     /// `--demo-scenario <normal|warning|stale|signin>`: which state of the mock the demo shows.
     pub demo_scenario: Option<String>,
@@ -109,10 +109,10 @@ pub struct Args {
     /// `--contrast`: the settings window's preview in a contrast theme (Windows' "Night sky"
     /// colours).
     pub contrast: bool,
-    /// `--language <tag>`: the preview's language (`en`, `sv`); default: the settings' and
     /// `--preview-theme-studio <png>`: render Theme Studio (themes-spec §4), starting from
     /// `--theme` (else the settings' theme), and exit.
     pub preview_theme_studio: Option<PathBuf>,
+    /// `--language <tag>`: the preview's language (`en`, `sv`); default: the settings' and
     /// Windows' (English with `--demo`).
     pub language: Option<String>,
     /// `--install`: install this executable for the user without asking (updates-spec §2).

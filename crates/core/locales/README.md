@@ -16,6 +16,11 @@ is read, parsed or allocated at run time.
    `cargo test -p lastdrop-core` checks the shape of each string.
 5. To look at it, run `lastdrop.exe --demo --language <tag> --preview-flyout flyout.png`, and the
    same with `--preview-hovercard`, `--preview-settings` and `--preview-about`.
+   `--preview-settings out\settings.png` writes every page of the settings window, and a few of
+   its states, at its preferred size and its smallest (`out\settings-general-680x520.png`, …):
+   the smallest is where a long text runs out of room first. Add `--dark` or `--scale 1.5` to
+   see it as more users will. [CONTRIBUTING.md](../../../CONTRIBUTING.md#previews) lists every
+   preview and option.
 
 The language appears in the settings window by its own name and is picked automatically when
 it is one of Windows' display languages. Nothing in the code needs to change.

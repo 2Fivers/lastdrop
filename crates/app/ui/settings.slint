@@ -11,7 +11,7 @@
 // accessibility tree) and keep their scroll position.
 
 import { Button, CheckBox, LineEdit, ComboBox, ScrollView, Switch, Palette } from "std-widgets.slint";
-import { SettingsTheme, SettingsFocusRect, NavItem, GroupHeading, PageNote, CardRow, StackedRow, SettingsCard, ExpanderHeader, InfoBar, SettingsLink } from "settings_controls.slint";
+import { SettingsTheme, SettingsFocusRect, NavItem, GroupHeading, PageNote, StatusNote, CardRow, StackedRow, SettingsCard, ExpanderHeader, InfoBar, SettingsLink } from "settings_controls.slint";
 import { GlyphData, ProviderGlyph } from "common.slint";
 
 export { SettingsTheme }
@@ -182,11 +182,14 @@ export struct SettingsTexts {
     not-saved-title: string,
 }
 
-// A line saying what went wrong in a card.
+// A line saying what went wrong in a card (the shortcut, start with Windows): a live region, so
+// a screen reader says it when it appears or changes (settings-spec §8).
 component ErrorNote inherits Text {
     font-size: 12px;
     color: SettingsTheme.critical;
     wrap: word-wrap;
+    accessible-role: text;
+    accessible-live-region: polite;
 }
 
 // A row of a grouped card holding one check box with its own label.
@@ -265,6 +268,103 @@ component PinSlotRow inherits Rectangle {
         selected => {
             root.selected(self.current-index);
         }
+    }
+}
+
+// The keyboard shortcut's keys (settings-spec §4): the modifiers as toggle buttons, the key in a
+// box with its label beside them (under them when they do not fit; placed by hand, so a resize
+// keeps the box and its focus), then the shortcut they make ("Ctrl + Alt + L"), a live region a
+// screen reader says when it changes. Rust composes the preview in the window's language.
+component ShortcutEditor inherits Rectangle {
+    in property <string> ctrl-label;
+    in property <string> alt-label;
+    in property <string> shift-label;
+    in property <string> win-label;
+    in property <string> key-label;
+    in property <string> preview;
+    in-out property <bool> ctrl;
+    in-out property <bool> alt;
+    in-out property <bool> shift;
+    in-out property <bool> win;
+    in-out property <string> key;
+    // A toggle or the key changed (Rust reads the window's hotkey-* properties).
+    callback edited();
+    property <bool> one-line: modifiers.min-width + 24px + key-group.min-width <= self.width;
+    height: preview-text.y + preview-text.height;
+
+    modifiers := HorizontalLayout {
+        x: 0px;
+        y: 0px;
+        width: self.min-width;
+        height: self.min-height;
+        spacing: 4px;
+        Button {
+            text: root.ctrl-label;
+            checkable: true;
+            checked <=> root.ctrl;
+            clicked => {
+                root.edited();
+            }
+        }
+        Button {
+            text: root.alt-label;
+            checkable: true;
+            checked <=> root.alt;
+            clicked => {
+                root.edited();
+            }
+        }
+        Button {
+            text: root.shift-label;
+            checkable: true;
+            checked <=> root.shift;
+            clicked => {
+                root.edited();
+            }
+        }
+        Button {
+            text: root.win-label;
+            checkable: true;
+            checked <=> root.win;
+            clicked => {
+                root.edited();
+            }
+        }
+    }
+    key-group := HorizontalLayout {
+        x: root.one-line ? modifiers.width + 24px : 0px;
+        y: root.one-line ? 0px : modifiers.height + 8px;
+        width: self.min-width;
+        height: max(modifiers.height, self.min-height);
+        spacing: 8px;
+        Text {
+            text: root.key-label;
+            font-size: 14px;
+            color: SettingsTheme.text-primary;
+            vertical-alignment: center;
+            accessible-role: none;
+        }
+        LineEdit {
+            width: 72px;
+            accessible-label: root.key-label;
+            text <=> root.key;
+            edited => {
+                root.edited();
+            }
+        }
+    }
+    preview-text := Text {
+        x: 0px;
+        y: key-group.y + key-group.height + 12px;
+        width: parent.width;
+        height: self.preferred-height;
+        text: root.preview;
+        font-size: 14px;
+        font-weight: 600;
+        color: SettingsTheme.text-primary;
+        wrap: word-wrap;
+        accessible-role: text;
+        accessible-live-region: polite;
     }
 }
 
@@ -347,6 +447,10 @@ export component SettingsWindow inherits Window {
     min-height: 520px;
     background: SettingsTheme.page-fill;
     default-font-family: "Segoe UI Variable Text";
+    // The pane has the focus when the window opens (as WinUI's NavigationView): without a focused
+    // item no key reaches the window, so Ctrl+Tab, the arrow keys and Escape would do nothing
+    // until Tab. Its focus rectangle waits for keyboard use.
+    forward-focus: nav;
 
     in property <SettingsTexts> texts;
     // The page shown: 0 Services, 1 Display, 2 Notifications, 3 General.
@@ -414,16 +518,18 @@ export component SettingsWindow inherits Window {
     in property <[string]> interval-choices;
     in-out property <int> interval-index;
     // The global hotkey (R§10, off by default): modifiers and one key (a letter, a digit or
-    // F1…F24), the problem to show under it and whether Try again is offered (it was refused).
+    // F1…F24), the shortcut they make ("Ctrl + Alt + L"), the problem to show under it and
+    // whether Try again is offered (it was refused).
     in-out property <bool> hotkey-enabled;
     in-out property <bool> hotkey-ctrl;
     in-out property <bool> hotkey-alt;
     in-out property <bool> hotkey-shift;
     in-out property <bool> hotkey-win;
     in-out property <string> hotkey-key;
+    in property <string> hotkey-preview;
     in property <string> hotkey-error;
     in property <bool> hotkey-retry;
-    // Updates (updates-spec §1): the daily check, and what "Check now" did.
+    // Updates (updates-spec §1): the daily check, and what "Check now" found so far.
     in-out property <bool> updates-check;
     in property <string> updates-status;
 
@@ -536,11 +642,21 @@ export component SettingsWindow inherits Window {
 
     // Deep link to the accounts (the first run found more folders, accounts-spec §6): the
     // Services page; once the service of `reveal-block` is expanded (Rust expands it), the page
-    // scrolls to it and its first found folder's Add takes the focus.
+    // scrolls to it and its first found folder's Add takes the focus. Without a found folder the
+    // pane takes it: the focus may be on the page just hidden, where no key reaches the window.
     public function reveal-accounts(focus-found: bool) {
         root.select-page(0);
         root.reveal-found = focus-found;
         root.reveal-request += 1;
+        if (!focus-found) {
+            nav.focus();
+        }
+    }
+
+    // The --preview-settings render of General's end: the shortcut and the updates.
+    public function show-general-end() {
+        root.select-page(3);
+        general-sv.content-y = min(0px, general-sv.visible-height - general-page.preferred-height);
     }
 
     // Scrolls the Services page so `y` (a position in it) is 12 px below the top.
@@ -968,7 +1084,7 @@ export component SettingsWindow inherits Window {
                                                     padding-left: 16px + root.indent;
                                                     padding-right: 16px;
                                                     padding-bottom: 12px;
-                                                    PageNote {
+                                                    StatusNote {
                                                         text: root.block-status[row.block];
                                                     }
                                                 }
@@ -1035,7 +1151,7 @@ export component SettingsWindow inherits Window {
                                                     }
                                                 }
                                             }
-                                            if root.api-keys[row.key-row].status != "": PageNote {
+                                            if root.api-keys[row.key-row].status != "": StatusNote {
                                                 text: root.api-keys[row.key-row].status;
                                             }
                                             PageNote {
@@ -1298,7 +1414,7 @@ export component SettingsWindow inherits Window {
                                             if root.choosing-pins: PageNote {
                                                 text: root.texts.readout-choosing;
                                             }
-                                            if root.pin-note != "": PageNote {
+                                            if root.pin-note != "": StatusNote {
                                                 text: root.pin-note;
                                             }
                                         }
@@ -1561,45 +1677,20 @@ export component SettingsWindow inherits Window {
                                     }
                                     if root.hotkey-enabled: StackedRow {
                                         divider: true;
-                                        HorizontalLayout {
-                                            alignment: start;
-                                            spacing: 12px;
-                                            CheckBox {
-                                                text: root.texts.shortcut-ctrl;
-                                                checked <=> root.hotkey-ctrl;
-                                                toggled => {
-                                                    root.hotkey-edited();
-                                                }
-                                            }
-                                            CheckBox {
-                                                text: root.texts.shortcut-alt;
-                                                checked <=> root.hotkey-alt;
-                                                toggled => {
-                                                    root.hotkey-edited();
-                                                }
-                                            }
-                                            CheckBox {
-                                                text: root.texts.shortcut-shift;
-                                                checked <=> root.hotkey-shift;
-                                                toggled => {
-                                                    root.hotkey-edited();
-                                                }
-                                            }
-                                            CheckBox {
-                                                text: root.texts.shortcut-win;
-                                                checked <=> root.hotkey-win;
-                                                toggled => {
-                                                    root.hotkey-edited();
-                                                }
-                                            }
-                                            LineEdit {
-                                                width: 72px;
-                                                placeholder-text: root.texts.shortcut-key;
-                                                accessible-label: root.texts.shortcut-key;
-                                                text <=> root.hotkey-key;
-                                                edited => {
-                                                    root.hotkey-edited();
-                                                }
+                                        ShortcutEditor {
+                                            ctrl-label: root.texts.shortcut-ctrl;
+                                            alt-label: root.texts.shortcut-alt;
+                                            shift-label: root.texts.shortcut-shift;
+                                            win-label: root.texts.shortcut-win;
+                                            key-label: root.texts.shortcut-key;
+                                            preview: root.hotkey-preview;
+                                            ctrl <=> root.hotkey-ctrl;
+                                            alt <=> root.hotkey-alt;
+                                            shift <=> root.hotkey-shift;
+                                            win <=> root.hotkey-win;
+                                            key <=> root.hotkey-key;
+                                            edited => {
+                                                root.hotkey-edited();
                                             }
                                         }
                                         if root.hotkey-error != "": HorizontalLayout {
@@ -1638,6 +1729,7 @@ export component SettingsWindow inherits Window {
                                     CardRow {
                                         header: root.texts.version;
                                         description: root.updates-status;
+                                        live: true;
                                         Button {
                                             text: root.texts.updates-now;
                                             clicked => {

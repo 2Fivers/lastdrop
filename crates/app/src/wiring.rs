@@ -686,6 +686,8 @@ pub struct Runtime {
     pub update_timer: slint::Timer,
     /// See [`Runtime::update`].
     pub update_checking: Cell<bool>,
+    /// Settings ▸ Check now waits for the answer of the check that runs (or runs next).
+    pub update_asked: Cell<bool>,
     /// The Lastdrop theme of the settings (themes-spec), applied over Windows' theme.
     pub theme_data: RefCell<lastdrop_core::theme::Theme>,
     /// The flyout's `HWND` (0 until winit created it).

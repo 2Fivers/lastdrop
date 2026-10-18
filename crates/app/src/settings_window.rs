@@ -41,7 +41,7 @@ use lastdrop_win::hotkey::HotkeyError;
 use lastdrop_win::theme::ThemeInfo;
 use slint::{ComponentHandle, Model, ModelRc, SharedString, TimerMode, VecModel};
 
-use crate::dialog::{self, Changes};
+use crate::dialog::{self, Changes, CheckResult};
 use crate::persist::{self, Paths, SavedState};
 use crate::settings_accounts::{self, AccountsInfo, MeterAccounts, NotAdded};
 use crate::settings_edits::{
@@ -76,6 +76,9 @@ pub const PAGE_GENERAL: i32 = 3;
 pub const COMMIT_DELAY: Duration = Duration::from_millis(250);
 /// An alias box commits after this long without a keystroke (settings-spec §5.2).
 pub const ALIAS_PAUSE: Duration = Duration::from_millis(800);
+/// How long the version card waits for the tray process's answer to Check now before it says
+/// the notification will tell (the check itself gives up after 20 s).
+pub const CHECK_WAIT: Duration = Duration::from_secs(60);
 
 /// The window's preferred size and its smallest one, logical px (settings-spec §2).
 pub const PREFERRED_SIZE: (f32, f32) = (880.0, 680.0);
@@ -481,6 +484,19 @@ struct MeterCard {
 /// What a pin slot lists: each choice's meter (`None` for "None") and its label.
 type PinChoices = Vec<(Option<MeterKey>, String)>;
 
+/// Where Check now is (settings-spec §4), as the version card says it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum UpdateCheck {
+    /// Asked; the tray process has not answered yet.
+    Checking,
+    /// The tray process is not running, so nothing checks.
+    NotRunning,
+    /// No answer within [`CHECK_WAIT`]: the notification says what was found.
+    NoAnswer,
+    /// The tray process's answer.
+    Answered(CheckResult),
+}
+
 /// One accounts block's rows, updated in place (settings-spec §5.4).
 struct Block {
     provider: ProviderId,
@@ -542,6 +558,10 @@ struct Session {
     /// The window is closing but the last commit failed (the InfoBar offers Close without
     /// saving).
     closing: Cell<bool>,
+    /// What Check now found so far (nothing before it is pressed), and how long it waits for
+    /// the answer.
+    update_check: RefCell<Option<UpdateCheck>>,
+    check_timer: slint::Timer,
 }
 
 thread_local! {
@@ -669,6 +689,8 @@ pub fn start(
         alias_timers: RefCell::new(BTreeMap::new()),
         native,
         closing: Cell::new(false),
+        update_check: RefCell::new(None),
+        check_timer: slint::Timer::default(),
     });
     window.set_providers(ModelRc::from(session.provider_rows.clone()));
     window.set_meter_groups(ModelRc::from(session.meter_groups.clone()));
@@ -823,6 +845,7 @@ fn set_texts(session: &Session) {
     // The same account and found-folder models: their repeaters keep their rows.
     window.set_account_blocks(ModelRc::new(VecModel::from(block_rows(session, strings))));
     fill_themes(session);
+    show_update_check(session);
 }
 
 /// The window's fixed texts in the language of `strings`.
@@ -971,6 +994,7 @@ fn show_draft(session: &Session) {
         window.set_hotkey_win(shortcut.win);
         window.set_hotkey_key(shortcut.key.as_str().into());
     }
+    window.set_hotkey_preview(shortcut_preview(&shortcut, strings).into());
     window.set_hotkey_error(
         problem
             .as_ref()
@@ -1389,6 +1413,78 @@ fn switch_language(session: &Session) {
     set_texts(session);
 }
 
+/// The shortcut the editor composes, as its card previews it: the modifiers in Windows' order
+/// by their names in the language of `strings`, then the key as it is registered ("Ctrl + Alt +
+/// L"), or `…` while there is no key. Empty when the shortcut is off.
+pub fn shortcut_preview(shortcut: &Shortcut, strings: &dyn Strings) -> String {
+    if !shortcut.enabled {
+        return String::new();
+    }
+    let key = shortcut.key.trim().to_uppercase();
+    [
+        (shortcut.ctrl, Msg::SettingsShortcutCtrl),
+        (shortcut.alt, Msg::SettingsShortcutAlt),
+        (shortcut.shift, Msg::SettingsShortcutShift),
+        (shortcut.win, Msg::SettingsShortcutWin),
+    ]
+    .into_iter()
+    .filter(|(held, _)| *held)
+    .map(|(_, msg)| strings.template(msg))
+    .chain([if key.is_empty() { "…" } else { key.as_str() }])
+    .collect::<Vec<_>>()
+    .join(" + ")
+}
+
+/// What the version card says about Check now, in the language of `strings`.
+fn update_check_text(check: &UpdateCheck, strings: &dyn Strings) -> String {
+    match check {
+        UpdateCheck::Checking => strings.template(Msg::SettingsUpdatesChecking).to_owned(),
+        UpdateCheck::NotRunning => strings.template(Msg::SettingsUpdatesNotRunning).to_owned(),
+        UpdateCheck::Answered(CheckResult::UpToDate) => {
+            strings.template(Msg::SettingsUpdatesCurrent).to_owned()
+        }
+        UpdateCheck::Answered(CheckResult::Available(Some(version))) => text(
+            strings,
+            Msg::SettingsUpdatesAvailable,
+            &[("version", &version.to_string())],
+        ),
+        UpdateCheck::Answered(CheckResult::Failed) => {
+            strings.template(Msg::SettingsUpdatesFailed).to_owned()
+        }
+        // The notification names the version the answer could not carry.
+        UpdateCheck::NoAnswer | UpdateCheck::Answered(CheckResult::Available(None)) => {
+            strings.template(Msg::SettingsUpdatesAsked).to_owned()
+        }
+    }
+}
+
+/// Shows what Check now found so far under the version.
+fn show_update_check(session: &Session) {
+    let strings = session.wording.borrow().strings();
+    let status = session
+        .update_check
+        .borrow()
+        .as_ref()
+        .map(|c| update_check_text(c, strings))
+        .unwrap_or_default();
+    session.window.set_updates_status(status.into());
+}
+
+/// Sets where Check now is and shows it.
+fn set_update_check(session: &Session, check: UpdateCheck) {
+    if check != UpdateCheck::Checking {
+        session.check_timer.stop();
+    }
+    *session.update_check.borrow_mut() = Some(check);
+    show_update_check(session);
+}
+
+/// The tray process answered Check now ([`dialog::answer_check`]): the version card says what
+/// it found. Nothing when the window closed meanwhile.
+pub fn check_answered(result: CheckResult) {
+    with_session(|session| set_update_check(session, UpdateCheck::Answered(result)));
+}
+
 /// The line under the shortcut, in the language of `strings`.
 fn shortcut_message(problem: &ShortcutProblem, strings: &dyn Strings) -> String {
     match problem {
@@ -1691,16 +1787,23 @@ fn connect(window: &ui::SettingsWindow) {
     window.on_updates_toggled(|on| edit_now(Edit::UpdatesCheck(on)));
     window.on_check_updates(|| {
         with_session(|session| {
-            if session.native {
-                dialog::notify(Changes {
+            // The tray process checks and answers (`check_answered`); tests and previews have no
+            // tray process and answer themselves.
+            let asked = !session.native
+                || dialog::notify(Changes {
                     check_updates: true,
                     ..Changes::default()
                 });
+            if !asked {
+                set_update_check(session, UpdateCheck::NotRunning);
+                return;
             }
-            let strings = session.wording.borrow().strings();
+            set_update_check(session, UpdateCheck::Checking);
             session
-                .window
-                .set_updates_status(strings.template(Msg::SettingsUpdatesAsked).into());
+                .check_timer
+                .start(TimerMode::SingleShot, CHECK_WAIT, || {
+                    with_session(|s| set_update_check(s, UpdateCheck::NoAnswer));
+                });
         });
     });
     window.on_info_retry(|| {
@@ -2334,6 +2437,74 @@ mod tests {
             ["5-hour limit", "Weekly limit", "Fable weekly limit"]
         );
         assert_eq!(types[1].0, ProviderId::Codex);
+    }
+
+    #[test]
+    fn the_shortcut_preview_names_the_keys_in_the_language() {
+        let shortcut = |ctrl, alt, shift, win, key: &str| Shortcut {
+            enabled: true,
+            ctrl,
+            alt,
+            shift,
+            win,
+            key: key.to_owned(),
+        };
+        assert_eq!(
+            shortcut_preview(&shortcut(true, true, false, false, "l"), &English),
+            "Ctrl + Alt + L"
+        );
+        assert_eq!(
+            shortcut_preview(&shortcut(false, false, true, true, " f12 "), &Swedish),
+            "Skift + Win + F12"
+        );
+        assert_eq!(
+            shortcut_preview(&shortcut(true, false, false, false, ""), &English),
+            "Ctrl + …",
+            "no key yet"
+        );
+        assert_eq!(
+            shortcut_preview(&shortcut(false, false, false, false, "K"), &English),
+            "K",
+            "no modifier yet (the card says why it is not valid)"
+        );
+        let off = Shortcut {
+            enabled: false,
+            ..shortcut(true, true, false, false, "L")
+        };
+        assert_eq!(shortcut_preview(&off, &English), "");
+    }
+
+    #[test]
+    fn the_version_card_says_what_check_now_found() {
+        let v = lastdrop_core::update::Version::parse("0.2.0").expect("a version");
+        let says = |check: UpdateCheck| update_check_text(&check, &English);
+        assert_eq!(says(UpdateCheck::Checking), "Checking for updates…");
+        assert_eq!(
+            says(UpdateCheck::Answered(CheckResult::UpToDate)),
+            "You have the newest version."
+        );
+        assert_eq!(
+            says(UpdateCheck::Answered(CheckResult::available(&v))),
+            "Lastdrop 0.2.0 is available. Install it from the flyout."
+        );
+        assert_eq!(
+            says(UpdateCheck::Answered(CheckResult::Failed)),
+            "Couldn't check for updates. The notification says why."
+        );
+        assert_eq!(
+            says(UpdateCheck::NotRunning),
+            "Lastdrop isn't running, so it can't check. Start Lastdrop and try again."
+        );
+        for check in [
+            UpdateCheck::NoAnswer,
+            UpdateCheck::Answered(CheckResult::Available(None)),
+        ] {
+            assert_eq!(says(check), "Asked. A notification says what was found.");
+        }
+        assert_eq!(
+            update_check_text(&UpdateCheck::Answered(CheckResult::available(&v)), &Swedish),
+            "Lastdrop 0.2.0 finns. Installera den från panelen."
+        );
     }
 
     #[test]

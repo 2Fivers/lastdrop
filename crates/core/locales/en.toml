@@ -479,6 +479,13 @@ lowercase_names = true
 "settings.updates.check" = "Check for updates once a day"
 "settings.updates.now" = "Check now"
 "settings.updates.hint" = "Lastdrop asks GitHub for its newest version and nothing else. Updates install for this Windows user, without administrator rights."
+# What Check now found, under the version (the tray process answers the settings window).
+"settings.updates.checking" = "Checking for updates…"
+"settings.updates.current" = "You have the newest version."
+"settings.updates.available" = "Lastdrop {version} is available. Install it from the flyout."
+"settings.updates.failed" = "Couldn't check for updates. The notification says why."
+"settings.updates.not_running" = "Lastdrop isn't running, so it can't check. Start Lastdrop and try again."
+# No answer came (or the answer did not say which version): the notification says it.
 "settings.updates.asked" = "Asked. A notification says what was found."
 # The card with the version and Check now.
 "settings.version" = "Lastdrop {version}"

@@ -1,5 +1,6 @@
 //! Updates in the tray process (docs/design/updates-spec.md §1, §3): a check two minutes after
-//! start and then once a day while "Check for updates" is on, or now from Settings; a notification
+//! start and then once a day while "Check for updates" is on, or now from Settings (which is
+//! answered with what was found, [`dialog::answer_check`]); a notification
 //! and the flyout's footer `Lastdrop 0.2.0 is available · Install` when a newer release is out;
 //! and the install: download the installer and `SHA256SUMS` to `%LOCALAPPDATA%\Lastdrop\updates`,
 //! check the size and the SHA-256, start the installer with `--install --update` and quit (the
@@ -22,6 +23,7 @@ use lastdrop_providers::release::{self, Latest};
 use lastdrop_win::tray::NoticeIcon;
 use slint::TimerMode;
 
+use crate::dialog::{self, CheckResult};
 use crate::wiring::{self, App, with_app};
 
 /// The first check after start-up.
@@ -76,12 +78,21 @@ pub fn plan(app: &App) {
 }
 
 /// Asks GitHub for the latest release on a thread of its own; `manual` (Settings ▸ Check now)
-/// also says when there is nothing new or the check failed.
+/// also says when there is nothing new or the check failed, and answers the settings window. A
+/// check that runs already answers a manual one too; while an update downloads, the settings
+/// window is told at once that it is available.
 pub fn check(app: &App, manual: bool) {
+    if manual {
+        app.rt.update_asked.set(true);
+    }
+    if let UpdateState::Downloading(offer) = &*app.rt.update.borrow() {
+        if app.rt.update_asked.take() {
+            dialog::answer_check(&CheckResult::available(&offer.version));
+        }
+        return;
+    }
     // An available offer stays shown while a later check runs.
-    if app.rt.update_checking.replace(true)
-        || matches!(*app.rt.update.borrow(), UpdateState::Downloading(_))
-    {
+    if app.rt.update_checking.replace(true) {
         return;
     }
     let spawned = std::thread::Builder::new()
@@ -97,12 +108,15 @@ pub fn check(app: &App, manual: bool) {
                 Err(e) => Checked::Failed(e.to_string()),
             };
             let _ = slint::invoke_from_event_loop(move || {
-                with_app(|app| on_checked(app, result, manual));
+                with_app(|app| on_checked(app, result));
             });
         });
     if let Err(e) = spawned {
         log::warn!("update: no thread to check: {e}");
         app.rt.update_checking.set(false);
+        if app.rt.update_asked.take() {
+            dialog::answer_check(&CheckResult::Failed);
+        }
     }
 }
 
@@ -124,8 +138,18 @@ fn announces(offer: &Version, announced: Option<&Version>, manual: bool) -> bool
     manual || announced != Some(offer)
 }
 
-fn on_checked(app: &App, result: Checked, manual: bool) {
+/// A check is done: a notification when it found something new (or for Check now, whatever it
+/// found), the offer kept for the footer, and Check now's answer to the settings window.
+fn on_checked(app: &App, result: Checked) {
     app.rt.update_checking.set(false);
+    let manual = app.rt.update_asked.take();
+    if manual {
+        dialog::answer_check(&match &result {
+            Checked::Offer(offer) => CheckResult::available(&offer.version),
+            Checked::UpToDate => CheckResult::UpToDate,
+            Checked::Failed(_) => CheckResult::Failed,
+        });
+    }
     let strings = app.state.borrow().strings;
     match result {
         Checked::Offer(offer) => {

@@ -397,20 +397,28 @@ impl Shortcut {
     }
 
     /// The hotkey it describes (`None` when off), or why it is not valid: a letter, a digit or
-    /// F1–F24 (trimmed, upper case) and at least one modifier. Shift alone with a letter or a
-    /// digit is refused by the registration test, not here.
+    /// F1–F24 (trimmed, upper case, `F01` as `F1`) and at least one modifier, Shift alone only
+    /// with F1–F24 (the registration's rules, `lastdrop_win::hotkey`, so the card says it before
+    /// anything is tried).
     pub fn parse(&self) -> Result<Option<Hotkey>, ShortcutProblem> {
         if !self.enabled {
             return Ok(None);
         }
-        let key = self.key.trim().to_uppercase();
-        let valid_key = (key.chars().count() == 1
-            && key.chars().all(|c| c.is_ascii_alphanumeric()))
-            || key
-                .strip_prefix('F')
-                .and_then(|n| n.parse::<u8>().ok())
-                .is_some_and(|n| (1..=24).contains(&n));
-        if !valid_key || !(self.ctrl || self.alt || self.shift || self.win) {
+        let mut key = self.key.trim().to_uppercase();
+        let typing_key = key.chars().count() == 1 && key.chars().all(|c| c.is_ascii_alphanumeric());
+        let function_key = key
+            .strip_prefix('F')
+            .filter(|n| n.chars().all(|c| c.is_ascii_digit()))
+            .and_then(|n| n.parse::<u8>().ok())
+            .filter(|n| (1..=24).contains(n));
+        if let Some(n) = function_key {
+            key = format!("F{n}");
+        }
+        let shift_alone = self.shift && !(self.ctrl || self.alt || self.win);
+        if !(typing_key || function_key.is_some())
+            || !(self.ctrl || self.alt || self.shift || self.win)
+            || (typing_key && shift_alone)
+        {
             return Err(ShortcutProblem::Invalid);
         }
         Ok(Some(Hotkey {
@@ -1403,7 +1411,23 @@ mod tests {
         composing.shift = true;
         edits.shortcut_edited(composing.clone());
         assert!(edits.is_pending(&Field::Hotkey), "Shift with F1–F24");
+        composing.key = "f03".to_owned();
+        edits.shortcut_edited(composing.clone());
+        assert_eq!(
+            edits.draft().hotkey.map(|h| h.key),
+            Some("F3".to_owned()),
+            "as Windows registers it"
+        );
+        // Shift alone with a letter or a digit types a character: not valid, and said before
+        // anything is tried (the registration refuses it too).
+        composing.key = "K".to_owned();
+        edits.shortcut_edited(composing.clone());
+        assert!(!edits.is_pending(&Field::Hotkey));
+        assert_eq!(edits.shortcut_problem(), Some(&ShortcutProblem::Invalid));
         composing.key = "F25".to_owned();
+        edits.shortcut_edited(composing.clone());
+        assert!(!edits.is_pending(&Field::Hotkey));
+        composing.key = "F+1".to_owned();
         edits.shortcut_edited(composing.clone());
         assert!(!edits.is_pending(&Field::Hotkey));
         // Turning it off is complete.

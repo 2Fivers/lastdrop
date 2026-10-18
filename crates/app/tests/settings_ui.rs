@@ -14,12 +14,15 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use lastdrop_app::demo::Demo;
+use lastdrop_app::dialog::CheckResult;
 use lastdrop_app::settings_accounts::folder_id;
 use lastdrop_app::settings_edits::MemoryOutside;
 use lastdrop_app::settings_window::{self as sw, Focus, Inputs};
 use lastdrop_app::{custom_services, preview, ui};
 use lastdrop_core::model::{AccountKey, ProviderId};
-use lastdrop_core::settings::{AccountSettings, ReadoutContent, RefreshInterval, SourceSettings};
+use lastdrop_core::settings::{
+    AccountSettings, Hotkey, ReadoutContent, RefreshInterval, SourceSettings,
+};
 use lastdrop_providers::discover::Candidate;
 use slint::platform::software_renderer::{MinimalSoftwareWindow, RepaintBufferType};
 use slint::platform::{Key, Platform, WindowAdapter, WindowEvent};
@@ -63,6 +66,17 @@ fn press(window: &ui::SettingsWindow, text: impl Into<slint::SharedString> + Clo
         .window()
         .dispatch_event(WindowEvent::KeyReleased { text });
     frame(window);
+}
+
+/// The saved shortcut: Ctrl, Alt, Shift, Win and the key.
+fn hotkey(ctrl: bool, alt: bool, shift: bool, win: bool, key: &str) -> Option<Hotkey> {
+    Some(Hotkey {
+        ctrl,
+        alt,
+        shift,
+        win,
+        key: key.to_owned(),
+    })
 }
 
 /// Presses `key` with Ctrl held.
@@ -141,8 +155,8 @@ fn settings_pages_instant_apply_and_deep_links() {
     let window = open(&outside);
     assert_eq!(window.get_page(), sw::PAGE_SERVICES, "Services first");
 
-    // ---- The navigation pane: one Tab stop; the arrow keys, Home and End move the selection.
-    press(&window, Key::Tab);
+    // ---- The navigation pane: it has the focus when the window opens, so the arrow keys, Home
+    // and End move the selection at once; one Tab stop.
     press(&window, Key::DownArrow);
     assert_eq!(window.get_page(), sw::PAGE_DISPLAY);
     press(&window, Key::End);
@@ -206,6 +220,95 @@ fn settings_pages_instant_apply_and_deep_links() {
     assert_eq!(window.get_interval_index(), 5);
     assert!(window.get_start_with_windows());
     assert!(!window.get_notify_enabled());
+
+    // ---- The keyboard shortcut (settings-spec §4, §5.2), from the keyboard: Tab from the pane
+    // passes start with Windows, the language and the interval to the shortcut's switch; Space
+    // turns it on with the modifiers as toggle buttons, the key box and the shortcut they make,
+    // which is saved. Space on the Shift button adds Shift, live.
+    for _ in 0..4 {
+        press(&window, Key::Tab);
+    }
+    press(&window, " ");
+    assert!(window.get_hotkey_enabled());
+    assert_eq!(window.get_hotkey_preview(), "Ctrl + Alt + L");
+    wait(&window, 300);
+    assert_eq!(
+        outside.borrow().disk.hotkey,
+        hotkey(true, true, false, false, "L")
+    );
+    for _ in 0..3 {
+        press(&window, Key::Tab);
+    }
+    press(&window, " ");
+    assert!(window.get_hotkey_shift(), "the third toggle is Shift");
+    assert_eq!(window.get_hotkey_preview(), "Ctrl + Alt + Shift + L");
+    wait(&window, 300);
+    assert_eq!(
+        outside.borrow().disk.hotkey,
+        hotkey(true, true, true, false, "L")
+    );
+    // Shift alone with a letter is not valid: the card says why, nothing is tried (no Try
+    // again), the saved shortcut stays.
+    let tested = outside.borrow().tested.len();
+    window.set_hotkey_ctrl(false);
+    window.set_hotkey_alt(false);
+    window.invoke_hotkey_edited();
+    wait(&window, 300);
+    assert_eq!(window.get_hotkey_preview(), "Shift + L");
+    assert!(
+        window
+            .get_hotkey_error()
+            .starts_with("Choose Ctrl, Alt or Win")
+    );
+    assert!(!window.get_hotkey_retry());
+    assert_eq!(outside.borrow().tested.len(), tested, "not tried");
+    assert_eq!(
+        outside.borrow().disk.hotkey,
+        hotkey(true, true, true, false, "L")
+    );
+    // Tab passes Win to the key box; with F7 instead of L, Shift alone is valid and saved.
+    press(&window, Key::Tab);
+    press(&window, Key::Tab);
+    press(&window, Key::End);
+    press(&window, Key::Backspace);
+    assert_eq!(window.get_hotkey_preview(), "Shift + …", "no key yet");
+    type_text(&window, "f7");
+    assert_eq!(window.get_hotkey_preview(), "Shift + F7");
+    assert_eq!(window.get_hotkey_error(), "");
+    wait(&window, 300);
+    assert_eq!(
+        outside.borrow().disk.hotkey,
+        hotkey(false, false, true, false, "F7")
+    );
+
+    // ---- Check now (settings-spec §4): Tab passes the daily check to Check now; Space asks,
+    // and the version card says so until the tray process answers, then what it found. Without
+    // an answer within a minute, the notification is to say it.
+    press(&window, Key::Tab);
+    press(&window, Key::Tab);
+    assert_eq!(window.get_updates_status(), "");
+    press(&window, " ");
+    assert_eq!(window.get_updates_status(), "Checking for updates…");
+    sw::check_answered(CheckResult::UpToDate);
+    assert_eq!(window.get_updates_status(), "You have the newest version.");
+    press(&window, " ");
+    assert_eq!(window.get_updates_status(), "Checking for updates…");
+    wait(&window, 59_000);
+    assert_eq!(window.get_updates_status(), "Checking for updates…");
+    wait(&window, 1_000);
+    assert_eq!(
+        window.get_updates_status(),
+        "Asked. A notification says what was found."
+    );
+    // A late answer still says what was found.
+    sw::check_answered(CheckResult::Failed);
+    assert_eq!(
+        window.get_updates_status(),
+        "Couldn't check for updates. The notification says why."
+    );
+    // Ctrl+Tab puts the focus back in the pane.
+    ctrl(&window, Key::Tab);
+    assert_eq!(window.get_page(), sw::PAGE_SERVICES);
 
     // ---- An alias being typed is not committed by an account action, and commits after its
     // pause. Claude's row expands to its accounts.
@@ -515,6 +618,23 @@ fn settings_pages_instant_apply_and_deep_links() {
     window.invoke_dismiss();
     assert!(!sw::is_open());
 
+    // ---- The accounts deep link with no found folder: Services, and the pane takes the focus,
+    // which was on the page just hidden (where no key would reach the window): Down moves the
+    // selection.
+    let mut inputs = demo_inputs();
+    inputs.accounts.found.clear();
+    let window = open_with(&outside, inputs);
+    press(&window, Key::End);
+    press(&window, Key::Tab);
+    assert_eq!(window.get_page(), sw::PAGE_GENERAL);
+    sw::reveal(Focus::Accounts);
+    frame(&window);
+    assert_eq!(window.get_page(), sw::PAGE_SERVICES);
+    press(&window, Key::DownArrow);
+    assert_eq!(window.get_page(), sw::PAGE_DISPLAY);
+    window.invoke_dismiss();
+    assert!(!sw::is_open());
+
     pin_slots();
     meter_visibility();
 }
@@ -785,10 +905,10 @@ fn meter_visibility() {
         "neither account's weekly limit can be pinned: {choices:?}"
     );
 
-    // Every service off: the empty state, whose link goes to Services. Tab reaches the pane,
-    // Down shows Display; Tab passes the theme list, Theme Studio…, Open themes folder, the
-    // times, the readout's two switches and its content (automatic: no slots) to the link;
-    // Space follows it.
+    // Every service off: the empty state, whose link goes to Services. The pane has the focus
+    // (the window opened with it), Down shows Display; Tab passes the theme list, Theme
+    // Studio…, Open themes folder, the times, the readout's two switches and its content
+    // (automatic: no slots) to the link; Space follows it.
     for row in services(&window) {
         if row.enabled {
             window.invoke_provider_toggled(service_row(&window, &row.id), false);
@@ -796,7 +916,6 @@ fn meter_visibility() {
     }
     wait(&window, 300);
     assert_eq!(window.get_meter_groups().row_count(), 0);
-    press(&window, Key::Tab);
     press(&window, Key::DownArrow);
     assert_eq!(window.get_page(), sw::PAGE_DISPLAY);
     for _ in 0..8 {
