@@ -861,7 +861,7 @@ mod tests {
         assert_eq!(
             fr.warning,
             (
-                "Quota de 5 heures (Claude) épuisé vers 15:18".into(),
+                "Quota sur 5\u{A0}heures (Claude) épuisé vers 15:18".into(),
                 "Fin 15:18".into()
             )
         );
