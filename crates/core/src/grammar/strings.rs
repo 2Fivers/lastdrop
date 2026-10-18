@@ -24,9 +24,11 @@
 //! `{service}` the service
 //! name with alias (R§6.4); `{client}` [`crate::model::ProviderId::client_name`]; `{label}` =
 //! `card.also.line`; `{short_name}` the meter's `short_name`; `{amount}`, `{ref}`, `{burn}`
-//! grouped numbers; `{unit}` a unit word; `{window}` `card.window.*`; `{other}` the other
-//! meter's `short_name`; `{detail}` a secret-free failure detail; `{rows}` a joined list;
-//! `{today}`, `{max}`, `{avg}` bare numbers and `{day}` a full weekday (sparkline); `{model}` a
+//! grouped numbers; `{unit}` a balance's unit word in the plural form of the number before it
+//! (`{ref}` in `card.balance.left`, else `{amount}`; [`super::numbers::unit_word`]); `{window}`
+//! `card.window.*`; `{other}` the other meter's `short_name`; `{detail}` a secret-free failure
+//! detail; `{rows}` a joined list; `{today}`, `{max}`, `{avg}` bare numbers in a window's
+//! sparkline and amounts with their unit in a balance's, and `{day}` a full weekday; `{model}` a
 //! model's display name (`meter.*`); `{language}` a language's own name ([`Language::native_name`])
 //! and `{version}` the app's version (`settings.*`, `about.*`); `{email}` the e-mail address an
 //! account is signed in with and `{name}` an account's name (accounts-spec §4, `settings.accounts.*`);
@@ -173,9 +175,6 @@ catalogue! {
         DurationHoursMin = "duration.hmin",
         DurationDays = "duration.d",
         DurationDaysHours = "duration.dh",
-
-        // ---- Units (the counted ones are `PluralMsg`s)
-        UnitCredits = "unit.credits",
 
         // ---- Hover card (R§8.2, Appendix B)
         CardTitleOkOne = "card.title.ok.1",
@@ -703,12 +702,15 @@ catalogue! {
 
 catalogue! {
     /// A string resource with plural forms (`unit.minute`: `{n} minute`, `{n} minutes`), each
-    /// language with the forms of its [`PluralRule`]. [`count`] picks the form and fills `{n}`.
+    /// language with the forms of its [`PluralRule`]. [`count`] picks the form and fills `{n}`;
+    /// [`plural_form`] picks it for a word shown apart from its number (`unit.credits`).
     PluralMsg in PLURAL_KEYS {
         // ---- Spoken units (R§11 sentences, F§4.5 balance forecast)
         UnitMinute = "unit.minute",
         UnitHour = "unit.hour",
         UnitDay = "unit.day",
+        // ---- A balance's unit after its amount (F§4.5; [`super::numbers::unit_word`])
+        UnitCredits = "unit.credits",
         // ---- Usage history window (charts-spec §5)
         A11yHistoryUsedUp = "a11y.history.used_up",
         UnitWeek = "unit.week",
@@ -834,10 +836,15 @@ pub fn text(strings: &dyn Strings, msg: Msg, args: &[(&str, &str)]) -> String {
     fill(strings.template(msg), args)
 }
 
+/// The template of `msg` in the plural form the count `n` takes (`unit.credits`: `credit` for 1,
+/// `credits` for 0 and 5).
+pub fn plural_form(strings: &dyn Strings, msg: PluralMsg, n: i64) -> &str {
+    strings.plural_template(msg, strings.plural(n))
+}
+
 /// `n` in the plural form the language gives it (`1 minute`, `5 minutes`), `{n}` filled in.
 pub fn count(strings: &dyn Strings, msg: PluralMsg, n: i64) -> String {
-    let template = strings.plural_template(msg, strings.plural(n));
-    fill(template, &[("n", &n.to_string())])
+    fill(plural_form(strings, msg, n), &[("n", &n.to_string())])
 }
 
 /// `s` with its first letter upper-cased: titles, verdicts, "Also tracked" lines and meter rows,

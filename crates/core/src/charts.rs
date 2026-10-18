@@ -12,9 +12,8 @@ use jiff::{SignedDuration, Span, Timestamp};
 
 use crate::flyout::{SparkKind, daily_values};
 use crate::grammar::LocaleFormat;
-use crate::grammar::a11y::unit_word;
 use crate::grammar::meters::localized;
-use crate::grammar::numbers::{amount, percent, share_pct};
+use crate::grammar::numbers::{amount, amount_with_unit, percent, share_pct};
 use crate::grammar::strings::{Msg, PluralMsg, Strings, capitalise, count, text};
 use crate::grammar::time::{day_month, hour_minute, weekday_abbrev, weekday_full};
 use crate::model::{MeterId, MeterKey, MeterNames, Unit, WindowLen};
@@ -583,15 +582,16 @@ fn ticks(range: Range, period: &Period, locale: &LocaleFormat) -> Vec<Tick> {
 fn shown(meter: &ChartMeter, value: f64, input: &HistoryInput<'_>) -> String {
     match meter.kind {
         SparkKind::Window => percent(share_pct(value), input.locale),
-        SparkKind::Balance => with_unit(amount(value, input.locale), meter, input.strings),
+        SparkKind::Balance => with_unit(value, meter, input),
     }
 }
 
-/// `amount` followed by `meter`'s unit word, when it has one.
-fn with_unit(amount: String, meter: &ChartMeter, strings: &dyn Strings) -> String {
+/// `value` as an amount followed by `meter`'s unit, when it has one (`1,240 credits`,
+/// `1 credit`).
+fn with_unit(value: f64, meter: &ChartMeter, input: &HistoryInput<'_>) -> String {
     match &meter.unit {
-        Some(unit) => format!("{amount} {}", unit_word(unit, strings)),
-        None => amount,
+        Some(unit) => amount_with_unit(value, unit, input.locale, input.strings),
+        None => amount(value, input.locale),
     }
 }
 
@@ -695,7 +695,7 @@ fn meter_chart(
 fn shown_use(meter: &ChartMeter, used: f64, input: &HistoryInput<'_>) -> String {
     match meter.kind {
         SparkKind::Window => percent(share_pct(used / 100.0), input.locale),
-        SparkKind::Balance => with_unit(amount(used, input.locale), meter, input.strings),
+        SparkKind::Balance => with_unit(used, meter, input),
     }
 }
 
@@ -707,7 +707,7 @@ fn spoken_use(meter: &ChartMeter, used: f64, input: &HistoryInput<'_>) -> String
             Msg::A11yHistoryPercent,
             &[("n", &share_pct(used / 100.0).to_string())],
         ),
-        SparkKind::Balance => with_unit(amount(used, input.locale), meter, input.strings),
+        SparkKind::Balance => with_unit(used, meter, input),
     }
 }
 

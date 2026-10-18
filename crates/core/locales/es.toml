@@ -63,7 +63,7 @@ lowercase_names = true
 "unit.hour" = { one = "{n} hora", other = "{n} horas" }
 "unit.day" = { one = "{n} día", other = "{n} días" }
 "unit.week" = { one = "{n} semana", other = "{n} semanas" }
-"unit.credits" = "créditos"
+"unit.credits" = { one = "crédito", other = "créditos" }
 
 # ---- Hover card (R§8.2)
 "card.title.ok.1" = "Llegarás al restablecimiento"
@@ -218,7 +218,7 @@ lowercase_names = true
 "flyout.card.a11y.signin" = ", sesión expirada"
 "flyout.balance.a11y" = "Quedan {amount} {unit}, usado el {n} por ciento de la última recarga, aproximadamente {duration} a {burn} al día"
 "flyout.spark.a11y.window" = "Uso por día del {meter}, últimos 14 días: hoy {today} por ciento, máximo {max} por ciento el {day}, media {avg} por ciento."
-"flyout.spark.a11y.balance" = "Uso por día en {unit}, últimos 14 días: hoy {today}, máximo {max} el {day}, media {avg}."
+"flyout.spark.a11y.balance" = "Uso por día, últimos 14 días: hoy {today}, máximo {max} el {day}, media {avg}."
 
 # ---- UI Automation (R§11)
 # Rows say `{service}, {meter}:`, the spoken name after a pause (`Claude, sesión de 5 horas:`).

@@ -14,10 +14,12 @@ use crate::consts::layout::{SPARK_COL_W, SPARK_H, SPARK_W};
 use crate::consts::{SPARK_BALANCE_FLOOR_SHARE, SPARK_DAYS, SPARK_WINDOW_FLOOR_PP};
 use crate::glyph::{ProviderGlyph, SeverityGlyph};
 use crate::grammar::TextContext;
-use crate::grammar::a11y::{row_sentence, runout_point, unit_word};
+use crate::grammar::a11y::{row_sentence, runout_point};
 use crate::grammar::cells::{course_pct, pct, resets_at, t_out};
 use crate::grammar::meters::localized;
-use crate::grammar::numbers::{amount, balance_forecast_long, percent};
+use crate::grammar::numbers::{
+    amount, amount_with_unit, balance_forecast_long, percent, unit_word,
+};
 use crate::grammar::strings::{Msg, capitalise, text};
 use crate::grammar::time::{
     CountdownForm, age_long, card_date, card_time, countdown, long_duration, runout_text,
@@ -452,8 +454,7 @@ fn spark_model(
 ) -> SparkModel {
     let (key, kind, floor) = spark_meter(service);
     let values = spark_values(history, &key, kind, cx.now, &cx.locale.tz);
-    let whole = |v: f64| crate::util::round_half_up(v).max(0.0) as i64;
-    let today = whole(values[SPARK_DAYS - 1].unwrap_or(0.0));
+    let today = values[SPARK_DAYS - 1].unwrap_or(0.0);
     // The highest day; the latest of equal days.
     let (max_i, max_v) = values
         .iter()
@@ -474,12 +475,29 @@ fn spark_model(
         .unwrap_or(first);
     let weekday = usize::try_from(day_date.weekday().to_monday_zero_offset()).unwrap_or(0) % 7;
     let day = cx.locale.weekdays_full[weekday].clone();
+    let unit = match kind {
+        SparkKind::Window => None,
+        SparkKind::Balance => Some(
+            service
+                .meters
+                .iter()
+                .find(|a| a.key == key)
+                .and_then(balance)
+                .map_or(Unit::Credits, |b| b.unit.clone()),
+        ),
+    };
+    // A window's days are bare percentage points (`{today} percent`), a balance's amounts with
+    // their unit (`136 credits`).
+    let shown = |v: f64| match &unit {
+        Some(unit) => amount_with_unit(v.max(0.0), unit, cx.locale, cx.strings),
+        None => (crate::util::round_half_up(v).max(0.0) as i64).to_string(),
+    };
     let args = |name: &'static str, value: String| (name, value);
     let numbers = [
-        args("today", today.to_string()),
-        args("max", whole(max_v).to_string()),
+        args("today", shown(today)),
+        args("max", shown(max_v)),
         args("day", day),
-        args("avg", whole(avg).to_string()),
+        args("avg", shown(avg)),
     ];
     let mut refs: Vec<(&str, &str)> = numbers.iter().map(|(k, v)| (*k, v.as_str())).collect();
     let a11y = match kind {
@@ -500,20 +518,7 @@ fn spark_model(
             refs.push(("meter", &meter));
             capitalise(&text(cx.strings, Msg::FlyoutSparkWindow, &refs))
         }
-        SparkKind::Balance => {
-            let unit = service
-                .meters
-                .iter()
-                .find(|a| a.key == key)
-                .and_then(balance)
-                .map_or_else(
-                    || unit_word(&Unit::Credits, cx.strings),
-                    |b| unit_word(&b.unit, cx.strings),
-                );
-            let unit = capitalise(&unit);
-            refs.push(("unit", &unit));
-            text(cx.strings, Msg::FlyoutSparkBalance, &refs)
-        }
+        SparkKind::Balance => text(cx.strings, Msg::FlyoutSparkBalance, &refs),
     };
     SparkModel {
         values,
@@ -968,7 +973,8 @@ fn balance_body(a: &Assessment, service: &ServiceEval, cx: &TextContext<'_>) -> 
         return BalanceBodyModel {
             key: a.key.clone(),
             amount: s.template(Msg::NoReset).to_owned(),
-            unit: unit_word(&Unit::Credits, s),
+            // No amount yet (`–`): the plural of a count of several.
+            unit: unit_word(&Unit::Credits, 2.0, s),
             forecast: s.template(Msg::Loading).to_owned(),
             forecast_glyph: None,
             spent: String::new(),
@@ -978,7 +984,7 @@ fn balance_body(a: &Assessment, service: &ServiceEval, cx: &TextContext<'_>) -> 
     };
     let stats = &b.stats;
     let amount_text = amount(b.amount, cx.locale);
-    let unit = unit_word(&b.unit, s);
+    let unit = unit_word(&b.unit, b.amount, s);
     let pct_text = percent(b.pct, cx.locale);
     let burn = amount(stats.burn_per_day, cx.locale);
     let forecast = if stats.exhausted {

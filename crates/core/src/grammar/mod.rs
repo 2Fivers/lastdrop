@@ -3,7 +3,7 @@
 //!
 //! - [`time`]: instants and durations (R§5.0), time points (R§5.2), countdowns (R§5.3), ages
 //!   (R§5.4), card/flyout times (R§8.2).
-//! - [`numbers`]: percent and amounts (R§5.6), balance durations (R§5.5).
+//! - [`numbers`]: percent and amounts with their unit (R§5.6), balance durations (R§5.5).
 //! - [`cells`]: readout right cells and compact cells by row state (R§5.7, R§5.8).
 //! - [`a11y`]: UI Automation row sentences (R§11) and the tray tooltip (R§9.3).
 //! - [`strings`]: every string as a resource (R§5.9, R Appendix B), with a [`Strings`] table

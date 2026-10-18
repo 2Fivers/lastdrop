@@ -51,7 +51,7 @@ lowercase_names = true
 "unit.hour" = { one = "{n} timme", other = "{n} timmar" }
 "unit.day" = { one = "{n} dag", other = "{n} dagar" }
 "unit.week" = { one = "{n} vecka", other = "{n} veckor" }
-"unit.credits" = "krediter"
+"unit.credits" = { one = "kredit", other = "krediter" }
 
 # ---- Hover card (R§8.2)
 "card.title.ok.1" = "Det räcker till återställningen"
@@ -192,7 +192,7 @@ lowercase_names = true
 "flyout.card.a11y.signin" = ", inloggningen har gått ut"
 "flyout.balance.a11y" = "{amount} {unit} kvar, {n} procent av senaste påfyllningen använt, ungefär {duration} med {burn} per dag"
 "flyout.spark.a11y.window" = "Användning av {meter} per dag de senaste 14 dagarna: idag {today} procent, högst {max} procent ({day}), i genomsnitt {avg} procent."
-"flyout.spark.a11y.balance" = "{unit} använda per dag de senaste 14 dagarna: idag {today}, högst {max} ({day}), i genomsnitt {avg}."
+"flyout.spark.a11y.balance" = "Användning per dag de senaste 14 dagarna: idag {today}, högst {max} ({day}), i genomsnitt {avg}."
 
 # ---- UI Automation (R§11)
 "a11y.root" = "Lastdrop. {rows}"

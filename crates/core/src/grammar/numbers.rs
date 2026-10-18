@@ -1,10 +1,12 @@
-//! Percent and numbers (R§5.6) and balance durations (R§5.5, F§4.5).
+//! Percent and numbers (R§5.6), a balance's unit after its amount, and balance durations
+//! (R§5.5, F§4.5).
 
 use super::locale::{LocaleFormat, PercentPattern};
-use super::strings::{Msg, PluralMsg, Strings, count, text};
+use super::strings::{Msg, PluralMsg, Strings, count, plural_form, text};
 use crate::consts::{
     BAL_DURATION_DAYS_BELOW_DAYS, BAL_DURATION_HOURS_BELOW_DAYS, BAL_DURATION_WEEKS_BELOW_DAYS,
 };
+use crate::model::Unit;
 use crate::stats::BalanceStats;
 use crate::util::round_half_up;
 
@@ -32,16 +34,19 @@ pub fn share_pct(share: f64) -> u8 {
     round_half_up(share * 100.0 + 1e-9).clamp(0.0, 255.0) as u8
 }
 
+/// The whole number [`amount`] shows for `value`: rounded half up, 0 when it is not finite.
+fn shown_whole(value: f64) -> i64 {
+    if !value.is_finite() {
+        return 0;
+    }
+    // `as` saturates; balances never come near the i64 range.
+    round_half_up(value) as i64
+}
+
 /// An amount as a whole number with the locale's digit grouping: `1,240`; sv-SE `1 240` with
 /// U+202F (R§5.6). Credits are whole; fractions are rounded half up.
 pub fn amount(value: f64, locale: &LocaleFormat) -> String {
-    let rounded = if value.is_finite() {
-        round_half_up(value)
-    } else {
-        0.0
-    };
-    // `as` saturates; balances never come near the i64 range.
-    let whole = rounded as i64;
+    let whole = shown_whole(value);
     let digits = whole.unsigned_abs().to_string();
     let mut out = String::with_capacity(digits.len() + digits.len() / 3 * 3 + 1);
     if whole < 0 {
@@ -54,6 +59,34 @@ pub fn amount(value: f64, locale: &LocaleFormat) -> String {
         out.push(ch);
     }
     out
+}
+
+/// The word of a balance's unit after an amount of `value`, in the plural form of the number
+/// [`amount`] shows for it, so the two always agree: 1 and 1.4 show `1 credit`, 1.5 `2 credits`,
+/// 0 `0 credits` (French `0 crédit`: CLDR counts 0 with the singular). A currency code has one
+/// form (`1 USD`).
+pub fn unit_word(unit: &Unit, value: f64, strings: &dyn Strings) -> String {
+    match unit {
+        Unit::Credits => {
+            plural_form(strings, PluralMsg::UnitCredits, shown_whole(value)).to_owned()
+        }
+        Unit::Currency { code } => code.clone(),
+    }
+}
+
+/// An amount followed by its unit (`1,240 credits`, `1 credit`, `12 USD`), for the texts that
+/// show the two as one value.
+pub fn amount_with_unit(
+    value: f64,
+    unit: &Unit,
+    locale: &LocaleFormat,
+    strings: &dyn Strings,
+) -> String {
+    format!(
+        "{} {}",
+        amount(value, locale),
+        unit_word(unit, value, strings)
+    )
 }
 
 /// `value` with one decimal in the locale's decimal separator (`4.2`, sv-SE `4,2`), rounded half
@@ -235,6 +268,48 @@ mod tests {
         assert_eq!(amount(-1500.0, &gb), "-1,500");
         assert_eq!(amount(0.0, &gb), "0");
         assert_eq!(amount(f64::NAN, &gb), "0");
+    }
+
+    #[test]
+    fn a_balance_unit_agrees_with_its_amount_in_every_language() {
+        use crate::grammar::strings::Language;
+
+        // The unit after 0, 1 and 2 credits.
+        let units = [
+            (Language::English, ["credits", "credit", "credits"]),
+            (Language::Swedish, ["krediter", "kredit", "krediter"]),
+            (Language::German, ["Credits", "Credit", "Credits"]),
+            // CLDR counts 0 with the singular in French.
+            (Language::French, ["crédit", "crédit", "crédits"]),
+            (Language::Spanish, ["créditos", "crédito", "créditos"]),
+        ];
+        for (l, [zero, one, two]) in units {
+            let (s, locale) = (l.strings(), LocaleFormat::of_language(l, TimeZone::UTC));
+            let with_unit = |v: f64| amount_with_unit(v, &Unit::Credits, &locale, s);
+            for (n, unit) in [(0.0, zero), (1.0, one), (2.0, two)] {
+                assert_eq!(unit_word(&Unit::Credits, n, s), unit, "{}: {n}", l.tag());
+                assert_eq!(with_unit(n), format!("{n} {unit}"), "{}", l.tag());
+            }
+            // The number as shown picks the form: 1.4 and 0.5 show 1, 1.5 shows 2, 0.4 shows 0.
+            assert_eq!(with_unit(1.4), format!("1 {one}"), "{}", l.tag());
+            assert_eq!(with_unit(0.5), format!("1 {one}"), "{}", l.tag());
+            assert_eq!(with_unit(1.5), format!("2 {two}"), "{}", l.tag());
+            assert_eq!(with_unit(0.4), format!("0 {zero}"), "{}", l.tag());
+            assert_eq!(with_unit(f64::NAN), format!("0 {zero}"), "{}", l.tag());
+            // A debt of one takes the singular too (CLDR's rules count the size).
+            assert_eq!(with_unit(-1.0), format!("-1 {one}"), "{}", l.tag());
+            // A currency code has one form.
+            let usd = Unit::Currency {
+                code: "USD".to_owned(),
+            };
+            assert_eq!(amount_with_unit(1.0, &usd, &locale, s), "1 USD");
+            assert_eq!(amount_with_unit(2.0, &usd, &locale, s), "2 USD");
+        }
+        let gb = LocaleFormat::en_gb(TimeZone::UTC);
+        assert_eq!(
+            amount_with_unit(1240.0, &Unit::Credits, &gb, &English),
+            "1,240 credits"
+        );
     }
 
     #[test]

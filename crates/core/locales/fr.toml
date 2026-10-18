@@ -70,7 +70,7 @@ lowercase_names = true
 "unit.hour" = { one = "{n} heure", other = "{n} heures" }
 "unit.day" = { one = "{n} jour", other = "{n} jours" }
 "unit.week" = { one = "{n} semaine", other = "{n} semaines" }
-"unit.credits" = "crédits"
+"unit.credits" = { one = "crédit", other = "crédits" }
 
 # ---- Hover card (R§8.2)
 "card.title.ok.1" = "Vous tiendrez jusqu'à la réinitialisation"
@@ -222,7 +222,7 @@ lowercase_names = true
 "flyout.card.a11y.signin" = ", connexion expirée"
 "flyout.balance.a11y" = "Reste {amount} {unit}, dernière recharge utilisée à {n} pour cent, de quoi tenir environ {duration} à raison de {burn} par jour"
 "flyout.spark.a11y.window" = "{meter}, utilisation par jour sur les 14 derniers jours\u00A0: aujourd'hui {today} pour cent, maximum {max} pour cent le {day}, moyenne {avg} pour cent."
-"flyout.spark.a11y.balance" = "{unit} utilisés par jour sur les 14 derniers jours\u00A0: aujourd'hui {today}, maximum {max} le {day}, moyenne {avg}."
+"flyout.spark.a11y.balance" = "Utilisation par jour sur les 14 derniers jours\u00A0: aujourd'hui {today}, maximum {max} le {day}, moyenne {avg}."
 
 # ---- UI Automation (R§11)
 "a11y.root" = "Lastdrop. {rows}"

@@ -12,9 +12,9 @@ use crate::color::ColorRole;
 use crate::consts::{ALSO_TRACKED_MAX, CARD_FORECAST_MAX_PCT};
 use crate::glyph::{Icon, ProviderGlyph, SeverityGlyph};
 use crate::grammar::TextContext;
-use crate::grammar::a11y::{balance_sentence, runout_point, unit_word};
+use crate::grammar::a11y::{balance_sentence, runout_point};
 use crate::grammar::cells::{back_text, course_pct, pct, reason_text, resets_at, t_out};
-use crate::grammar::numbers::{amount, balance_duration_words, percent, share_pct};
+use crate::grammar::numbers::{amount, balance_duration_words, percent, share_pct, unit_word};
 use crate::grammar::strings::{Msg, Strings, capitalise, fill, text};
 use crate::grammar::time::{
     age_long_min1, age_token, card_date, card_time, long_duration, round_min, runout_text,
@@ -293,7 +293,8 @@ fn card_balance(a: &Assessment, b: &BalanceAssessment, cx: &TextContext<'_>) -> 
             &[
                 ("amount", &amount(b.amount, cx.locale)),
                 ("ref", &amount(stats.reference, cx.locale)),
-                ("unit", &unit_word(&b.unit, s)),
+                // `1 of 100 credits left`: the unit counts the top-up.
+                ("unit", &unit_word(&b.unit, stats.reference, s)),
             ],
         ),
         forecast,

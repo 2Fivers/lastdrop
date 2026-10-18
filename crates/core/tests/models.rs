@@ -1642,6 +1642,12 @@ mod flyout {
         );
         assert_eq!(meshy_card.spark.values, spark);
         assert_eq!(meshy_card.spark.floor, 3260.0 * 0.05);
+        // A balance's days are amounts with their unit.
+        assert_eq!(
+            meshy_card.spark.a11y,
+            "Use per day, last 14 days: today 952 credits, highest 952 credits on Saturday, \
+             average 476 credits."
+        );
         assert_eq!(flyout.footer_note, None);
         assert_eq!(flyout.focus_card, None);
     }

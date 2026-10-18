@@ -12,14 +12,13 @@ use jiff::Timestamp;
 
 use super::TextContext;
 use super::cells::{course_pct, pct, resets_at, t_out};
-use super::numbers::{amount, percent};
+use super::numbers::{amount, percent, unit_word};
 use super::strings::{Msg, Strings, text};
 use super::time::{
     CountdownForm, card_time, countdown, long_duration, shown_age, spoken_duration, spoken_point,
     spoken_time, time_token,
 };
 use crate::consts::TRAY_TIP_MAX_CHARS;
-use crate::model::Unit;
 use crate::stats::{
     AssessedMeter, Assessment, Evaluation, Freshness, ResetView, RowState, ServiceEval,
     StaleReason, runway_minutes,
@@ -36,14 +35,6 @@ pub(crate) fn spoken_name(name: &str, strings: &dyn Strings) -> String {
             first.to_lowercase().chain(chars).collect()
         }
         _ => joined,
-    }
-}
-
-/// The word of a balance unit (`credits`, a currency code).
-pub(crate) fn unit_word(unit: &Unit, strings: &dyn Strings) -> String {
-    match unit {
-        Unit::Credits => strings.template(Msg::UnitCredits).to_owned(),
-        Unit::Currency { code } => code.clone(),
     }
 }
 
@@ -79,7 +70,7 @@ pub(crate) fn balance_sentence(
         return String::new();
     };
     let amount = amount(b.amount, cx.locale);
-    let unit = unit_word(&b.unit, cx.strings);
+    let unit = unit_word(&b.unit, b.amount, cx.strings);
     let duration = b
         .stats
         .days_left

@@ -79,6 +79,17 @@ Each language gives exactly the forms its `plural` rule picks. Polish (`plural =
 | `russian` | one (1, 21, 31, …), few (2–4, 22–24, …), many | Russian, Ukrainian, Belarusian |
 | `croatian` | one (1, 21, 31, …), few (2–4, 22–24, …), other | Croatian, Serbian, Bosnian |
 
+A balance's unit is a plural string without its number, because the template places the
+amount (`{amount} {unit}`) and the flyout shows the two apart:
+
+```toml
+"unit.credits" = { one = "credit", other = "credits" }
+```
+
+The number as shown picks the form: amounts are rounded to whole numbers, so 1.4 credits read
+`1 credit` and 1.5 `2 credits`. In `card.balance.left` the unit counts the top-up, `{ref}`
+(`1 of 3,260 credits left`); everywhere else it counts `{amount}`.
+
 The rules are CLDR's for whole numbers (`src/grammar/plural.rs`). A language with another rule
 (Arabic, Lithuanian, Slovenian, …) needs a new `PluralRule` there, with its tests. Languages
 written right to left also need layout work in the flyout and the readout first.

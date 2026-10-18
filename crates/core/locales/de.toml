@@ -57,7 +57,7 @@ lowercase_names = false
 "unit.hour" = { one = "{n} Stunde", other = "{n} Stunden" }
 "unit.day" = { one = "{n} Tag", other = "{n} Tage" }
 "unit.week" = { one = "{n} Woche", other = "{n} Wochen" }
-"unit.credits" = "Credits"
+"unit.credits" = { one = "Credit", other = "Credits" }
 
 # ---- Hover card (R§8.2)
 # Reset is `Zurücksetzung` (Microsoft's noun, as in Kennwortzurücksetzung), the verb
@@ -215,7 +215,7 @@ lowercase_names = false
 "flyout.card.a11y.signin" = ", Anmeldung abgelaufen"
 "flyout.balance.a11y" = "Noch {amount} {unit}, {n} Prozent der letzten Aufladung verbraucht, reicht bei {burn} pro Tag etwa {duration}"
 "flyout.spark.a11y.window" = "{meter}, Nutzung pro Tag in den letzten 14 Tagen: heute {today} Prozent, Höchstwert {max} Prozent am {day}, Durchschnitt {avg} Prozent."
-"flyout.spark.a11y.balance" = "Verbrauchte {unit} pro Tag in den letzten 14 Tagen: heute {today}, Höchstwert {max} am {day}, Durchschnitt {avg}."
+"flyout.spark.a11y.balance" = "Nutzung pro Tag in den letzten 14 Tagen: heute {today}, Höchstwert {max} am {day}, Durchschnitt {avg}."
 
 # ---- UI Automation (R§11)
 "a11y.root" = "Lastdrop. {rows}"

@@ -254,7 +254,8 @@ A 14-day history of use per service, top right of every card (a word-sized graph
     instance within day k, in percentage points (a drop at a reset is ignored);
   - balance services: sum of balance decreases within day k (top-ups ignored), in the provider unit.
 - Accessible: role image, label e.g. `Weekly limit used per day, last 14 days: today 6 percent, highest 12 percent on
-  Friday, average 5 percent.`
+  Friday, average 5 percent.`; a balance's days are amounts with the unit: `Use per day, last 14 days: today
+  140 credits, highest 250 credits on Tuesday, average 111 credits.`
 - Before 14 days of history exist, missing days are empty slots on the baseline.
 
 ## 7. Colour tokens

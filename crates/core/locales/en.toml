@@ -60,7 +60,9 @@ lowercase_names = true
 "unit.hour" = { one = "{n} hour", other = "{n} hours" }
 "unit.day" = { one = "{n} day", other = "{n} days" }
 "unit.week" = { one = "{n} week", other = "{n} weeks" }
-"unit.credits" = "credits"
+# The `{unit}` after an amount, without the number: `1 credit`, `1,240 credits`. The number as
+# shown (rounded to a whole one) picks the form; in `card.balance.left` that is `{ref}`.
+"unit.credits" = { one = "credit", other = "credits" }
 
 # ---- Hover card (R§8.2, Appendix B)
 "card.title.ok.1" = "You'll make it to the reset"
@@ -207,7 +209,8 @@ lowercase_names = true
 "flyout.card.a11y.signin" = ", sign-in expired"
 "flyout.balance.a11y" = "{amount} {unit} left, {n} percent of the last top-up used, about {duration} at {burn} a day"
 "flyout.spark.a11y.window" = "{meter} limit used per day, last 14 days: today {today} percent, highest {max} percent on {day}, average {avg} percent."
-"flyout.spark.a11y.balance" = "{unit} used per day, last 14 days: today {today}, highest {max} on {day}, average {avg}."
+# `{today}`, `{max}`, `{avg}`: amounts with their unit (`136 credits`).
+"flyout.spark.a11y.balance" = "Use per day, last 14 days: today {today}, highest {max} on {day}, average {avg}."
 
 # ---- UI Automation (R§11)
 "a11y.root" = "Lastdrop. {rows}"
