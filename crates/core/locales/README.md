@@ -44,8 +44,9 @@ it is one of Windows' display languages. Nothing in the code needs to change.
 - **Spoken percentages** (`a11y.*`, `flyout.*.a11y`) are written `{n} percent` with a bare
   number. Never write `{pct} percent`, since `{pct}` already carries the sign.
 - **Joined fragments** keep the shape of the English one. A leading space or `, ` stays,
-  because it is glued to other text, and so does a closing full stop or `…`. The tests check
-  this.
+  because it is glued to other text, and so does a closing full stop or `…`. A text that English
+  ends without a full stop may still end in an abbreviation's (French `auj.`, German `Tsd.`).
+  The tests check this.
 - **Capitals:** titles and verdicts are capitalised by the code after filling, so a template
   may start with `{meter}`, `{label}` or `{short_name}`.
 - **Short tokens** (`5h`, `Wk`, `{n}d`) sit in the taskbar readout. Keep them as short as the

@@ -926,10 +926,18 @@ mod tests {
         }
     }
 
+    /// `t` ends in an abbreviation's full stop: one to four letters before it (`auj.`, `Tsd.`).
+    fn ends_in_abbreviation(t: &str) -> bool {
+        t.strip_suffix('.')
+            .and_then(|s| s.split(|c: char| !c.is_alphabetic()).next_back())
+            .is_some_and(|word| (1..=4).contains(&word.chars().count()))
+    }
+
     #[test]
     fn every_language_keeps_the_shape_of_each_english_template() {
         // Fragments joined to other text keep their leading space or separator, sentences
         // their full stop, so a joined line reads in every language as the English one does.
+        // A text English ends without one may end in an abbreviation's (fr `auj.`, de `Tsd.`).
         for l in Language::ALL {
             let strings = l.strings();
             for m in Msg::ALL {
@@ -937,10 +945,18 @@ mod tests {
                 let what = format!("{}: {}: {t:?}", l.tag(), m.key());
                 assert_eq!(en.starts_with(' '), t.starts_with(' '), "{what}");
                 assert_eq!(en.starts_with(", "), t.starts_with(", "), "{what}");
-                assert_eq!(en.ends_with('.'), t.ends_with('.'), "{what}");
+                assert!(
+                    en.ends_with('.') == t.ends_with('.')
+                        || (!en.ends_with('.') && ends_in_abbreviation(t)),
+                    "{what}"
+                );
                 assert_eq!(en.ends_with('…'), t.ends_with('…'), "{what}");
             }
         }
+        assert!(ends_in_abbreviation("{n} Tsd."));
+        assert!(ends_in_abbreviation("auj."));
+        assert!(!ends_in_abbreviation("Connexion expirée."));
+        assert!(!ends_in_abbreviation("Hors ligne."));
     }
 
     #[test]
