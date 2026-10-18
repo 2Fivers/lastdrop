@@ -700,4 +700,237 @@ mod tests {
         let card = sv(Scenario::Warning).hover_card();
         assert_eq!(card.header.title, "5-timmarsgränsen tar slut 15:18");
     }
+
+    /// The demo's flyout and hover card in `language`: Claude's rows (name, value, right
+    /// cluster, its short form), Meshy's balance (amount, forecast, until), the warning and stale
+    /// verdicts and the "Also tracked" labels, for the checks of each language below.
+    struct Shown {
+        verdict: String,
+        rows: Vec<(String, String, String, String)>,
+        balance: (String, String, String),
+        warning: (String, String),
+        stale: String,
+        title: String,
+        also: Vec<String>,
+    }
+
+    fn shown_in(language: Language) -> Shown {
+        let demo = |scenario| Demo::scenario(false, scenario).in_language(language);
+        let flyout = demo(Scenario::Normal).flyout();
+        let CardBody::Meters(rows) = &flyout.cards[0].body else {
+            panic!("Claude has window meters");
+        };
+        let rows = rows
+            .iter()
+            .map(|r| {
+                let right = &r.right;
+                (
+                    r.name.clone(),
+                    r.value.clone(),
+                    right.text.clone(),
+                    right.short.clone(),
+                )
+            })
+            .collect();
+        let CardBody::Balance(b) = &flyout.cards[2].body else {
+            panic!("Meshy is a balance");
+        };
+        let balance = (
+            b.amount.clone(),
+            b.forecast.clone(),
+            b.until.clone().unwrap_or_default(),
+        );
+        let warning = demo(Scenario::Warning).flyout();
+        let CardBody::Meters(warning_rows) = &warning.cards[0].body else {
+            panic!("Claude has window meters");
+        };
+        let card = demo(Scenario::Normal).hover_card();
+        Shown {
+            verdict: flyout.verdict.text,
+            rows,
+            balance,
+            warning: (warning.verdict.text, warning_rows[0].right.text.clone()),
+            stale: demo(Scenario::Stale).flyout().verdict.text,
+            title: card.header.title,
+            also: card
+                .also
+                .expect("also tracked")
+                .lines
+                .into_iter()
+                .map(|l| l.label)
+                .collect(),
+        }
+    }
+
+    fn row(name: &str, value: &str, right: &str, short: &str) -> (String, String, String, String) {
+        (name.into(), value.into(), right.into(), short.into())
+    }
+
+    #[test]
+    fn the_mock_in_german() {
+        // de-DE: `42 %` with U+202F, `1.240`, `Mo`, `Okt`; a number and its unit held together
+        // by U+00A0; `9 Tage` takes the plural.
+        let de = shown_in(Language::German);
+        assert_eq!(de.verdict, "Alles reicht bis zur Zurücksetzung");
+        assert_eq!(
+            de.rows,
+            [
+                row(
+                    "5-Stunden-Sitzung",
+                    "42\u{202F}%",
+                    "Zurücksetzung 14:56",
+                    "14:56"
+                ),
+                row(
+                    "Woche · alle Modelle",
+                    "61\u{202F}%",
+                    "Zurücksetzung Mo 09:00",
+                    "Mo 09:00"
+                ),
+                row(
+                    "Woche · Fable",
+                    "18\u{202F}%",
+                    "Zurücksetzung Mo 09:00",
+                    "Mo 09:00"
+                ),
+            ]
+        );
+        assert_eq!(
+            de.balance,
+            (
+                "1.240".into(),
+                "Reicht noch ≈ 9 Tage".into(),
+                "bis ≈ Mo 19 Okt".into()
+            )
+        );
+        assert_eq!(
+            de.warning,
+            (
+                "Claude: 5-Stunden-Limit leer ab 15:18".into(),
+                "Leer 15:18".into()
+            )
+        );
+        assert_eq!(de.stale, "Claude: seit 47\u{A0}min keine Messung");
+        assert_eq!(de.title, "Reicht bis zu beiden Zurücksetzungen");
+        assert_eq!(
+            de.also,
+            [
+                "Claude: Wochenlimit für Fable",
+                "Codex: Wochenlimit",
+                "Meshy: Credit-Guthaben"
+            ]
+        );
+    }
+
+    #[test]
+    fn the_mock_in_french() {
+        // fr-FR: `42 %` and `1 240` with U+202F, `lun.`, `oct.`; `9 jours` takes the plural.
+        let fr = shown_in(Language::French);
+        assert_eq!(fr.verdict, "Tous les quotas tiennent jusqu'au bout");
+        assert_eq!(
+            fr.rows,
+            [
+                row(
+                    "Session de 5 heures",
+                    "42\u{202F}%",
+                    "Réinit. 14:56",
+                    "14:56"
+                ),
+                row(
+                    "Semaine · tous les modèles",
+                    "61\u{202F}%",
+                    "Réinit. lun. 09:00",
+                    "lun. 09:00"
+                ),
+                row(
+                    "Semaine · Fable",
+                    "18\u{202F}%",
+                    "Réinit. lun. 09:00",
+                    "lun. 09:00"
+                ),
+            ]
+        );
+        assert_eq!(
+            fr.balance,
+            (
+                "1\u{202F}240".into(),
+                "Reste ≈ 9 jours".into(),
+                "jusqu'à ≈ lun. 19 oct.".into()
+            )
+        );
+        assert_eq!(
+            fr.warning,
+            (
+                "Quota de 5 heures (Claude) épuisé vers 15:18".into(),
+                "Fin 15:18".into()
+            )
+        );
+        // A no-break space before the colon, as French typography wants.
+        assert_eq!(fr.stale, "Claude\u{A0}: aucun relevé depuis 47\u{A0}min");
+        assert_eq!(fr.title, "Vous tiendrez jusqu'aux deux réinitialisations");
+        assert_eq!(
+            fr.also,
+            [
+                "Quota hebdomadaire Fable (Claude)",
+                "Quota hebdomadaire (Codex)",
+                "Solde de crédits (Meshy)"
+            ]
+        );
+    }
+
+    #[test]
+    fn the_mock_in_spanish() {
+        // es-ES: `42 %` with U+202F, `1.240`, `lu.`, `oct.` and hours without a leading zero
+        // (`9:00`); `9 días` takes the plural.
+        let es = shown_in(Language::Spanish);
+        assert_eq!(es.verdict, "Los límites llegan al restablecimiento");
+        assert_eq!(
+            es.rows,
+            [
+                row(
+                    "Sesión de 5 horas",
+                    "42\u{202F}%",
+                    "Se restablece 14:56",
+                    "14:56"
+                ),
+                row(
+                    "Semanal · todos los modelos",
+                    "61\u{202F}%",
+                    "Se restablece lu. 9:00",
+                    "lu. 9:00"
+                ),
+                row(
+                    "Semanal · Fable",
+                    "18\u{202F}%",
+                    "Se restablece lu. 9:00",
+                    "lu. 9:00"
+                ),
+            ]
+        );
+        assert_eq!(
+            es.balance,
+            (
+                "1.240".into(),
+                "≈ 9 días de saldo".into(),
+                "hasta ≈ lu. 19 oct.".into()
+            )
+        );
+        assert_eq!(
+            es.warning,
+            (
+                "Claude: límite de 5 horas se agota 15:18".into(),
+                "Fin 15:18".into()
+            )
+        );
+        assert_eq!(es.stale, "Claude: sin lecturas desde hace 47\u{A0}min");
+        assert_eq!(es.title, "Llegarás a ambos restablecimientos");
+        assert_eq!(
+            es.also,
+            [
+                "Claude: límite semanal de Fable",
+                "Codex: límite semanal",
+                "Meshy: saldo de créditos"
+            ]
+        );
+    }
 }

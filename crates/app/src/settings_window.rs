@@ -2303,7 +2303,24 @@ mod tests {
         let choices = language_choices(&["sv-SE".to_owned(), "en-US".to_owned()], &English);
         assert_eq!(choices[..2], ["Same as Windows (Svenska)", "English"]);
         assert_eq!(choices.len(), Language::ALL.len() + 1);
-        assert!(choices.iter().any(|c| c == "Svenska"));
+        for name in ["Deutsch", "Español", "Français", "Svenska"] {
+            assert!(choices.iter().any(|c| c == name), "{name}");
+        }
+        for (windows, name) in [
+            ("de-AT", "Deutsch"),
+            ("fr-CA", "Français"),
+            ("es-MX", "Español"),
+        ] {
+            let choices = language_choices(&[windows.to_owned()], &English);
+            assert_eq!(choices[0], format!("Same as Windows ({name})"));
+            // Picking the language by its name sets its tag.
+            let at = choices.iter().position(|c| c == name).expect("listed");
+            let tag = language_at(i32::try_from(at).expect("a few languages"));
+            assert_eq!(
+                tag.as_deref().and_then(Language::from_tag),
+                Language::from_tag(windows)
+            );
+        }
         assert_eq!(
             language_choices(&[], &English)[0],
             "Same as Windows (English)"
