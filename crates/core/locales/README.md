@@ -52,6 +52,9 @@ it is one of Windows' display languages. Nothing in the code needs to change.
 - **Short tokens** (`5h`, `Wk`, `{n}d`) sit in the taskbar readout. Keep them as short as the
   English ones. Widths are measured from the strings, so nothing is cut off, but a longer token
   takes room from the bar.
+- **No-break spaces** (`\u00A0`) keep two words on one line: a number and its unit
+  (`11\u00A0min`), a French colon and its word (`Claude\u00A0:`). The flyout and the hover card
+  keep them together where their texts wrap (`wiring::wrapping` in the app).
 - **Not in these files:** numbers, percent signs, times, weekday and month names come from the
   Windows regional format.
 
@@ -78,6 +81,19 @@ Each language gives exactly the forms its `plural` rule picks. Polish (`plural =
 | `polish` | one (1), few (2–4, 22–24, …), many | Polish |
 | `russian` | one (1, 21, 31, …), few (2–4, 22–24, …), many | Russian, Ukrainian, Belarusian |
 | `croatian` | one (1, 21, 31, …), few (2–4, 22–24, …), other | Croatian, Serbian, Bosnian |
+
+A balance's unit is a plural string without its number, because the template places the
+amount (`{amount} {unit}`) and the flyout shows the two apart:
+
+```toml
+"unit.credits" = { one = "credit", other = "credits" }
+```
+
+The number as shown picks the form: amounts are rounded to whole numbers, so 1.4 credits read
+`1 credit` and 1.5 `2 credits`. In `card.balance.left` the unit counts the top-up, `{ref}`
+(`1 of 3,260 credits left`); everywhere else it counts `{amount}`. Words around the amount must
+fit every count: Spanish says `Saldo de 1 crédito` rather than `Quedan`, which would need
+`Queda 1 crédito`.
 
 The rules are CLDR's for whole numbers (`src/grammar/plural.rs`). A language with another rule
 (Arabic, Lithuanian, Slovenian, …) needs a new `PluralRule` there, with its tests. Languages

@@ -57,7 +57,7 @@ lowercase_names = false
 "unit.hour" = { one = "{n} Stunde", other = "{n} Stunden" }
 "unit.day" = { one = "{n} Tag", other = "{n} Tage" }
 "unit.week" = { one = "{n} Woche", other = "{n} Wochen" }
-"unit.credits" = "Credits"
+"unit.credits" = { one = "Credit", other = "Credits" }
 
 # ---- Hover card (R§8.2)
 # Reset is `Zurücksetzung` (Microsoft's noun, as in Kennwortzurücksetzung), the verb
@@ -77,6 +77,9 @@ lowercase_names = false
 "card.title.critical.level" = "{meter} zu {pct} verbraucht"
 # "aufgebraucht bis" reads as "until", like "geschlossen bis Montag".
 "card.title.exhausted" = "{meter} aufgebraucht bis {time}"
+"card.title.balance.warning" = "{meter} reicht nur bis {time}"
+"card.title.balance.runway" = "{meter} reicht nur noch {duration}"
+"card.title.balance.empty" = "{meter} aufgebraucht"
 "card.title.stale" = "Seit {age} keine neue Messung von {service}"
 "card.title.signin" = "{service} erfordert eine erneute Anmeldung"
 "card.title.apikey" = "{service} benötigt einen API-Schlüssel"
@@ -162,6 +165,9 @@ lowercase_names = false
 "flyout.verdict.critical.runway" = "{label} leer in {countdown}"
 "flyout.verdict.critical.level" = "{label} zu {pct} verbraucht"
 "flyout.verdict.exhausted" = "{label} leer bis {time}"
+"flyout.verdict.balance.warning" = "{label} leer ab {time}"
+"flyout.verdict.balance.runway" = "{label} leer in {countdown}"
+"flyout.verdict.balance.empty" = "{label} leer"
 "flyout.verdict.stale" = "{service}: seit {age} keine Messung"
 "flyout.verdict.signin" = "{service}: erneut anmelden"
 "flyout.verdict.apikey" = "{service}: kein gültiger API-Schlüssel"
@@ -215,7 +221,7 @@ lowercase_names = false
 "flyout.card.a11y.signin" = ", Anmeldung abgelaufen"
 "flyout.balance.a11y" = "Noch {amount} {unit}, {n} Prozent der letzten Aufladung verbraucht, reicht bei {burn} pro Tag etwa {duration}"
 "flyout.spark.a11y.window" = "{meter}, Nutzung pro Tag in den letzten 14 Tagen: heute {today} Prozent, Höchstwert {max} Prozent am {day}, Durchschnitt {avg} Prozent."
-"flyout.spark.a11y.balance" = "Verbrauchte {unit} pro Tag in den letzten 14 Tagen: heute {today}, Höchstwert {max} am {day}, Durchschnitt {avg}."
+"flyout.spark.a11y.balance" = "Nutzung pro Tag in den letzten 14 Tagen: heute {today}, Höchstwert {max} am {day}, Durchschnitt {avg}."
 
 # ---- UI Automation (R§11)
 "a11y.root" = "Lastdrop. {rows}"
@@ -255,6 +261,9 @@ lowercase_names = false
 "tray.runway" = "Lastdrop: {meter} von {service} reicht nur noch {duration}"
 "tray.level" = "Lastdrop: {meter} von {service} zu {pct} verbraucht"
 "tray.exhausted" = "Lastdrop: {meter} von {service} aufgebraucht bis {time}"
+"tray.balance.warning" = "Lastdrop: {meter} von {service} reicht nur bis {time}"
+"tray.balance.runway" = "Lastdrop: {meter} von {service} reicht nur noch {duration}"
+"tray.balance.empty" = "Lastdrop: {meter} von {service} aufgebraucht"
 "tray.offline" = "Lastdrop: {service} offline, letzte Messung vor {age}"
 "tray.nodata" = "Lastdrop: {service} antwortet nicht, letzte Messung vor {age}"
 "tray.oldreading" = "Lastdrop: {service} hat keine neue Messung, letzte Messung vor {age}"

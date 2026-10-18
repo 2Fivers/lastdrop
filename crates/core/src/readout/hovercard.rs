@@ -12,9 +12,9 @@ use crate::color::ColorRole;
 use crate::consts::{ALSO_TRACKED_MAX, CARD_FORECAST_MAX_PCT};
 use crate::glyph::{Icon, ProviderGlyph, SeverityGlyph};
 use crate::grammar::TextContext;
-use crate::grammar::a11y::{balance_sentence, runout_point, unit_word};
+use crate::grammar::a11y::{balance_sentence, runout_point};
 use crate::grammar::cells::{back_text, course_pct, pct, reason_text, resets_at, t_out};
-use crate::grammar::numbers::{amount, balance_duration_words, percent, share_pct};
+use crate::grammar::numbers::{amount, balance_duration_words, percent, share_pct, unit_word};
 use crate::grammar::strings::{Msg, Strings, capitalise, fill, text};
 use crate::grammar::time::{
     age_long_min1, age_token, card_date, card_time, long_duration, round_min, runout_text,
@@ -269,7 +269,7 @@ fn card_balance(a: &Assessment, b: &BalanceAssessment, cx: &TextContext<'_>) -> 
             (Some(_), Some(t)) if trouble => {
                 text(s, Msg::CardBalanceRunsOut, &[("time", &time_token(t, cx))])
             }
-            (Some(_), _) => match balance_duration_words(stats, s) {
+            (Some(_), _) => match balance_duration_words(stats, cx.now, s) {
                 Some(d) => text(s, Msg::CardBalanceLasts, &[("duration", &d)]),
                 None => s.template(Msg::CardBalanceNoUse).to_owned(),
             },
@@ -293,7 +293,8 @@ fn card_balance(a: &Assessment, b: &BalanceAssessment, cx: &TextContext<'_>) -> 
             &[
                 ("amount", &amount(b.amount, cx.locale)),
                 ("ref", &amount(stats.reference, cx.locale)),
-                ("unit", &unit_word(&b.unit, s)),
+                // `1 of 100 credits left`: the unit counts the top-up.
+                ("unit", &unit_word(&b.unit, stats.reference, s)),
             ],
         ),
         forecast,
@@ -305,9 +306,10 @@ fn card_balance(a: &Assessment, b: &BalanceAssessment, cx: &TextContext<'_>) -> 
                 &[("burn", &amount(stats.burn_per_day, cx.locale))],
             )
         }),
+        // An empty balance keeps its rate but has no date to last until.
         until: stats
             .t_out
-            .filter(|_| has_forecast)
+            .filter(|_| has_forecast && !stats.exhausted)
             .map(|t| text(s, Msg::CardBalanceUntil, &[("date", &card_date(t, cx))])),
     }
 }
@@ -350,15 +352,17 @@ fn also_time(a: &Assessment, service: &ServiceEval, cx: &TextContext<'_>) -> Als
                 role: ColorRole::TextSecondary,
             },
         },
-        RowState::OkBalance => match balance(a).and_then(|b| balance_duration_words(&b.stats, s)) {
-            Some(words) => AlsoTime {
-                glyph: None,
-                text: format!("{} {words}", s.template(Msg::BalanceApprox)),
-                semibold: false,
-                role: ColorRole::TextPrimary,
-            },
-            None => dash(),
-        },
+        RowState::OkBalance => {
+            match balance(a).and_then(|b| balance_duration_words(&b.stats, cx.now, s)) {
+                Some(words) => AlsoTime {
+                    glyph: None,
+                    text: format!("{} {words}", s.template(Msg::BalanceApprox)),
+                    semibold: false,
+                    role: ColorRole::TextPrimary,
+                },
+                None => dash(),
+            }
+        }
         // A held WARNING without a run-out before the reset: ▲ + `pct`, as the readout shows it.
         RowState::Warning => match t_out(a) {
             Some(t) => say(SeverityGlyph::Warning, runout_text(t, false, cx)),
@@ -662,6 +666,7 @@ fn trouble_header(
         .map(|f| long(f.trailing, cx))
         .unwrap_or_default();
     let is_balance = balance(a).is_some();
+    // A balance has its own titles: no "limit", and a name that may be plural (`credits`).
     let (glyph, title, sentence) = match a.state {
         RowState::Exhausted => {
             let title = match reset {
@@ -670,6 +675,7 @@ fn trouble_header(
                     Msg::CardTitleExhausted,
                     &[("meter", &meter), ("time", &card_time(r, cx))],
                 ),
+                None if is_balance => text(s, Msg::CardTitleBalanceEmpty, &[("meter", &meter)]),
                 None => text(
                     s,
                     Msg::CardTitleCriticalLevel,
@@ -712,7 +718,11 @@ fn trouble_header(
             let title = match t_out(a) {
                 Some(t) => text(
                     s,
-                    Msg::CardTitleCriticalRunway,
+                    if is_balance {
+                        Msg::CardTitleBalanceRunway
+                    } else {
+                        Msg::CardTitleCriticalRunway
+                    },
                     &[
                         ("meter", &meter),
                         (
@@ -763,6 +773,11 @@ fn trouble_header(
             };
             let time = t_out(a).map(|t| runout_point(a, t, cx)).unwrap_or_default();
             let title = match (&course, several) {
+                (None, _) if is_balance => text(
+                    s,
+                    Msg::CardTitleBalanceWarning,
+                    &[("meter", &meter), ("time", &time)],
+                ),
                 (Some(p), true) => text(
                     s,
                     Msg::CardTitleWarningCourseService,

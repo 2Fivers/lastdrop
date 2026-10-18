@@ -100,7 +100,8 @@ pub struct Args {
     /// `--demo`: with the `--preview-*` flags, use the built-in demo data ([`demo`]): no network,
     /// no files, no Windows settings.
     pub demo: bool,
-    /// `--demo-scenario <normal|warning|stale|signin>`: which state of the mock the demo shows.
+    /// `--demo-scenario <normal|warning|stale|signin|lastcredit>`: which state of the mock the
+    /// demo shows.
     pub demo_scenario: Option<String>,
     /// `--scale <factor>`: the preview's scale (1 = 100 %, 1.5 = 150 %). Default 1.
     pub scale: Option<f64>,

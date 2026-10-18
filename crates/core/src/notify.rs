@@ -12,8 +12,7 @@ use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
 
 use crate::consts::{NOTIFY_FORGET_AFTER, NOTIFY_MAX_LISTED, NOTIFY_USED_UP_LEVEL};
-use crate::grammar::a11y::unit_word;
-use crate::grammar::numbers::{amount, balance_duration_words, percent};
+use crate::grammar::numbers::{amount, balance_duration_words, percent, unit_word};
 use crate::grammar::strings::{capitalise, text};
 use crate::grammar::time::{card_time, long_duration, shown_duration};
 use crate::grammar::{Msg, TextContext};
@@ -374,8 +373,8 @@ fn body(kind: NoticeKind, service: &ServiceEval, a: &Assessment, cx: &TextContex
         ),
         (AssessedMeter::Balance(b), _) => {
             let left = amount(b.amount, cx.locale);
-            let unit = unit_word(&b.unit, s);
-            match balance_duration_words(&b.stats, s) {
+            let unit = unit_word(&b.unit, b.amount, s);
+            match balance_duration_words(&b.stats, cx.now, s) {
                 Some(words) => text(
                     s,
                     Msg::NoticeBodyBalance,

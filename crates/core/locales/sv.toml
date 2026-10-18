@@ -51,7 +51,7 @@ lowercase_names = true
 "unit.hour" = { one = "{n} timme", other = "{n} timmar" }
 "unit.day" = { one = "{n} dag", other = "{n} dagar" }
 "unit.week" = { one = "{n} vecka", other = "{n} veckor" }
-"unit.credits" = "krediter"
+"unit.credits" = { one = "kredit", other = "krediter" }
 
 # ---- Hover card (R§8.2)
 "card.title.ok.1" = "Det räcker till återställningen"
@@ -65,6 +65,9 @@ lowercase_names = true
 # Also a balance's title (`krediterna`), so no adjective that agrees with the noun.
 "card.title.critical.level" = "{pct} av {meter} har använts"
 "card.title.exhausted" = "{meter} är slut till {time}"
+"card.title.balance.warning" = "{meter} tar slut {time}"
+"card.title.balance.runway" = "{meter} tar slut om {duration}"
+"card.title.balance.empty" = "{meter} är slut"
 "card.title.stale" = "Ingen ny avläsning från {service} på {age}"
 "card.title.signin" = "{service} behöver att du loggar in igen"
 "card.title.apikey" = "{service} behöver en API-nyckel"
@@ -140,6 +143,9 @@ lowercase_names = true
 # Also a balance's verdict, as `card.title.critical.level`.
 "flyout.verdict.critical.level" = "{pct} av {label} har använts"
 "flyout.verdict.exhausted" = "{label} är slut till {time}"
+"flyout.verdict.balance.warning" = "{label} tar slut {time}"
+"flyout.verdict.balance.runway" = "{label} tar slut om {countdown}"
+"flyout.verdict.balance.empty" = "{label} är slut"
 "flyout.verdict.stale" = "{service}: ingen avläsning på {age}"
 "flyout.verdict.signin" = "{service}: logga in igen"
 "flyout.verdict.apikey" = "{service}: API-nyckeln saknas eller avvisades"
@@ -192,7 +198,7 @@ lowercase_names = true
 "flyout.card.a11y.signin" = ", inloggningen har gått ut"
 "flyout.balance.a11y" = "{amount} {unit} kvar, {n} procent av senaste påfyllningen använt, ungefär {duration} med {burn} per dag"
 "flyout.spark.a11y.window" = "Användning av {meter} per dag de senaste 14 dagarna: idag {today} procent, högst {max} procent ({day}), i genomsnitt {avg} procent."
-"flyout.spark.a11y.balance" = "{unit} använda per dag de senaste 14 dagarna: idag {today}, högst {max} ({day}), i genomsnitt {avg}."
+"flyout.spark.a11y.balance" = "Användning per dag de senaste 14 dagarna: idag {today}, högst {max} ({day}), i genomsnitt {avg}."
 
 # ---- UI Automation (R§11)
 "a11y.root" = "Lastdrop. {rows}"
@@ -228,6 +234,9 @@ lowercase_names = true
 "tray.runway" = "Lastdrop: {meter} för {service} tar slut om {duration}"
 "tray.level" = "Lastdrop: {pct} av {meter} för {service} använt"
 "tray.exhausted" = "Lastdrop: {meter} för {service} är slut till {time}"
+"tray.balance.warning" = "Lastdrop: {meter} för {service} tar slut {time}"
+"tray.balance.runway" = "Lastdrop: {meter} för {service} tar slut om {duration}"
+"tray.balance.empty" = "Lastdrop: {meter} för {service} är slut"
 "tray.offline" = "Lastdrop: {service} offline, senaste avläsning för {age} sedan"
 "tray.nodata" = "Lastdrop: {service} svarar inte, senaste avläsning för {age} sedan"
 "tray.oldreading" = "Lastdrop: {service} har ingen ny avläsning, senaste avläsning för {age} sedan"

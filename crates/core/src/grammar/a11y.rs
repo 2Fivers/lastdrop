@@ -12,19 +12,17 @@ use jiff::Timestamp;
 
 use super::TextContext;
 use super::cells::{course_pct, pct, resets_at, t_out};
-use super::numbers::{amount, percent};
+use super::numbers::{amount, balance_left, percent, unit_word};
 use super::strings::{Msg, Strings, text};
 use super::time::{
     CountdownForm, card_time, countdown, long_duration, shown_age, spoken_duration, spoken_point,
     spoken_time, time_token,
 };
 use crate::consts::TRAY_TIP_MAX_CHARS;
-use crate::model::Unit;
 use crate::stats::{
     AssessedMeter, Assessment, Evaluation, Freshness, ResetView, RowState, ServiceEval,
     StaleReason, runway_minutes,
 };
-use crate::util::duration_from_hours;
 
 /// The spoken name of a meter (module docs): `·` read as a comma, the first letter lower-cased
 /// unless it is a digit or the language keeps it (`Weekly · all models` → `weekly, all models`).
@@ -36,14 +34,6 @@ pub(crate) fn spoken_name(name: &str, strings: &dyn Strings) -> String {
             first.to_lowercase().chain(chars).collect()
         }
         _ => joined,
-    }
-}
-
-/// The word of a balance unit (`credits`, a currency code).
-pub(crate) fn unit_word(unit: &Unit, strings: &dyn Strings) -> String {
-    match unit {
-        Unit::Credits => strings.template(Msg::UnitCredits).to_owned(),
-        Unit::Currency { code } => code.clone(),
     }
 }
 
@@ -79,12 +69,8 @@ pub(crate) fn balance_sentence(
         return String::new();
     };
     let amount = amount(b.amount, cx.locale);
-    let unit = unit_word(&b.unit, cx.strings);
-    let duration = b
-        .stats
-        .days_left
-        .and_then(|d| duration_from_hours(d * 24.0))
-        .map(|d| spoken_duration(d, cx.strings));
+    let unit = unit_word(&b.unit, b.amount, cx.strings);
+    let duration = balance_left(&b.stats, cx.now).map(|d| spoken_duration(d, cx.strings));
     match duration {
         Some(duration) => text(
             cx.strings,
@@ -318,6 +304,8 @@ pub fn tray_tooltip(eval: &Evaluation, cx: &TextContext<'_>) -> String {
         text(cx.strings, msg, &refs)
     };
     let reset = resets_at(a);
+    // A balance has its own texts: its name may be plural (`Meshy credits`).
+    let is_balance = matches!(a.meter, AssessedMeter::Balance(_));
     // An ENDED winner (every candidate tells nothing now) is described by its service's
     // staleness, as a STALE row would be; fresh, there is nothing to say.
     let state = match (a.state, service.freshness) {
@@ -350,6 +338,9 @@ pub fn tray_tooltip(eval: &Evaluation, cx: &TextContext<'_>) -> String {
         },
         RowState::OkNoReset | RowState::Idle | RowState::OkBalance => say(Msg::TrayNoReset, &[]),
         RowState::Warning => match t_out(a) {
+            Some(t) if is_balance => {
+                say(Msg::TrayBalanceWarning, &[("time", runout_point(a, t, cx))])
+            }
             Some(t) => say(Msg::TrayWarning, &[("time", runout_point(a, t, cx))]),
             None => say(Msg::TrayLevel, &[]),
         },
@@ -357,7 +348,11 @@ pub fn tray_tooltip(eval: &Evaluation, cx: &TextContext<'_>) -> String {
             Some(t) => {
                 let n = runway_minutes(cx.now, t);
                 say(
-                    Msg::TrayRunway,
+                    if is_balance {
+                        Msg::TrayBalanceRunway
+                    } else {
+                        Msg::TrayRunway
+                    },
                     &[("duration", countdown(n, CountdownForm::Compact, cx.strings))],
                 )
             }
@@ -366,6 +361,7 @@ pub fn tray_tooltip(eval: &Evaluation, cx: &TextContext<'_>) -> String {
         RowState::CriticalLevel => say(Msg::TrayLevel, &[]),
         RowState::Exhausted => match reset {
             Some(r) => say(Msg::TrayExhausted, &[("time", card_time(r, cx))]),
+            None if is_balance => say(Msg::TrayBalanceEmpty, &[]),
             None => say(Msg::TrayLevel, &[]),
         },
     };

@@ -61,7 +61,7 @@ saves it as a PNG. With `--demo` the data is invented and no file is read or wri
 | `--scale <factor>` | the display scale, 0.5 to 4: `1.5` is 150 %, `2` is 200 %. The PNG has that many pixels per logical pixel. |
 | `--contrast` | the settings window in a contrast theme (Windows' "Night sky" colours). |
 | `--theme <id>` | the flyout's and the hover card's theme (themes-spec). |
-| `--demo-scenario <normal\|warning\|stale\|signin>` | which state the demo's services are in. |
+| `--demo-scenario <normal\|warning\|stale\|signin\|lastcredit>` | which state the demo's services are in (`lastcredit`: Meshy's last credit). |
 
 `--preview-settings <dir>\settings.png` writes `<dir>\settings-<view>-<w>x<h>.png` for every view
 at the window's preferred size, 880 × 680, and its smallest, 680 × 520 (logical px; the files
