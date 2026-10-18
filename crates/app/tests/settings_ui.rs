@@ -19,7 +19,9 @@ use lastdrop_app::settings_edits::MemoryOutside;
 use lastdrop_app::settings_window::{self as sw, Focus, Inputs};
 use lastdrop_app::{custom_services, preview, ui};
 use lastdrop_core::model::{AccountKey, ProviderId};
-use lastdrop_core::settings::{AccountSettings, ReadoutContent, RefreshInterval, SourceSettings};
+use lastdrop_core::settings::{
+    AccountSettings, Hotkey, ReadoutContent, RefreshInterval, SourceSettings,
+};
 use lastdrop_providers::discover::Candidate;
 use slint::platform::software_renderer::{MinimalSoftwareWindow, RepaintBufferType};
 use slint::platform::{Key, Platform, WindowAdapter, WindowEvent};
@@ -63,6 +65,17 @@ fn press(window: &ui::SettingsWindow, text: impl Into<slint::SharedString> + Clo
         .window()
         .dispatch_event(WindowEvent::KeyReleased { text });
     frame(window);
+}
+
+/// The saved shortcut: Ctrl, Alt, Shift, Win and the key.
+fn hotkey(ctrl: bool, alt: bool, shift: bool, win: bool, key: &str) -> Option<Hotkey> {
+    Some(Hotkey {
+        ctrl,
+        alt,
+        shift,
+        win,
+        key: key.to_owned(),
+    })
 }
 
 /// Presses `key` with Ctrl held.
@@ -206,6 +219,70 @@ fn settings_pages_instant_apply_and_deep_links() {
     assert_eq!(window.get_interval_index(), 5);
     assert!(window.get_start_with_windows());
     assert!(!window.get_notify_enabled());
+
+    // ---- The keyboard shortcut (settings-spec §4, §5.2), from the keyboard: Tab from the pane
+    // passes start with Windows, the language and the interval to the shortcut's switch; Space
+    // turns it on with the modifiers as toggle buttons, the key box and the shortcut they make,
+    // which is saved. Space on the Shift button adds Shift, live.
+    for _ in 0..4 {
+        press(&window, Key::Tab);
+    }
+    press(&window, " ");
+    assert!(window.get_hotkey_enabled());
+    assert_eq!(window.get_hotkey_preview(), "Ctrl + Alt + L");
+    wait(&window, 300);
+    assert_eq!(
+        outside.borrow().disk.hotkey,
+        hotkey(true, true, false, false, "L")
+    );
+    for _ in 0..3 {
+        press(&window, Key::Tab);
+    }
+    press(&window, " ");
+    assert!(window.get_hotkey_shift(), "the third toggle is Shift");
+    assert_eq!(window.get_hotkey_preview(), "Ctrl + Alt + Shift + L");
+    wait(&window, 300);
+    assert_eq!(
+        outside.borrow().disk.hotkey,
+        hotkey(true, true, true, false, "L")
+    );
+    // Shift alone with a letter is not valid: the card says why, nothing is tried (no Try
+    // again), the saved shortcut stays.
+    let tested = outside.borrow().tested.len();
+    window.set_hotkey_ctrl(false);
+    window.set_hotkey_alt(false);
+    window.invoke_hotkey_edited();
+    wait(&window, 300);
+    assert_eq!(window.get_hotkey_preview(), "Shift + L");
+    assert!(
+        window
+            .get_hotkey_error()
+            .starts_with("Choose Ctrl, Alt or Win")
+    );
+    assert!(!window.get_hotkey_retry());
+    assert_eq!(outside.borrow().tested.len(), tested, "not tried");
+    assert_eq!(
+        outside.borrow().disk.hotkey,
+        hotkey(true, true, true, false, "L")
+    );
+    // Tab passes Win to the key box; with F7 instead of L, Shift alone is valid and saved.
+    press(&window, Key::Tab);
+    press(&window, Key::Tab);
+    press(&window, Key::End);
+    press(&window, Key::Backspace);
+    assert_eq!(window.get_hotkey_preview(), "Shift + …", "no key yet");
+    type_text(&window, "f7");
+    assert_eq!(window.get_hotkey_preview(), "Shift + F7");
+    assert_eq!(window.get_hotkey_error(), "");
+    wait(&window, 300);
+    assert_eq!(
+        outside.borrow().disk.hotkey,
+        hotkey(false, false, true, false, "F7")
+    );
+
+    // Ctrl+Tab puts the focus back in the pane.
+    ctrl(&window, Key::Tab);
+    assert_eq!(window.get_page(), sw::PAGE_SERVICES);
 
     // ---- An alias being typed is not committed by an account action, and commits after its
     // pause. Claude's row expands to its accounts.

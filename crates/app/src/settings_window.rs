@@ -971,6 +971,7 @@ fn show_draft(session: &Session) {
         window.set_hotkey_win(shortcut.win);
         window.set_hotkey_key(shortcut.key.as_str().into());
     }
+    window.set_hotkey_preview(shortcut_preview(&shortcut, strings).into());
     window.set_hotkey_error(
         problem
             .as_ref()
@@ -1387,6 +1388,28 @@ fn switch_language(session: &Session) {
         wording.language = language;
     }
     set_texts(session);
+}
+
+/// The shortcut the editor composes, as its card previews it: the modifiers in Windows' order
+/// by their names in the language of `strings`, then the key as it is registered ("Ctrl + Alt +
+/// L"), or `…` while there is no key. Empty when the shortcut is off.
+pub fn shortcut_preview(shortcut: &Shortcut, strings: &dyn Strings) -> String {
+    if !shortcut.enabled {
+        return String::new();
+    }
+    let key = shortcut.key.trim().to_uppercase();
+    [
+        (shortcut.ctrl, Msg::SettingsShortcutCtrl),
+        (shortcut.alt, Msg::SettingsShortcutAlt),
+        (shortcut.shift, Msg::SettingsShortcutShift),
+        (shortcut.win, Msg::SettingsShortcutWin),
+    ]
+    .into_iter()
+    .filter(|(held, _)| *held)
+    .map(|(_, msg)| strings.template(msg))
+    .chain([if key.is_empty() { "…" } else { key.as_str() }])
+    .collect::<Vec<_>>()
+    .join(" + ")
 }
 
 /// The line under the shortcut, in the language of `strings`.
@@ -2334,6 +2357,41 @@ mod tests {
             ["5-hour limit", "Weekly limit", "Fable weekly limit"]
         );
         assert_eq!(types[1].0, ProviderId::Codex);
+    }
+
+    #[test]
+    fn the_shortcut_preview_names_the_keys_in_the_language() {
+        let shortcut = |ctrl, alt, shift, win, key: &str| Shortcut {
+            enabled: true,
+            ctrl,
+            alt,
+            shift,
+            win,
+            key: key.to_owned(),
+        };
+        assert_eq!(
+            shortcut_preview(&shortcut(true, true, false, false, "l"), &English),
+            "Ctrl + Alt + L"
+        );
+        assert_eq!(
+            shortcut_preview(&shortcut(false, false, true, true, " f12 "), &Swedish),
+            "Skift + Win + F12"
+        );
+        assert_eq!(
+            shortcut_preview(&shortcut(true, false, false, false, ""), &English),
+            "Ctrl + …",
+            "no key yet"
+        );
+        assert_eq!(
+            shortcut_preview(&shortcut(false, false, false, false, "K"), &English),
+            "K",
+            "no modifier yet (the card says why it is not valid)"
+        );
+        let off = Shortcut {
+            enabled: false,
+            ..shortcut(true, true, false, false, "L")
+        };
+        assert_eq!(shortcut_preview(&off, &English), "");
     }
 
     #[test]
