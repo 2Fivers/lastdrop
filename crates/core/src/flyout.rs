@@ -18,7 +18,7 @@ use crate::grammar::a11y::{row_sentence, runout_point};
 use crate::grammar::cells::{course_pct, pct, resets_at, t_out};
 use crate::grammar::meters::localized;
 use crate::grammar::numbers::{
-    amount, amount_with_unit, balance_forecast_long, percent, unit_word,
+    amount, amount_with_unit, balance_forecast_long, balance_left, percent, unit_word,
 };
 use crate::grammar::strings::{Msg, capitalise, text};
 use crate::grammar::time::{
@@ -34,7 +34,7 @@ use crate::stats::{
     ResetView, RowState, Sample, ServiceEval, StaleReason, instance_of, runway_minutes,
     same_window_instance,
 };
-use crate::util::{duration_from_hours, round_i32, sub};
+use crate::util::{round_i32, sub};
 
 /// Days before today in the sparkline (14 days ending today).
 const SPARK_DAYS_BEFORE_TODAY: i64 = SPARK_DAYS as i64 - 1;
@@ -990,7 +990,7 @@ fn balance_body(a: &Assessment, service: &ServiceEval, cx: &TextContext<'_>) -> 
     let forecast = if stats.exhausted {
         s.template(Msg::Empty).to_owned()
     } else {
-        balance_forecast_long(stats, s)
+        balance_forecast_long(stats, cx.now, s)
     };
     let forecast_glyph = match a.state {
         RowState::Warning => Some(SeverityGlyph::Warning),
@@ -998,12 +998,11 @@ fn balance_body(a: &Assessment, service: &ServiceEval, cx: &TextContext<'_>) -> 
         _ => None,
     };
     let mut spent = text(s, Msg::FlyoutBalanceSpent, &[("pct", &pct_text)]);
-    let days = stats.days_left.and_then(|d| duration_from_hours(d * 24.0));
-    if days.is_some() {
+    if stats.days_left.is_some() {
         spent.push_str(&text(s, Msg::FlyoutBalanceBurn, &[("burn", &burn)]));
     }
     // An empty balance keeps its rate but has no time left and no date to last until.
-    let left = days.filter(|_| !stats.exhausted);
+    let left = balance_left(stats, cx.now);
     let a11y = match left {
         Some(d) => text(
             s,

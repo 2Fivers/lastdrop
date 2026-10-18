@@ -12,7 +12,7 @@ use jiff::Timestamp;
 
 use super::TextContext;
 use super::cells::{course_pct, pct, resets_at, t_out};
-use super::numbers::{amount, percent, unit_word};
+use super::numbers::{amount, balance_left, percent, unit_word};
 use super::strings::{Msg, Strings, text};
 use super::time::{
     CountdownForm, card_time, countdown, long_duration, shown_age, spoken_duration, spoken_point,
@@ -23,7 +23,6 @@ use crate::stats::{
     AssessedMeter, Assessment, Evaluation, Freshness, ResetView, RowState, ServiceEval,
     StaleReason, runway_minutes,
 };
-use crate::util::duration_from_hours;
 
 /// The spoken name of a meter (module docs): `·` read as a comma, the first letter lower-cased
 /// unless it is a digit or the language keeps it (`Weekly · all models` → `weekly, all models`).
@@ -71,13 +70,7 @@ pub(crate) fn balance_sentence(
     };
     let amount = amount(b.amount, cx.locale);
     let unit = unit_word(&b.unit, b.amount, cx.strings);
-    // An empty balance has no time left to speak of (`days_left` is 0, not "about 1 minute").
-    let duration = b
-        .stats
-        .days_left
-        .filter(|_| !b.stats.exhausted)
-        .and_then(|d| duration_from_hours(d * 24.0))
-        .map(|d| spoken_duration(d, cx.strings));
+    let duration = balance_left(&b.stats, cx.now).map(|d| spoken_duration(d, cx.strings));
     match duration {
         Some(duration) => text(
             cx.strings,

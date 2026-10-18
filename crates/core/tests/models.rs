@@ -667,6 +667,65 @@ mod last_credit {
             assert!(m.rate_line.is_some(), "{what}");
         }
     }
+
+    /// The last credit at 136 a day lasts 10.6 minutes, which the readout and the verdict count
+    /// down as `11 min` (R§3.5). The flyout's forecast and every sentence say the same 11
+    /// minutes, not R§5.5's floor of 1 hour or the floor of 10.6.
+    #[test]
+    fn the_last_credit_counts_the_countdowns_minutes() {
+        const SAID: [(Language, &str, &str); 5] = [
+            (
+                Language::English,
+                "≈ 11 minutes left",
+                "Meshy: 1 credit left, about 11 minutes at the current rate.",
+            ),
+            (
+                Language::Swedish,
+                "≈ 11 minuter kvar",
+                "Meshy: 1 kredit kvar, ungefär 11 minuter i nuvarande takt.",
+            ),
+            (
+                Language::German,
+                "Reicht noch ≈ 11 Minuten",
+                "Meshy: noch 1 Credit, reicht beim aktuellen Tempo etwa 11 Minuten.",
+            ),
+            (
+                Language::French,
+                "Reste ≈ 11 minutes",
+                "Meshy\u{A0}: reste 1 crédit, de quoi tenir environ 11 minutes au rythme actuel.",
+            ),
+            (
+                Language::Spanish,
+                "≈ 11 minutos de saldo",
+                "Meshy: saldo de 1 crédito, aproximadamente 11 minutos al ritmo actual.",
+            ),
+        ];
+        let (eval, h, settings) = meshy_at(1.0);
+        let (service, a) = eval
+            .assessment(&key(ProviderId::Meshy, "credits"))
+            .expect("assessed");
+        assert_eq!(a.state, RowState::CriticalRunway);
+        for (l, forecast, said) in SAID {
+            let locale = LocaleFormat::of_language(l, zone());
+            let cx = context(l, &locale, &settings);
+            let what = l.tag();
+            assert_eq!(row_sentence(a, service, &cx.text), said, "{what}");
+
+            let flyout = build_flyout(&eval, &h, false, &cx);
+            let CardBody::Balance(b) = &flyout.cards[0].body else {
+                panic!("balance expected");
+            };
+            assert_eq!(b.forecast, forecast, "{what}");
+            assert!(b.a11y.contains(" 11 "), "{what}: {}", b.a11y);
+            let verdict = flyout.verdict.text.replace('\u{A0}', " ");
+            assert!(verdict.contains(" 11 min"), "{what}: {verdict}");
+
+            let card = build_hover_card(&eval, HoverAnchor::Readout, &eval.readout_rows, &cx);
+            assert_eq!(card.sentence, said, "{what}");
+            let title = card.header.title.replace('\u{A0}', " ");
+            assert!(title.contains(" 11 min"), "{what}: {title}");
+        }
+    }
 }
 
 // ---- readout model ---------------------------------------------------------------------------

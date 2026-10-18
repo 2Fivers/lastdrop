@@ -1,14 +1,17 @@
 //! Percent and numbers (R§5.6), a balance's unit after its amount, and balance durations
 //! (R§5.5, F§4.5).
 
+use jiff::{SignedDuration, Timestamp};
+
 use super::locale::{LocaleFormat, PercentPattern};
 use super::strings::{Msg, PluralMsg, Strings, count, plural_form, text};
 use crate::consts::{
     BAL_DURATION_DAYS_BELOW_DAYS, BAL_DURATION_HOURS_BELOW_DAYS, BAL_DURATION_WEEKS_BELOW_DAYS,
+    COUNTDOWN_MAX_MIN,
 };
 use crate::model::Unit;
-use crate::stats::BalanceStats;
-use crate::util::round_half_up;
+use crate::stats::{BalanceStats, runway_minutes};
+use crate::util::{duration_from_hours, round_half_up};
 
 /// The narrow no-break space of spaced percent patterns (R§5.6).
 const NNBSP: char = '\u{202F}';
@@ -192,13 +195,40 @@ pub fn balance_duration(stats: &BalanceStats, strings: &dyn Strings) -> Option<S
     })
 }
 
+/// The countdown's minutes when a balance runs out within them: `N` of R§3.5 while `N ≤ 59`, the
+/// minutes the readout's `11 min left` and the verdict's `runs out in 11 min` show. Below an
+/// hour the words count these instead of R§5.5's floor of 1 hour, which only the readout's
+/// `≈1h` keeps (a balance that close is CRITICAL, and the readout counts it down instead).
+fn countdown_minutes(stats: &BalanceStats, now: Timestamp) -> Option<i64> {
+    stats
+        .t_out
+        .map(|t| runway_minutes(now, t))
+        .filter(|n| *n <= COUNTDOWN_MAX_MIN)
+}
+
+/// How long a balance lasts, for sentences (R§11): the countdown's minutes below an hour
+/// ([`countdown_minutes`]), else `days_left`. `None` without a forecast, and for an empty
+/// balance, which has no time left to speak of.
+pub fn balance_left(stats: &BalanceStats, now: Timestamp) -> Option<SignedDuration> {
+    let days_left = stats.days_left.filter(|_| !stats.exhausted)?;
+    match countdown_minutes(stats, now) {
+        Some(n) => Some(SignedDuration::from_mins(n)),
+        None => duration_from_hours(days_left * 24.0),
+    }
+}
+
 /// The flyout's balance forecast (F§4.5): `≈ 9 days left`, `≈ 20 hours left`, `≈ 6 weeks left`,
 /// `More than 8 weeks left`, `No use in 7 days`, `Not enough history yet` (< 48 h); thresholds
-/// and flooring as R§5.5. EXHAUSTED is handled by the caller (`Empty`).
-pub fn balance_forecast_long(stats: &BalanceStats, strings: &dyn Strings) -> String {
+/// and flooring as R§5.5, minutes below an hour (`≈ 11 minutes left`, [`countdown_minutes`]).
+/// EXHAUSTED is handled by the caller (`Empty`).
+pub fn balance_forecast_long(
+    stats: &BalanceStats,
+    now: Timestamp,
+    strings: &dyn Strings,
+) -> String {
     match stats.days_left.map(balance_span) {
         Some(BalanceSpan::MoreThanEightWeeks) => strings.template(Msg::FlyoutBalanceMax).to_owned(),
-        Some(_) => match balance_duration_words(stats, strings) {
+        Some(_) => match balance_duration_words(stats, now, strings) {
             Some(words) => text(strings, Msg::FlyoutBalanceLeft, &[("duration", &words)]),
             None => strings.template(Msg::FlyoutBalanceMax).to_owned(),
         },
@@ -208,10 +238,18 @@ pub fn balance_forecast_long(stats: &BalanceStats, strings: &dyn Strings) -> Str
 }
 
 /// The hover card's balance duration words (`9 days`, `20 hours`, `6 weeks`) for
-/// `lasts ≈ {duration}` (R§8.2). From 63 days the weeks keep counting (`10 weeks`): the card has
-/// room for the number the readout abbreviates as `9w+`.
-pub fn balance_duration_words(stats: &BalanceStats, strings: &dyn Strings) -> Option<String> {
+/// `lasts ≈ {duration}` (R§8.2), also in the flyout's forecast and in notices; `11 minutes`
+/// below an hour ([`countdown_minutes`]). From 63 days the weeks keep counting (`10 weeks`): the
+/// card has room for the number the readout abbreviates as `9w+`.
+pub fn balance_duration_words(
+    stats: &BalanceStats,
+    now: Timestamp,
+    strings: &dyn Strings,
+) -> Option<String> {
     let days_left = stats.days_left?;
+    if let Some(n) = countdown_minutes(stats, now) {
+        return Some(count(strings, PluralMsg::UnitMinute, n));
+    }
     Some(match balance_span(days_left) {
         BalanceSpan::Hours(h) => count(strings, PluralMsg::UnitHour, h),
         BalanceSpan::Days(d) => count(strings, PluralMsg::UnitDay, d),
@@ -228,7 +266,13 @@ pub fn balance_duration_words(stats: &BalanceStats, strings: &dyn Strings) -> Op
 mod tests {
     use super::*;
     use crate::grammar::English;
+    use crate::util::add;
     use jiff::tz::TimeZone;
+
+    /// On a minute, so a run-out `x` minutes away counts down `round(x)` minutes.
+    fn now() -> Timestamp {
+        Timestamp::from_second(1_800_000_000).expect("valid")
+    }
 
     fn stats(days_left: Option<f64>, valid: bool) -> BalanceStats {
         BalanceStats {
@@ -237,9 +281,16 @@ mod tests {
             burn_per_day: if days_left.is_some() { 1.0 } else { 0.0 },
             valid,
             days_left,
-            t_out: None,
+            t_out: days_left
+                .and_then(|d| duration_from_hours(d * 24.0))
+                .map(|d| add(now(), d)),
             exhausted: false,
         }
+    }
+
+    /// `x` minutes in days.
+    fn mins(x: f64) -> f64 {
+        x / 1440.0
     }
 
     #[test]
@@ -324,7 +375,7 @@ mod tests {
         assert_eq!(d(63.0).as_deref(), Some("9w+"));
         assert_eq!(balance_duration(&stats(None, true), &English), None);
 
-        let long = |s: BalanceStats| balance_forecast_long(&s, &English);
+        let long = |s: BalanceStats| balance_forecast_long(&s, now(), &English);
         assert_eq!(long(stats(Some(9.12), true)), "≈ 9 days left");
         assert_eq!(long(stats(Some(0.85), true)), "≈ 20 hours left");
         assert_eq!(long(stats(Some(45.0), true)), "≈ 6 weeks left");
@@ -332,10 +383,51 @@ mod tests {
         assert_eq!(long(stats(None, true)), "No use in 7 days");
         assert_eq!(long(stats(None, false)), "Not enough history yet");
 
-        let words = |x| balance_duration_words(&stats(Some(x), true), &English);
+        let words = |x| balance_duration_words(&stats(Some(x), true), now(), &English);
         assert_eq!(words(1.0 / 24.0).as_deref(), Some("1 hour"));
         assert_eq!(words(9.12).as_deref(), Some("9 days"));
         assert_eq!(words(7.0).as_deref(), Some("7 days"));
         assert_eq!(words(70.0).as_deref(), Some("10 weeks"));
+    }
+
+    #[test]
+    fn below_an_hour_the_words_count_the_countdowns_minutes() {
+        // 1 credit at 136 a day: 10.6 minutes, which the readout and the verdict count down as
+        // `11 min` (`N`, R§3.5). The readout's token keeps R§5.5's floor of 1 hour.
+        let last = stats(Some(1.0 / 136.0), true);
+        assert_eq!(balance_duration(&last, &English).as_deref(), Some("1h"));
+        assert_eq!(
+            balance_forecast_long(&last, now(), &English),
+            "≈ 11 minutes left"
+        );
+        assert_eq!(
+            balance_duration_words(&last, now(), &English).as_deref(),
+            Some("11 minutes")
+        );
+        assert_eq!(
+            balance_left(&last, now()),
+            Some(SignedDuration::from_mins(11))
+        );
+        let words = |x| balance_duration_words(&stats(Some(x), true), now(), &English);
+        assert_eq!(words(mins(0.2)).as_deref(), Some("1 minute"));
+        assert_eq!(words(mins(59.4)).as_deref(), Some("59 minutes"));
+        // 59.6 minutes count down as 60: `1 h left`, so `1 hour`.
+        assert_eq!(words(mins(59.6)).as_deref(), Some("1 hour"));
+        // The minutes follow the clock: a minute later the same reading has one fewer.
+        let later = add(now(), SignedDuration::from_mins(1));
+        assert_eq!(
+            balance_duration_words(&last, later, &English).as_deref(),
+            Some("10 minutes")
+        );
+
+        // Above an hour a sentence says `days_left` as it did; an empty balance says nothing.
+        let days = stats(Some(9.12), true);
+        assert_eq!(balance_left(&days, now()), duration_from_hours(9.12 * 24.0));
+        let empty = BalanceStats {
+            exhausted: true,
+            ..stats(Some(0.0), true)
+        };
+        assert_eq!(balance_left(&empty, now()), None);
+        assert_eq!(balance_left(&stats(None, true), now()), None);
     }
 }

@@ -405,6 +405,12 @@ runs_out && otherwise (WARNING)   → "Out " TIME(round_min(t_out))
 `days_left` < 2 → `≈Nh` (floor hours, ≥ 1); < 14 → `≈Nd` (floor); < 63 → `≈Nw` (floor weeks); ≥ 63 → `≈9w+`.
 No burn in 7 days, or less than 48 h of history → `–`.
 
+The words for the same duration (flyout forecast F§4.5, hover card `lasts ≈`, notices, §11 sentences) follow these
+thresholds, except below an hour: there they count the countdown's minutes, `N` of §3.5 while `N ≤ 59`
+(`≈ 11 minutes left`, `about 11 minutes`), so they agree with `11 min left` and `runs out in 11 min`. Only the token
+keeps the floor of 1 hour; a balance that close is CRITICAL, and the readout shows its countdown instead. An empty
+balance has no duration (§11: `Meshy: 0 credits left.`).
+
 ### 5.6 Percent and numbers
 
 - Locale percent pattern (`LOCALE_IPOSITIVEPERCENT`): en `42%`; sv-SE `42 %` with U+202F NARROW NO-BREAK SPACE.

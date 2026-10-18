@@ -269,7 +269,7 @@ fn card_balance(a: &Assessment, b: &BalanceAssessment, cx: &TextContext<'_>) -> 
             (Some(_), Some(t)) if trouble => {
                 text(s, Msg::CardBalanceRunsOut, &[("time", &time_token(t, cx))])
             }
-            (Some(_), _) => match balance_duration_words(stats, s) {
+            (Some(_), _) => match balance_duration_words(stats, cx.now, s) {
                 Some(d) => text(s, Msg::CardBalanceLasts, &[("duration", &d)]),
                 None => s.template(Msg::CardBalanceNoUse).to_owned(),
             },
@@ -352,15 +352,17 @@ fn also_time(a: &Assessment, service: &ServiceEval, cx: &TextContext<'_>) -> Als
                 role: ColorRole::TextSecondary,
             },
         },
-        RowState::OkBalance => match balance(a).and_then(|b| balance_duration_words(&b.stats, s)) {
-            Some(words) => AlsoTime {
-                glyph: None,
-                text: format!("{} {words}", s.template(Msg::BalanceApprox)),
-                semibold: false,
-                role: ColorRole::TextPrimary,
-            },
-            None => dash(),
-        },
+        RowState::OkBalance => {
+            match balance(a).and_then(|b| balance_duration_words(&b.stats, cx.now, s)) {
+                Some(words) => AlsoTime {
+                    glyph: None,
+                    text: format!("{} {words}", s.template(Msg::BalanceApprox)),
+                    semibold: false,
+                    role: ColorRole::TextPrimary,
+                },
+                None => dash(),
+            }
+        }
         // A held WARNING without a run-out before the reset: ▲ + `pct`, as the readout shows it.
         RowState::Warning => match t_out(a) {
             Some(t) => say(SeverityGlyph::Warning, runout_text(t, false, cx)),
