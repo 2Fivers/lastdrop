@@ -523,6 +523,77 @@ fn meshy_history(current: f64) -> Vec<Sample> {
     ]
 }
 
+// ---- a balance's unit in every language ----------------------------------------------------------
+
+mod balance_units {
+    use super::*;
+    use lastdrop_core::grammar::Language;
+    use lastdrop_core::grammar::a11y::row_sentence;
+    use lastdrop_core::grammar::numbers::amount;
+
+    /// The unit after 0, 1 and 2 credits (French counts 0 with the singular).
+    const UNITS: [(Language, [&str; 3]); 5] = [
+        (Language::English, ["credits", "credit", "credits"]),
+        (Language::Swedish, ["krediter", "kredit", "krediter"]),
+        (Language::German, ["Credits", "Credit", "Credits"]),
+        (Language::French, ["crédit", "crédit", "crédits"]),
+        (Language::Spanish, ["créditos", "crédito", "créditos"]),
+    ];
+
+    /// `text` says `phrase` as a whole, not followed by a letter (`1 credit` is not in
+    /// `1 credits`); a no-break space counts as a space.
+    fn says(text: &str, phrase: &str) -> bool {
+        let text = text.replace('\u{A0}', " ");
+        text.match_indices(phrase)
+            .any(|(i, _)| !text[i + phrase.len()..].starts_with(char::is_alphabetic))
+    }
+
+    #[test]
+    fn zero_one_and_two_credits_in_every_language() {
+        let k = key(ProviderId::Meshy, "credits");
+        let settings = settings_with(&[ProviderId::Meshy]);
+        for n in 0..3 {
+            let mut h = History::new();
+            h.insert(k.clone(), meshy_history(n as f64));
+            let eval = eval_once(&[Svc::new(meshy(n as f64, now()))], &settings, &h, now());
+            let (service, a) = eval.assessment(&k).expect("assessed");
+            for (l, forms) in UNITS {
+                let locale = LocaleFormat::of_language(l, zone());
+                let cx = BuildContext {
+                    text: TextContext {
+                        now: now(),
+                        time_style: TimeStyle::Clock,
+                        locale: &locale,
+                        strings: l.strings(),
+                    },
+                    settings: &settings,
+                };
+                let what = format!("{}: {n}", l.tag());
+                let phrase = format!("{n} {}", forms[n]);
+                let sentence = row_sentence(a, service, &cx.text);
+                assert!(says(&sentence, &phrase), "{what}: {sentence}");
+
+                // The flyout shows the unit beside the amount and says them together.
+                let flyout = build_flyout(&eval, &h, false, &cx);
+                let CardBody::Balance(b) = &flyout.cards[0].body else {
+                    panic!("balance expected");
+                };
+                assert_eq!(b.amount, n.to_string(), "{what}");
+                assert_eq!(b.unit, forms[n], "{what}");
+                assert!(says(&b.a11y, &phrase), "{what}: {}", b.a11y);
+
+                // The hover card counts the unit with the top-up: `1 of 3,260 credits left`.
+                let card = build_hover_card(&eval, HoverAnchor::Readout, &eval.readout_rows, &cx);
+                let CardMeter::Balance(m) = &card.services[0].meters[0] else {
+                    panic!("balance expected");
+                };
+                let of_top_up = format!("{} {}", amount(3260.0, &locale), forms[2]);
+                assert!(says(&m.left_line, &of_top_up), "{what}: {}", m.left_line);
+            }
+        }
+    }
+}
+
 // ---- readout model ---------------------------------------------------------------------------
 
 mod readout {
