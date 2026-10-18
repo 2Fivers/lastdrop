@@ -188,7 +188,7 @@ Messages between threads: workers send results to the main thread with
   A pure function of the evaluation and the memory of what was announced, worded into one
   `NotificationModel` per evaluation.
 - **Strings** — every user-visible string is a resource (`grammar::strings`), one table per
-  language: English and Swedish. Each table is a TOML file in `crates/core/locales`, with
+  language: English, German, French, Spanish and Swedish. Each table is a TOML file in `crates/core/locales`, with
   `en.toml` as the source. Core's build script checks every file and compiles them into
   `&'static str` arrays: each key of `en.toml` is there, with the English placeholders and the
   plural forms of the language's CLDR rule (`grammar::plural`). So a language is one file and

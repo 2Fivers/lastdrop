@@ -136,9 +136,11 @@ back while the setting is on.
 
 ## Language
 
-Lastdrop speaks English and Swedish. By default it follows Windows: the first of your Windows
-display languages that Lastdrop has, else English. To choose, use **Language** in the settings:
-*Same as Windows*, *English* or *Svenska*.
+Lastdrop speaks English, German, French, Spanish and Swedish. By default it follows Windows: the
+first of your Windows display languages that Lastdrop has, else English. German, French and
+Spanish serve every region of the language (Austria, Switzerland, Canada, Belgium, Mexico, …). To
+choose, use **Language** in the settings: *Same as Windows*, then each language by its own name
+(*English*, *Deutsch*, *Español*, *Français*, *Svenska*).
 
 Numbers, dates and times always follow the regional format in Windows (Settings ▸ Time & language ▸
 Language & region), whatever language you pick. Meter names from a
