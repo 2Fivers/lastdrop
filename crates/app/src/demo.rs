@@ -7,7 +7,7 @@
 //!
 //! The clock is R§13's: Sat 2026-10-10 12:42 in a fixed UTC+02:00 zone, en-GB format and
 //! English; [`Demo::in_language`] shows it in another language with that language's format
-//! (Swedish: sv-SE).
+//! (Swedish: sv-SE, German: de-DE, French: fr-FR, Spanish: es-ES).
 
 use std::collections::BTreeMap;
 
@@ -84,7 +84,7 @@ pub struct Demo {
     pub now: Timestamp,
     /// Claude, Codex and Meshy enabled, in that order.
     pub settings: Settings,
-    /// en-GB in UTC+02:00 (sv-SE in Swedish).
+    /// en-GB in UTC+02:00 (the language's own format with [`Demo::in_language`]).
     pub locale: LocaleFormat,
     /// The language of the strings (English unless [`Demo::in_language`]).
     pub language: Language,
@@ -394,14 +394,10 @@ impl Demo {
         }
     }
 
-    /// The same world in `language`, with its regional format: sv-SE for Swedish, en-GB
-    /// otherwise.
+    /// The same world in `language`, with its regional format ([`LocaleFormat::of_language`]:
+    /// sv-SE for Swedish, de-DE for German, fr-FR for French, es-ES for Spanish, else en-GB).
     pub fn in_language(mut self, language: Language) -> Demo {
-        self.locale = if language == Language::Swedish {
-            LocaleFormat::sv_se(zone())
-        } else {
-            LocaleFormat::en_gb(zone())
-        };
+        self.locale = LocaleFormat::of_language(language, zone());
         self.language = language;
         self
     }
