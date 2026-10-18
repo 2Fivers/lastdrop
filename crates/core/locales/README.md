@@ -88,7 +88,9 @@ amount (`{amount} {unit}`) and the flyout shows the two apart:
 
 The number as shown picks the form: amounts are rounded to whole numbers, so 1.4 credits read
 `1 credit` and 1.5 `2 credits`. In `card.balance.left` the unit counts the top-up, `{ref}`
-(`1 of 3,260 credits left`); everywhere else it counts `{amount}`.
+(`1 of 3,260 credits left`); everywhere else it counts `{amount}`. Words around the amount must
+fit every count: Spanish says `Saldo de 1 crédito` rather than `Quedan`, which would need
+`Queda 1 crédito`.
 
 The rules are CLDR's for whole numbers (`src/grammar/plural.rs`). A language with another rule
 (Arabic, Lithuanian, Slovenian, …) needs a new `PluralRule` there, with its tests. Languages

@@ -63,6 +63,8 @@ lowercase_names = true
 "unit.hour" = { one = "{n} hora", other = "{n} horas" }
 "unit.day" = { one = "{n} día", other = "{n} días" }
 "unit.week" = { one = "{n} semana", other = "{n} semanas" }
+# Balances say `saldo de {amount} {unit}` instead of `Quedan`, which would need
+# `Queda 1 crédito`.
 "unit.credits" = { one = "crédito", other = "créditos" }
 
 # ---- Hover card (R§8.2)
@@ -135,7 +137,7 @@ lowercase_names = true
 "card.line.ended" = "Ya terminado ({time})"
 "card.value" = "{pct} usado"
 "card.balance.value" = "{pct} de la recarga usado"
-"card.balance.left" = "Quedan {amount} de {ref} {unit}"
+"card.balance.left" = "Saldo: {amount} de {ref} {unit}"
 "card.balance.rate" = "{burn} al día, últimos 7 días"
 "card.balance.forecast.lasts" = "dura ≈ {duration}"
 "card.balance.forecast.runsout" = "se agota ≈ {time}"
@@ -216,7 +218,7 @@ lowercase_names = true
 "flyout.card.a11y.noplan" = "{service}, actualizado {age}"
 "flyout.card.a11y.offline" = ", sin conexión"
 "flyout.card.a11y.signin" = ", sesión expirada"
-"flyout.balance.a11y" = "Quedan {amount} {unit}, usado el {n} por ciento de la última recarga, aproximadamente {duration} a {burn} al día"
+"flyout.balance.a11y" = "Saldo de {amount} {unit}, usado el {n} por ciento de la última recarga, aproximadamente {duration} a {burn} al día"
 "flyout.spark.a11y.window" = "Uso por día del {meter}, últimos 14 días: hoy {today} por ciento, máximo {max} por ciento el {day}, media {avg} por ciento."
 "flyout.spark.a11y.balance" = "Uso por día, últimos 14 días: hoy {today}, máximo {max} el {day}, media {avg}."
 
@@ -246,8 +248,8 @@ lowercase_names = true
 # Joined with `, `; `al … de uso` keeps each row apart from the commas of a spoken name
 # (`semanal, todos los modelos al 61 por ciento de uso`).
 "a11y.stale.row" = "{meter} al {n} por ciento de uso"
-"a11y.balance" = "{service}: quedan {amount} {unit}, aproximadamente {duration} al ritmo actual."
-"a11y.balance.noforecast" = "{service}: quedan {amount} {unit}."
+"a11y.balance" = "{service}: saldo de {amount} {unit}, aproximadamente {duration} al ritmo actual."
+"a11y.balance.noforecast" = "{service}: saldo de {amount} {unit}."
 "a11y.list.sep" = ", "
 
 # ---- Tray tooltip (R§9.3)
@@ -281,8 +283,8 @@ lowercase_names = true
 "notice.body.noreset" = "Selecciona para ver los detalles en Lastdrop."
 "notice.body.reset" = "De nuevo al {pct} de uso."
 "notice.body.reset.usedup" = "De nuevo al {pct} de uso. Ya puedes volver a usarlo."
-"notice.body.balance" = "Quedan {amount} {unit}, aproximadamente {duration} según tu uso de los últimos 7 días."
-"notice.body.balance.left" = "Quedan {amount} {unit}."
+"notice.body.balance" = "Saldo de {amount} {unit}, aproximadamente {duration} según tu uso de los últimos 7 días."
+"notice.body.balance.left" = "Saldo de {amount} {unit}."
 "notice.body.balance.empty" = "Recarga saldo para seguir usando {service}."
 "notice.more" = "+{n} más"
 
