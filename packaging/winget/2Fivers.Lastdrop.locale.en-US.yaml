@@ -15,8 +15,8 @@ Copyright: Copyright (c) 2026 2Fivers
 ShortDescription: How much AI is left in the tank, one click away.
 Description: |-
   Lastdrop is a Windows 11 tray app that shows your remaining usage across AI services without
-  opening each service's usage page: what is left, when it resets, what you used recently and
-  whether your current pace will last until the next reset.
+  opening each service's usage page: what is left, when it refills, what you used recently and
+  whether your current pace will last until the next refill.
 
   It reuses the sign-ins of the tools you already have (Claude Code, Codex, the GitHub CLI,
   Cursor and others) and sends each one only to that service's own usage API. Apart from a daily
