@@ -100,6 +100,10 @@ asks for Microsoft's CLA: answer
 `@microsoft-github-policy-service agree company="2Fivers"`. A moderator merges it after
 the automated validation.
 
+The validation's brand check (Policy-Test-1.2) matches company names inside words: 0.1.1 was
+held for "ESET" in "resets". Keep `reset` and other brand-bearing words out of the
+`packaging\winget` descriptions, so a new version doesn't need a moderator's waiver.
+
 ## Code signing
 
 Releases are unsigned until a certificate exists. The plan is SignPath Foundation, which signs
