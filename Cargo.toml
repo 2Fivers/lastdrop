@@ -63,7 +63,7 @@ ureq = { version = "=3.4.2", default-features = false, features = ["native-tls"]
 # zstd), all pure Rust: no C toolchain, nothing that runs outside safe code we can audit.
 # ruzstd's default `hash` feature verifies zstd content checksums.
 ruzstd = { version = "=0.9.1" }
-brotli-decompressor = { version = "=6.0.1", default-features = false, features = ["std"] }
+brotli-decompressor = { version = "=6.2.0", default-features = false, features = ["std"] }
 flate2 = { version = "=1.1.10", default-features = false, features = ["rust_backend"] }
 
 # Fast byte search for the session-log readers (tokens-spec §4); already in the tree through
