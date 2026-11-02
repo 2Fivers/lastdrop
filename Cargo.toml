@@ -72,7 +72,7 @@ memchr = { version = "=2.8.3" }
 
 # Errors and logging (our own tiny file logger lives in crates/app/src/logger.rs).
 thiserror = "=2.0.21"
-log = { version = "=0.4.34", features = ["std"] }
+log = { version = "=0.4.35", features = ["std"] }
 
 [workspace.lints.rust]
 # Every public item says what it means and which spec section it implements.
