@@ -51,7 +51,7 @@ serde_json = "=1.0.154"
 toml = { version = "=1.1.8", default-features = false, features = ["std", "serde", "parse"] }
 # Time. `core` only needs instants, durations and caller-supplied time zones; the binary adds
 # the system time zone and the bundled tzdb on Windows (crates/app/Cargo.toml).
-jiff = { version = "=0.2.38", default-features = false, features = ["std", "serde", "perf-inline"] }
+jiff = { version = "=0.2.39", default-features = false, features = ["std", "serde", "perf-inline"] }
 
 # HTTP: blocking, no async runtime, TLS through SChannel (native-tls) with the system roots.
 # The feature must be `native-tls`: ureq 3.4 compiles its native-tls connector only under that
