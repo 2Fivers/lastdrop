@@ -14,9 +14,16 @@ all-features = false
 unmaintained = "all"
 unsound = "all"
 yanked = "deny"
-# No advisory is ignored. If one ever has to be, list it here with its ID, why it does not
-# apply to Lastdrop, and the issue that tracks removing the ignore.
-ignore = []
+# An ignored advisory is listed here with its ID, why it does not apply to Lastdrop, and when
+# the ignore is removed.
+ignore = [
+  # pin-utils 0.1.1 is unmaintained (repository archived 2026-10-01), with no safe upgrade. It
+  # comes only through spin_on 0.1.1, which Slint 1.18 uses in slint-build (our build script)
+  # and slint-macros (a proc macro): compile time only, not linked into lastdrop.exe
+  # (`cargo tree -i pin-utils -e normal,no-proc-macro` prints nothing). Remove once Slint
+  # drops spin_on or pin-utils has a maintained release.
+  { id = "RUSTSEC-2026-0441", reason = "pin-utils is a compile-time-only dependency of Slint's build script and proc macro" },
+]
 
 [licenses]
 # Lastdrop is MIT OR Apache-2.0. Only licences that can be shipped inside a binary under
