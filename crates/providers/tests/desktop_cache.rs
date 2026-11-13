@@ -800,6 +800,24 @@ fn the_store_builds_cache_is_read_and_the_newest_folder_wins() {
 }
 
 #[test]
+fn the_cache_in_claude_data_is_read() {
+    // Newer Store builds keep their data in %LOCALAPPDATA%\Claude-Data\claude_<publisher id>
+    // and leave only a marker in the package's private %APPDATA%.
+    let f = Fakes::new(now());
+    let data_dir = PathBuf::from(r"C:\Users\tester\AppData\Local\Claude-Data\claude_testpublisher");
+    f.fs.add_file(
+        store_desktop_dir().join(".user-data-left.claude_testpublisher"),
+        "",
+        now() - mins(60),
+    );
+    FakeChromiumCache::new()
+        .with(usage_entry("", now() - mins(2), "zstd", &body(7.0, 30.0)))
+        .write(&f.fs, &desktop_cache::cache_dir(&data_dir), now() - mins(2));
+    let cached = read(&f).expect("from Claude-Data");
+    assert_eq!(cached.usage.measured_at, Some(now() - mins(2)));
+}
+
+#[test]
 fn damaged_files_fail_gracefully() {
     let good = realistic_cache().files();
     let check =

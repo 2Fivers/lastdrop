@@ -3,8 +3,9 @@
 //! Claude Desktop (Electron) asks claude.ai for the plan's usage itself —
 //! `GET https://claude.ai/api/organizations/<organisation>/usage`, sometimes with a query — and
 //! Chromium keeps the last answer in Desktop's HTTP disk cache, `Cache\Cache_Data` in the desktop
-//! data folder (each of [`super::desktop::candidates`]: `%APPDATA%\Claude`, the Microsoft Store
-//! build's `LocalCache\Roaming\Claude`). The body has the OAuth usage endpoint's shape
+//! data folder (each of [`super::desktop::candidates`]: `%APPDATA%\Claude`, newer Microsoft
+//! Store builds' `%LOCALAPPDATA%\Claude-Data\claude_*`, older ones' `LocalCache\Roaming\Claude`).
+//! The body has the OAuth usage endpoint's shape
 //! (`five_hour`, `seven_day`, `limits[]` with the `weekly_scoped` per-model windows, `resets_at`)
 //! and goes through the same parser ([`super::oauth::parse`]). Unlike Desktop's history it has
 //! reset times and the per-model windows, and it is as fresh as Desktop's last look.
