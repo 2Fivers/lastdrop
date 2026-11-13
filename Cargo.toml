@@ -48,23 +48,23 @@ serde = { version = "=1.0.229", features = ["derive"] }
 serde_json = "=1.0.154"
 # Build time only: core's build script reads the locale files (crates/core/locales) into its
 # string tables. Nothing of it reaches the binary.
-toml = { version = "=1.1.8", default-features = false, features = ["std", "serde", "parse"] }
+toml = { version = "=1.2.1", default-features = false, features = ["std", "serde", "parse"] }
 # Time. `core` only needs instants, durations and caller-supplied time zones; the binary adds
 # the system time zone and the bundled tzdb on Windows (crates/app/Cargo.toml).
-jiff = { version = "=0.2.38", default-features = false, features = ["std", "serde", "perf-inline"] }
+jiff = { version = "=0.2.43", default-features = false, features = ["std", "serde", "perf-inline"] }
 
 # HTTP: blocking, no async runtime, TLS through SChannel (native-tls) with the system roots.
 # The feature must be `native-tls`: ureq 3.4 compiles its native-tls connector only under that
 # name, and `native-tls-no-default` alone panics on the first https:// request. It also brings
 # Mozilla's roots (webpki-root-certs), which UreqHttp never selects (RootCerts::PlatformVerifier).
-ureq = { version = "=3.4.2", default-features = false, features = ["native-tls"] }
+ureq = { version = "=3.5.1", default-features = false, features = ["native-tls"] }
 
 # Decoders for bodies in Claude Desktop's Chromium HTTP cache (content codings and the cache's own
 # zstd), all pure Rust: no C toolchain, nothing that runs outside safe code we can audit.
 # ruzstd's default `hash` feature verifies zstd content checksums.
 ruzstd = { version = "=0.9.1" }
-brotli-decompressor = { version = "=6.0.1", default-features = false, features = ["std"] }
-flate2 = { version = "=1.1.10", default-features = false, features = ["rust_backend"] }
+brotli-decompressor = { version = "=6.3.1", default-features = false, features = ["std"] }
+flate2 = { version = "=1.1.11", default-features = false, features = ["rust_backend"] }
 
 # Fast byte search for the session-log readers (tokens-spec §4); already in the tree through
 # other crates.
@@ -72,7 +72,7 @@ memchr = { version = "=2.8.3" }
 
 # Errors and logging (our own tiny file logger lives in crates/app/src/logger.rs).
 thiserror = "=2.0.21"
-log = { version = "=0.4.34", features = ["std"] }
+log = { version = "=0.4.35", features = ["std"] }
 
 [workspace.lints.rust]
 # Every public item says what it means and which spec section it implements.
