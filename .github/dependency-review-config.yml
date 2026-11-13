@@ -37,6 +37,10 @@ allow-dependencies-licenses:
   - pkg:cargo/i-slint-core
   - pkg:cargo/i-slint-core-macros
   - pkg:cargo/i-slint-renderer-software
+  # brotli-decompressor declares `license = "BSD-3-Clause/MIT"`, Cargo's old spelling of
+  # "BSD-3-Clause OR MIT" (both allowed above; cargo-deny reads it so). The action does not parse
+  # the slash and reports LicenseRef-bad-bsd-3-clausemit, failing every update of the crate.
+  - pkg:cargo/brotli-decompressor
   # Swatinem/rust-cache is LGPL-3.0. It runs in CI and is never part of what Lastdrop
   # distributes, so its licence places no terms on the app.
   - pkg:githubactions/Swatinem/rust-cache
