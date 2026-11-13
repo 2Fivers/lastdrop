@@ -3,8 +3,9 @@
 //! The file lives in Claude Desktop's data folder (`AccountSource::Claude::desktop_dir`,
 //! `%APPDATA%\Claude`). The Microsoft Store (MSIX) build writes it to the package's private copy
 //! of `%APPDATA%` instead (`%LOCALAPPDATA%\Packages\Claude_*\LocalCache\Roaming\Claude`), which
-//! only processes inside that package see at `%APPDATA%\Claude`; [`read`] looks there too and
-//! takes the newer file. Shape, confirmed against a real install (key names only, version 2):
+//! only processes inside that package see at `%APPDATA%\Claude`. Newer Store builds move it again,
+//! to `%LOCALAPPDATA%\Claude-Data\claude_<publisher id>`. [`read`] looks in each of these
+//! ([`candidates`]) and takes the newest file. Shape, confirmed against a real install (key names only, version 2):
 //!
 //! ```text
 //! {"version": 2, "samples": [{"t": <epoch ms>, "org": <organisation id>,
@@ -53,7 +54,16 @@ pub fn path(desktop_dir: &Path) -> PathBuf {
 /// `%LOCALAPPDATA%\Packages` (`Claude_<publisher id>`).
 pub const STORE_PACKAGE_PATTERN: &str = "Claude_*";
 
-/// The data folders the history may be in: `desktop_dir`, then each Store package's
+/// The folder under `%LOCALAPPDATA%` where newer Store builds of Claude Desktop keep their data,
+/// one subfolder per package (`claude_<publisher id>`), after moving it out of the package's
+/// private copy of `%APPDATA%` (which then holds only a `.user-data-left.*` marker).
+pub const DATA_FOLDER: &str = "Claude-Data";
+
+/// The per-package data folders in [`DATA_FOLDER`].
+pub const DATA_PATTERN: &str = "claude_*";
+
+/// The data folders the history may be in: `desktop_dir`, then each of
+/// `%LOCALAPPDATA%\Claude-Data\claude_*` (newer Store builds), then each Store package's
 /// `LocalCache\Roaming\Claude` (`%LOCALAPPDATA%`, else `~\AppData\Local`). A packaged app's
 /// writes to `%APPDATA%` land in that private copy unless the folder existed before, and a
 /// Lastdrop started from Explorer, outside the package, sees only the private copy's real path.
@@ -65,16 +75,27 @@ pub fn candidates(ctx: &FetchContext<'_>, desktop_dir: &Path) -> Vec<PathBuf> {
         .filter(|v| !v.is_empty())
         .map(PathBuf::from)
         .or_else(|| ctx.env.home_dir().map(|h| h.join("AppData").join("Local")));
-    if let Some(local) = local
-        && let Ok(packages) = ctx.fs.glob(&local.join("Packages"), STORE_PACKAGE_PATTERN)
-    {
-        dirs.extend(
-            packages
-                .into_iter()
-                .filter(|e| e.meta.is_dir)
-                .map(|e| e.path.join("LocalCache").join("Roaming").join("Claude")),
-        );
-    }
+    let Some(local) = local else {
+        return dirs;
+    };
+    let folders = |dir: PathBuf, pattern: &str| {
+        ctx.fs
+            .glob(&dir, pattern)
+            .map(|found| {
+                found
+                    .into_iter()
+                    .filter(|e| e.meta.is_dir)
+                    .map(|e| e.path)
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default()
+    };
+    dirs.extend(folders(local.join(DATA_FOLDER), DATA_PATTERN));
+    dirs.extend(
+        folders(local.join("Packages"), STORE_PACKAGE_PATTERN)
+            .into_iter()
+            .map(|package| package.join("LocalCache").join("Roaming").join("Claude")),
+    );
     dirs
 }
 

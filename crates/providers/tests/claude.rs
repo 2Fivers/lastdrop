@@ -741,6 +741,42 @@ fn desktop_history_of_the_store_build_is_found_in_its_package() {
 }
 
 #[test]
+fn desktop_history_of_newer_store_builds_is_found_in_claude_data() {
+    let f = Fakes::new(now());
+    let data_dir = PathBuf::from(r"C:\Users\tester\AppData\Local\Claude-Data\claude_testpublisher");
+    // What the move leaves behind in the package's private %APPDATA%.
+    f.fs.add_file(
+        store_desktop_dir().join(".user-data-left.claude_testpublisher"),
+        "",
+        ts("2026-10-10T09:00:00Z"),
+    );
+    f.fs.add_file(
+        desktop::path(&data_dir),
+        fixture!("plan-usage-history-v2.json"),
+        ts("2026-10-10T10:32:05Z"),
+    );
+    // A file beside the data folders, and a folder that is not a package's, are not candidates.
+    f.fs.add_file(
+        r"C:\Users\tester\AppData\Local\Claude-Data\README.txt",
+        "",
+        now(),
+    );
+    f.fs.add_file(
+        r"C:\Users\tester\AppData\Local\Claude-Data\other\plan-usage-history.json",
+        "{}",
+        now(),
+    );
+    let ctx = f.context(SignedDuration::from_secs(30));
+    assert_eq!(
+        desktop::candidates(&ctx, &desktop_dir()),
+        [desktop_dir(), data_dir, store_desktop_dir()]
+    );
+    let usage = desktop::read(&ctx, &desktop_dir()).expect("read from Claude-Data");
+    assert_eq!(usage.measured_at, Some(ts("2026-10-10T10:32:00Z")));
+    assert_eq!(window(&usage, &ClaudeWindow::Weekly).used, 0.58);
+}
+
+#[test]
 fn desktop_history_takes_the_newer_of_appdata_and_the_package() {
     let f = Fakes::new(now());
     // An old file from an earlier install in %APPDATA%, the live one in the package.
