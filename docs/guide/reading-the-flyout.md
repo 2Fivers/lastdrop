@@ -152,6 +152,11 @@ or 90 days. The window has these parts:
   measure of how much you used, not as a bill. Models without a known price are left out of the
   cost.
 
+Point at a chart to read it. Over the charts of **Over time**, a line marks the same moment on
+all of them, and each one shows its value then, such as *Thu 8 Oct, 14:00–16:00 · 46%*. Over
+**Use per day**, **Active hours** or the tokens per day, the line under the chart shows that day
+or hour.
+
 Prices come with Lastdrop, with the date they were checked. To change or add a price, put a
 `prices.json` in `%APPDATA%\Lastdrop` in the same form as the
 [bundled one](../../crates/core/prices.json): its models replace the bundled ones with the same

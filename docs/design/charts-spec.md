@@ -103,8 +103,9 @@ a 1 px outline of the disabled text colour.
 `history.title`, `history.service`, `history.range`, `history.range.week`, `history.range.month`,
 `history.range.quarter`, `history.over_time`, `history.per_day`, `history.hours`,
 `history.per_day.summary`, `history.hours.summary`, `history.empty`, `history.empty.range`,
-`history.close`, `menu.history`, `menu.card.history`, `flyout.history.a11y`, `flyout.history.tooltip`, and the
-`a11y.history.*` labels.
+`history.close`, `menu.history`, `menu.card.history`, `flyout.history.a11y`, `flyout.history.tooltip`,
+`history.hover.span`, `history.hover.value`, `history.hover.none`, `history.hover.tokens`,
+`history.hover.tokens.cost` (§10), and the `a11y.history.*` labels.
 
 ## 8. Memory and time
 
@@ -116,4 +117,30 @@ dialog process holds the samples of one service's meters (90 days of 5-minute sa
 
 - ~~**Tokens and cost per day and model**~~: built, [tokens-spec](tokens-spec.md): the session
   logs' usage fields only, and a bundled price table that a user's `prices.json` can extend.
-- Hover read-outs on the charts (the value under the pointer).
+- ~~**Hover read-outs on the charts**~~: built, §10.
+
+## 10. What the pointer reads
+
+Over a chart, the pointer shows the value under it, in a line the chart already has, so nothing
+covers the drawing. Every text is made in `lastdrop_core::charts` (`tokens` for the tokens),
+one per bucket, day or hour, and Slint picks the one under the pointer.
+
+- **Over time:** the meter charts share one time axis, so the pointer over any of them draws a
+  1 px guide at its position across all of them. Each chart's value on the right (its latest
+  value) becomes the bucket there: `Thu 8 Oct, 14:00–16:00 · 46%`. The highest used share in the
+  bucket, or a balance's last amount, as §3 counts it. In a gap: `… · no reading`. Right of now
+  (the rest of today) the latest value stays. The times are the bucket's own edges. A period
+  that includes a change to or from summer time is an hour longer or shorter, so its buckets do
+  not start on the hour (`13:55–15:55`).
+- **Use per day, tokens per day:** the column under the pointer is drawn in the pointer colour,
+  and the line under the chart (its summary) becomes that day: `Thu 8 Oct · 3%`, `Thu 8 Oct ·
+  no reading`; tokens: `Thu 8 Oct · 3M tokens · ≈ 3.03 USD`, or without the cost on a day whose
+  models have no price (`Wed 14 Oct · 50K tokens`).
+- **Active hours:** the cell under the pointer gets a 1.5 px outline in the pointer colour, and
+  the summary becomes that hour of the week: `Tuesday, 14:00–15:00 · 3%`.
+- Leaving the chart brings the latest value and the summary back.
+- **Colour:** the pointer colour is the text colour at 70 % (80 % in dark mode).
+- **Keyboard and screen readers:** unchanged. The charts' labels (§5) already say the latest
+  value, the highest and when, and the read-outs follow the mouse only.
+- **Preview:** `--preview-history <png> --hover` (with or without `--demo`) renders the window
+  with the pointer over every chart at once: the third-to-last day and Tuesday 14:00–15:00.

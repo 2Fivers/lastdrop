@@ -148,7 +148,7 @@ setups.
 - Burn rate and depletion forecast for balance-based services ("≈ 9 days left").
 - Charts: usage per window over time, tokens and cost per day/model, a heatmap of active hours.
   Built ([charts-spec](design/charts-spec.md)): the usage history window with each meter over
-  7, 30 or 90 days, use per day and the active hours; and tokens and cost per day and model from
+  7, 30 or 90 days, use per day and the active hours, each read under the pointer; and tokens and cost per day and model from
   Claude Code's and Codex's own session logs, priced with a bundled table of API list prices that
   `%APPDATA%\Lastdrop\prices.json` can extend ([tokens-spec](design/tokens-spec.md)).
 
