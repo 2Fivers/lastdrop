@@ -5,9 +5,10 @@ leaves behind (updates-spec §2, packaging/winget). For a clean Windows user: th
 workflow runs it on a fresh runner. On your own account it would replace your installed copy.
 
 .DESCRIPTION
-1. `Lastdrop-Setup.exe --install --quiet` exits 0; the program, the Start menu shortcut and the
-   "Installed apps" entry (DisplayVersion = -Version, publisher, QuietUninstallString) exist, and
-   the installed app is running.
+1. `Lastdrop-Setup.exe --install --quiet` exits 0; the program (its file properties: product
+   version = -Version, company 2Fivers), the Start menu shortcut and the "Installed apps" entry
+   (DisplayVersion = -Version, publisher, QuietUninstallString) exist, and the installed app is
+   running.
 2. The entry's QuietUninstallString exits 0; the entry and the shortcut are gone, the app has
    quit, and shortly after the install folder is removed.
 
@@ -51,6 +52,9 @@ if (Test-Path $key) { throw "Lastdrop is installed already: run this for a clean
 $code = Run (Resolve-Path $Setup) @("--install", "--quiet")
 Check ($code -eq 0) "--install --quiet exits 0 (got $code)"
 Check (Test-Path $exe) "the program is $exe"
+$info = (Get-Item $exe -ErrorAction SilentlyContinue).VersionInfo
+Check ($info.ProductVersion -eq $Version) "the program's ProductVersion is $Version (got $($info.ProductVersion))"
+Check ($info.CompanyName -eq "2Fivers") "the program's CompanyName is 2Fivers (got $($info.CompanyName))"
 Check (Test-Path $shortcut) "the Start menu shortcut is $shortcut"
 $entry = Get-ItemProperty $key -ErrorAction SilentlyContinue
 Check ($null -ne $entry) "the Installed apps entry exists"
