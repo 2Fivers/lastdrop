@@ -8,7 +8,9 @@ maintainer tests the draft and publishes it, and winget picks it up. The mechani
 
 - The version is bumped through a pull request, and main is green: the workspace `Cargo.toml`
   (`[workspace.package] version`, then `cargo update -w` for `Cargo.lock`) and the
-  `assemblyIdentity` version in `crates/app/app.manifest` (`0.1.1` → `0.1.1.0`).
+  `assemblyIdentity` version in `crates/app/app.manifest` (`0.1.1` → `0.1.1.0`). The exe's file
+  properties (version, 2Fivers, copyright) follow `Cargo.toml` and `LICENSE-MIT` by themselves
+  (`crates/app/build.rs`).
 - The release checks of [ARCHITECTURE](ARCHITECTURE.md) ("Quality bar"): `tools/measure` within
   budget, a 24-hour soak with no growth in memory, GDI or USER handles, and the manual
   multi-monitor matrix.
@@ -24,8 +26,8 @@ On GitHub: **Actions ▸ release ▸ Run workflow**, *Use workflow from* **main*
    writes `SHA256SUMS`;
 3. runs [install-test.ps1](../tools/release/install-test.ps1) on the runner, which is a clean
    Windows user: `--install --quiet` and the "Installed apps" entry's `QuietUninstallString`,
-   exactly what winget runs, with the program, shortcut, registry entry and running app checked
-   after each step;
+   exactly what winget runs, with the program (and its file version), shortcut, registry entry
+   and running app checked after each step;
 4. attests the installer's build provenance (`gh attestation verify` checks it);
 5. creates a **draft** release `v0.1.0` with both files, pointing at the commit it built. The
    tag does not exist yet. Running Lastdrops see published releases only.

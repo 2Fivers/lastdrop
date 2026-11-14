@@ -30,6 +30,8 @@ on:
       - packaging/**
       - crates/app/src/install.rs
       - crates/win/src/install.rs
+      - crates/app/build.rs
+      - crates/app/lastdrop.rc
 
 permissions:
   contents: read
