@@ -661,6 +661,15 @@ lowercase_names = true
 "history.tokens.count.k" = "{n}K"
 "history.tokens.count.m" = "{n}M"
 "history.tokens.count.b" = "{n}B"
+# What the pointer reads on the charts (charts-spec §10). `{date}`: a weekday and date, or a
+# full weekday for the active hours; `{time}`, `{until}`: the start and end on the clock.
+"history.hover.span" = "{date}, {time}–{until}"
+# `{when}`: `history.hover.span` or a weekday and date; `{value}`: what was read then.
+"history.hover.value" = "{when} · {value}"
+"history.hover.none" = "no reading"
+# `{tokens}`: a compact count (`history.tokens.count.*`); `{cost}`: an amount with its currency.
+"history.hover.tokens" = "{tokens} tokens"
+"history.hover.tokens.cost" = "{tokens} tokens · ≈ {cost}"
 "history.close" = "Close"
 "a11y.history.span" = "the last {n} days"
 "a11y.history.percent" = "{n} percent"

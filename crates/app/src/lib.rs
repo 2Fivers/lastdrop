@@ -110,6 +110,9 @@ pub struct Args {
     /// `--contrast`: the settings window's preview in a contrast theme (Windows' "Night sky"
     /// colours).
     pub contrast: bool,
+    /// `--hover`: the usage history window's preview (`--demo`) with the pointer over each chart
+    /// (charts-spec §10).
+    pub hover: bool,
     /// `--preview-theme-studio <png>`: render Theme Studio (themes-spec §4), starting from
     /// `--theme` (else the settings' theme), and exit.
     pub preview_theme_studio: Option<PathBuf>,
@@ -175,6 +178,7 @@ impl Args {
                 }
                 Some("--dark") => out.dark = true,
                 Some("--contrast") => out.contrast = true,
+                Some("--hover") => out.hover = true,
                 Some("--language") => {
                     out.language = iter.next().and_then(|v| v.to_str().map(str::to_owned));
                 }
@@ -296,6 +300,7 @@ mod tests {
             args(&["x", "--preview-history", "h.png"]).preview_history,
             Some(PathBuf::from("h.png"))
         );
+        assert!(args(&["x", "--preview-history", "h.png", "--hover"]).hover);
         assert_eq!(
             args(&["lastdrop.exe", "--about"]).dialog,
             Some(DialogKind::About)

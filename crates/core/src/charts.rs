@@ -4,7 +4,8 @@
 //! its own.
 //!
 //! Chart geometry is in shares of the chart's width and height (0 to 1), so Slint draws it at any
-//! size with plain rectangles.
+//! size with plain rectangles. What the pointer reads (§10) is text made here too, one per bucket,
+//! day or hour; Slint picks the one under the pointer.
 
 use jiff::civil::Date;
 use jiff::tz::TimeZone;
@@ -205,6 +206,9 @@ pub struct MeterChart {
     pub bars: Vec<Bar>,
     /// The verticals between adjacent steps.
     pub risers: Vec<Riser>,
+    /// What the pointer reads at each bucket (§10): `Fri 10 Oct, 14:00–16:00 · 42%`, `… · no
+    /// reading` in a gap; empty for a bucket after now (the chart shows [`MeterChart::value`]).
+    pub hover: Vec<String>,
     /// The steps are filled down to the baseline (a window meter's used share); a balance is a
     /// line.
     pub filled: bool,
@@ -254,6 +258,8 @@ pub struct DayChart {
     pub top: String,
     /// `Average 6% a day · highest 14% on Fri 10 Oct`.
     pub summary: String,
+    /// What the pointer reads at each day (§10): `Fri 10 Oct · 6%`, `… · no reading`.
+    pub hover: Vec<String>,
     /// What it shows, spoken.
     pub a11y: String,
 }
@@ -278,6 +284,9 @@ pub struct HoursChart {
     pub columns: Vec<(u8, String)>,
     /// `Most use: Tuesday 14:00–15:00`.
     pub summary: String,
+    /// What the pointer reads at each cell (§10), weekday by weekday like
+    /// [`HoursChart::levels`]: `Tuesday, 14:00–15:00 · 3%`.
+    pub hover: Vec<String>,
     /// What it shows, spoken.
     pub a11y: String,
 }
@@ -304,12 +313,13 @@ pub fn build_history(input: &HistoryInput<'_>) -> HistoryModel {
         Msg::A11yHistorySpan,
         &[("n", &period.days.to_string())],
     );
+    let spans = bucket_spans(&period, input);
     let charts: Vec<MeterChart> = input
         .meters
         .iter()
         .filter_map(|m| {
             let samples = input.history.samples(&m.key, since);
-            meter_chart(m, samples, &period, input, &span)
+            meter_chart(m, samples, &period, input, &span, &spans)
         })
         .collect();
     if charts.is_empty() {
@@ -605,6 +615,42 @@ pub(crate) fn shown_date(t: Timestamp, locale: &LocaleFormat) -> String {
     format!("{} {}", weekday_abbrev(t, locale), day_month(t, locale))
 }
 
+/// The time each bucket covers, as the pointer reads it (`Fri 10 Oct, 14:00–16:00`); empty for a
+/// bucket that starts after now.
+fn bucket_spans(period: &Period, input: &HistoryInput<'_>) -> Vec<String> {
+    let locale = input.locale;
+    let clock = |t: Timestamp| {
+        let z = t.to_zoned(locale.tz.clone());
+        hour_minute(z.hour(), z.minute(), locale, true)
+    };
+    (0..BUCKETS)
+        .map(|i| {
+            let start = period.bucket_start(i);
+            if start > input.now {
+                return String::new();
+            }
+            text(
+                input.strings,
+                Msg::HistoryHoverSpan,
+                &[
+                    ("date", &shown_date(start, locale)),
+                    ("time", &clock(start)),
+                    ("until", &clock(period.bucket_start(i + 1))),
+                ],
+            )
+        })
+        .collect()
+}
+
+/// What the pointer reads: when, and the value then (`Fri 10 Oct · 6%`).
+pub(crate) fn hover_value(when: &str, value: &str, strings: &dyn Strings) -> String {
+    text(
+        strings,
+        Msg::HistoryHoverValue,
+        &[("when", when), ("value", value)],
+    )
+}
+
 /// The chart of one meter; `None` without a reading in the period.
 fn meter_chart(
     meter: &ChartMeter,
@@ -612,6 +658,7 @@ fn meter_chart(
     period: &Period,
     input: &HistoryInput<'_>,
     span: &str,
+    spans: &[String],
 ) -> Option<MeterChart> {
     let in_period = || {
         samples
@@ -625,6 +672,18 @@ fn meter_chart(
     let names = localized(meter.key.provider, &meter.key.meter, &meter.names, strings);
     let title = capitalise(&names.name);
     let date = spoken_date(highest.t, input.locale);
+    let none = strings.template(Msg::HistoryHoverNone);
+    let hover = spans
+        .iter()
+        .zip(&values)
+        .map(|(when, value)| {
+            if when.is_empty() {
+                return String::new();
+            }
+            let value = value.map_or_else(|| none.to_owned(), |v| shown(meter, v, input));
+            hover_value(when, &value, strings)
+        })
+        .collect();
     Some(match meter.kind {
         SparkKind::Window => {
             let used_up: Vec<bool> = values.iter().map(|v| v.is_some_and(|v| v >= 1.0)).collect();
@@ -658,6 +717,7 @@ fn meter_chart(
                 top: percent(100, input.locale),
                 bars,
                 risers,
+                hover,
                 filled: true,
                 a11y,
                 title,
@@ -682,6 +742,7 @@ fn meter_chart(
                 top: amount(top, input.locale),
                 bars,
                 risers,
+                hover,
                 filled: false,
                 a11y,
                 title,
@@ -753,6 +814,19 @@ fn day_chart(
             today: i == last,
         })
         .collect();
+    let none = input.strings.template(Msg::HistoryHoverNone);
+    let hover = values
+        .iter()
+        .enumerate()
+        .map(|(i, v)| {
+            let when = period
+                .day_start(i, tz)
+                .map(|t| shown_date(t, input.locale))
+                .unwrap_or_default();
+            let value = v.map_or_else(|| none.to_owned(), |v| shown_use(meter, v, input));
+            hover_value(&when, &value, input.strings)
+        })
+        .collect();
     let best_start = period.day_start(best_day, tz).unwrap_or(period.from);
     let summary = text(
         input.strings,
@@ -777,6 +851,7 @@ fn day_chart(
         columns,
         top: shown_use(meter, top, input),
         summary,
+        hover,
         a11y,
     })
 }
@@ -841,7 +916,26 @@ fn hours_chart(
             ("until", &until),
         ],
     );
+    let hover = cells
+        .iter()
+        .enumerate()
+        .flat_map(|(d, row)| row.iter().enumerate().map(move |(h, v)| (d, h, *v)))
+        .map(|(d, h, used)| {
+            let h = i8::try_from(h).unwrap_or(0);
+            let when = text(
+                input.strings,
+                Msg::HistoryHoverSpan,
+                &[
+                    ("date", &locale.weekdays_full[d]),
+                    ("time", &hour_minute(h, 0, locale, true)),
+                    ("until", &hour_minute((h + 1) % 24, 0, locale, true)),
+                ],
+            );
+            hover_value(&when, &shown_use(meter, used, input), input.strings)
+        })
+        .collect();
     Some(HoursChart {
+        hover,
         levels: heat_levels(&cells),
         rows: locale.weekdays_abbrev.to_vec(),
         columns: [0u8, 6, 12, 18]
@@ -1092,6 +1186,14 @@ mod tests {
         assert_eq!(model.ticks.len(), 7);
         assert_eq!(model.ticks[0].label, "Sat");
         assert_eq!(model.ticks[6].label, "Fri");
+        // What the pointer reads (§10): 28-minute buckets from Saturday 00:00.
+        assert_eq!(chart.hover.len(), BUCKETS);
+        assert_eq!(chart.hover[0], "Sat 10 Oct, 00:00–00:28 · no reading");
+        assert_eq!(
+            chart.hover[280], "Thu 15 Oct, 10:40–11:08 · 40%",
+            "the highest reading in the bucket"
+        );
+        assert_eq!(chart.hover[359], "", "after now");
 
         let per_day = model.per_day.expect("per day");
         assert_eq!(per_day.columns.len(), 7);
@@ -1105,6 +1207,12 @@ mod tests {
         assert_eq!(hours.rows[0], "Mon");
         assert_eq!(hours.columns[2], (12, "12".to_owned()));
         assert_eq!(hours.summary, "Most use: Thursday 10:00–11:00");
+        assert_eq!(per_day.hover.len(), 7);
+        assert_eq!(per_day.hover[5], "Thu 15 Oct · 40%");
+        assert_eq!(per_day.hover[0], "Sat 10 Oct · no reading");
+        assert_eq!(hours.hover.len(), 7 * 24);
+        assert_eq!(hours.hover[3 * 24 + 10], "Thursday, 10:00–11:00 · 20%");
+        assert_eq!(hours.hover[0], "Monday, 00:00–01:00 · 0%");
     }
 
     #[test]

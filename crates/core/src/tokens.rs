@@ -7,7 +7,7 @@ use std::collections::BTreeMap;
 use jiff::Timestamp;
 use serde::Deserialize;
 
-use crate::charts::{DayColumn, Period, Range, nice_max, shown_date, spoken_date};
+use crate::charts::{DayColumn, Period, Range, hover_value, nice_max, shown_date, spoken_date};
 use crate::grammar::LocaleFormat;
 use crate::grammar::numbers::{money, token_count};
 use crate::grammar::strings::{Msg, Strings, text};
@@ -288,6 +288,10 @@ pub struct TokensModel {
     pub top: String,
     /// The line under the columns.
     pub summary: String,
+    /// What the pointer reads at each day (charts-spec §10): `Fri 10 Oct · 1.2M tokens · ≈ 3.40
+    /// USD` (the cost of the day's models with a price), or `Fri 10 Oct · 1.2M tokens` on a day
+    /// with none.
+    pub hover: Vec<String>,
     /// The columns, spoken.
     pub a11y: String,
     /// One row per model, most tokens first.
@@ -364,6 +368,8 @@ pub fn build(input: &TokensInput<'_>) -> TokensModel {
         .map(|m| input.prices.price(m))
         .collect();
     let mut days = vec![0u64; period.days];
+    // The cost of each day's priced requests; `None` while the day has none.
+    let mut day_costs: Vec<Option<f64>> = vec![None; period.days];
     let mut per_model: BTreeMap<u16, Sums> = BTreeMap::new();
     let mut all = Sums::default();
     for r in &input.log.requests {
@@ -381,6 +387,9 @@ pub fn build(input: &TokensInput<'_>) -> TokensModel {
             .copied()
             .flatten()
             .map(|p| p.cost(r));
+        if let (Some(slot), Some(c)) = (day_costs.get_mut(day), cost) {
+            *slot = Some(slot.unwrap_or(0.0) + c);
+        }
         per_model.entry(r.model).or_default().add(r, cost);
         all.add(r, cost);
     }
@@ -426,6 +435,29 @@ pub fn build(input: &TokensInput<'_>) -> TokensModel {
     let any_price = per_model
         .keys()
         .any(|&i| prices.get(usize::from(i)).copied().flatten().is_some());
+    let hover = days
+        .iter()
+        .zip(&day_costs)
+        .enumerate()
+        .map(|(i, (&n, &cost))| {
+            let when = period
+                .day_start(i, tz)
+                .map(|t| shown_date(t, locale))
+                .unwrap_or_default();
+            let value = match cost {
+                Some(cost) => text(
+                    strings,
+                    Msg::HistoryHoverTokensCost,
+                    &[
+                        ("tokens", &count(n)),
+                        ("cost", &money(cost, currency, locale)),
+                    ],
+                ),
+                None => text(strings, Msg::HistoryHoverTokens, &[("tokens", &count(n))]),
+            };
+            hover_value(&when, &value, strings)
+        })
+        .collect();
     let summary = if any_price {
         text(
             strings,
@@ -539,6 +571,7 @@ pub fn build(input: &TokensInput<'_>) -> TokensModel {
         columns,
         top: count(top as u64),
         summary,
+        hover,
         a11y,
         rows,
         total: Some(total),
@@ -767,6 +800,13 @@ mod tests {
                 .a11y
                 .starts_with("Tokens per day, the last 7 days: 2.3M tokens")
         );
+        assert_eq!(model.hover.len(), 7);
+        assert_eq!(model.hover[6], "Fri 16 Oct · 2.2M tokens · ≈ 12.00 USD");
+        assert_eq!(
+            model.hover[4], "Wed 14 Oct · 50K tokens",
+            "only a model without a price: no cost"
+        );
+        assert_eq!(model.hover[0], "Sat 10 Oct · 0 tokens");
     }
 
     #[test]

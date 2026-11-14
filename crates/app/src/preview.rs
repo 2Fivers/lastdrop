@@ -5,7 +5,8 @@
 //! `--preview-history <png>` (the demo's history, or without `--demo` the user's) render the
 //! dialog process's windows the same way. The settings window renders each page's viewport, and a
 //! few states, at its preferred and its smallest size into `<stem>-<page>-<w>x<h>.png`
-//! (settings-spec §9); `--contrast` renders it in a contrast theme.
+//! (settings-spec §9); `--contrast` renders it in a contrast theme. `--hover` renders the history
+//! window with the pointer over each chart (charts-spec §10).
 //!
 //! The render uses Slint's software renderer through a headless platform
 //! (`MinimalSoftwareWindow`s): no window is created, nothing appears on the desktop and nothing
@@ -131,7 +132,7 @@ pub fn run(args: &Args) -> Result<(), AppError> {
             render_about(strings, args.dark, scale, out)?;
         }
         if let Some(out) = args.preview_history.as_deref() {
-            render_history(&world, scale, out)?;
+            render_history(&world, args.hover, scale, out)?;
         }
         return Ok(());
     }
@@ -155,6 +156,7 @@ pub fn run(args: &Args) -> Result<(), AppError> {
     if let Some(out) = args.preview_history.as_deref() {
         render_live_history(
             args.language.as_deref().and_then(Language::from_tag),
+            args.hover,
             scale,
             out,
         )?;
@@ -163,8 +165,14 @@ pub fn run(args: &Args) -> Result<(), AppError> {
 }
 
 /// Renders the usage history window with the user's history: the first service that has any,
-/// over the last 30 days, in `language` (else the settings' and Windows').
-fn render_live_history(language: Option<Language>, scale: f64, out: &Path) -> Result<(), AppError> {
+/// over the last 30 days, in `language` (else the settings' and Windows'); with `hover`, the
+/// pointer over each chart ([`point_at_charts`]).
+fn render_live_history(
+    language: Option<Language>,
+    hover: bool,
+    scale: f64,
+    out: &Path,
+) -> Result<(), AppError> {
     use crate::history_window::{build, fill_choices, fill_model, sources, with_history};
     let paths = persist::Paths::from_env()?;
     crate::custom_services::load(&paths.providers);
@@ -235,6 +243,9 @@ fn render_live_history(language: Option<Language>, scale: f64, out: &Path) -> Re
         });
         crate::history_window::fill_tokens(&window, Some(&section));
     }
+    if hover {
+        point_at_charts(&window);
+    }
     window.show()?;
     snapshot_to_png(
         window.window(),
@@ -247,6 +258,16 @@ fn render_live_history(language: Option<Language>, scale: f64, out: &Path) -> Re
     )?;
     window.hide()?;
     Ok(())
+}
+
+/// The pointer over every chart of a 30-day history window at once, as the `--hover` render
+/// shows it (charts-spec §10): the third-to-last day, and Tuesday 14:00–15:00.
+fn point_at_charts(window: &ui::HistoryWindow) {
+    window.set_hover_at(0.92);
+    window.set_hover_day(27);
+    window.set_hover_token_day(27);
+    window.set_hover_weekday(1);
+    window.set_hover_hour(14);
 }
 
 /// Card menus for the demo (every service has a usage page, nothing pinned).
@@ -594,8 +615,9 @@ fn demo_sources(world: &demo::Demo) -> Vec<crate::history_window::Source> {
 }
 
 /// Renders the usage history window with the demo's first service over the last 30 days, in the
-/// demo's colour mode.
-fn render_history(world: &demo::Demo, scale: f64, out: &Path) -> Result<(), AppError> {
+/// demo's colour mode; with `hover`, the pointer over each chart as if it were over all of them at
+/// once (charts-spec §10).
+fn render_history(world: &demo::Demo, hover: bool, scale: f64, out: &Path) -> Result<(), AppError> {
     use crate::history_window::{build, fill_choices, fill_model};
     let window = ui::HistoryWindow::new()?;
     if world.theme.apps_dark {
@@ -630,6 +652,9 @@ fn render_history(world: &demo::Demo, scale: f64, out: &Path) -> Result<(), AppE
             strings,
         });
         crate::history_window::fill_tokens(&window, Some(&section));
+    }
+    if hover {
+        point_at_charts(&window);
     }
     window.show()?;
     snapshot_to_png(

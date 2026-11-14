@@ -2,7 +2,8 @@
 // per day and the active hours, drawn from what Rust computed (`lastdrop_core::charts`), and the
 // tokens and cost of Claude and Codex (docs/design/tokens-spec.md, `lastdrop_core::tokens`). Every
 // text and every path comes from Rust in the chosen language; nothing here formats a number.
-// Fluent, following the app theme like the settings window.
+// Fluent, following the app theme like the settings window. What the pointer reads (charts-spec
+// §10) comes from Rust too, one text per bucket, day or hour; this file picks the one under it.
 
 import { Button, ComboBox, ScrollView, Palette } from "std-widgets.slint";
 
@@ -29,6 +30,8 @@ export struct ChartData {
     top: string,
     bars: [BarData],
     risers: [RiserData],
+    // What the pointer reads at each bucket; empty after now.
+    hover: [string],
     filled: bool,
     a11y: string,
 }
@@ -43,12 +46,16 @@ export struct TickData {
 export struct DayData {
     height: float,
     today: bool,
+    // What the pointer reads at this day.
+    hover: string,
 }
 
 // One weekday of the active hours: its abbreviation and 24 shades (0 to 4).
 export struct HourRow {
     label: string,
     levels: [int],
+    // What the pointer reads at each hour.
+    hover: [string],
 }
 
 // An hour label above the active hours (0, 6, 12, 18).
@@ -97,6 +104,15 @@ global ChartColors {
     out property <color> hairline: Palette.foreground.with-alpha(dark ? 0.36 : 0.36);
     out property <color> grid: Palette.foreground.with-alpha(0.08);
     out property <color> past: Palette.foreground.with-alpha(dark ? 0.53 : 0.45);
+    // The guide at the pointer and the column or cell under it.
+    out property <color> pointer: Palette.foreground.with-alpha(dark ? 0.8 : 0.7);
+}
+
+// Which of `n` equal slots across `width` the pointer at `x` is over.
+global Slots {
+    public pure function at(x: length, width: length, n: int) -> int {
+        return width > 0 && n > 0 ? clamp(floor(x / width * n), 0, n - 1) : -1;
+    }
 }
 
 // The top of a chart's scale, readable over what is drawn.
@@ -119,6 +135,11 @@ component ScaleLabel inherits Rectangle {
 component MeterChart inherits VerticalLayout {
     in property <ChartData> data;
     in property <[TickData]> ticks;
+    // Where the pointer is across the charts, 0 to 1; negative when it is over none of them. The
+    // charts share their time axis, so each shows its value there.
+    in-out property <float> hover-at: -1;
+    property <string> hover-text: root.hover-at >= 0
+        ? root.data.hover[floor(root.hover-at * root.data.hover.length)] : "";
     spacing: 4px;
 
     HorizontalLayout {
@@ -132,7 +153,7 @@ component MeterChart inherits VerticalLayout {
             horizontal-stretch: 1;
         }
         Text {
-            text: root.data.value;
+            text: root.hover-text != "" ? root.hover-text : root.data.value;
             font-size: 13px;
             color: Palette.foreground;
         }
@@ -186,6 +207,22 @@ component MeterChart inherits VerticalLayout {
         }
         ScaleLabel {
             text: root.data.top;
+        }
+        if root.hover-at >= 0: Rectangle {
+            x: root.hover-at * plot.width - 0.5px;
+            width: 1px;
+            background: ChartColors.pointer;
+        }
+        TouchArea {
+            function follow() {
+                root.hover-at = self.has-hover ? clamp(self.mouse-x / self.width, 0, 0.99999) : -1;
+            }
+            changed mouse-x => {
+                self.follow();
+            }
+            changed has-hover => {
+                self.follow();
+            }
         }
     }
 }
@@ -278,6 +315,14 @@ export component HistoryWindow inherits Window {
     in property <[TokenRow]> token-rows;
     in property <TokenRow> tokens-total;
     in property <string> tokens-note;
+    // What the pointer is over (charts-spec §10): a share across the meter charts, a day of the
+    // use per day or of the tokens, a cell of the active hours; negative when over none. In-out
+    // for the --preview-history --hover render.
+    in-out property <float> hover-at: -1;
+    in-out property <int> hover-day: -1;
+    in-out property <int> hover-token-day: -1;
+    in-out property <int> hover-weekday: -1;
+    in-out property <int> hover-hour: -1;
     // The height that shows the whole page without scrolling: the header, the page and the
     // footer (the --preview-history render).
     out property <length> content-height: root.height - sv.visible-height + page.preferred-height;
@@ -350,6 +395,7 @@ export component HistoryWindow inherits Window {
                 for chart in root.charts: MeterChart {
                     data: chart;
                     ticks: root.ticks;
+                    hover-at <=> root.hover-at;
                 }
                 if root.empty == "": TimeAxis {
                     ticks: root.ticks;
@@ -379,14 +425,27 @@ export component HistoryWindow inherits Window {
                         width: max(1px, days.slot - days.gap);
                         height: day.height > 0 ? max(1px, day.height * (days.height - 1px)) : 0;
                         y: days.height - 1px - self.height;
-                        background: day.today ? ChartColors.accent : ChartColors.past;
+                        background: i == root.hover-day ? ChartColors.pointer
+                            : day.today ? ChartColors.accent : ChartColors.past;
                     }
                     ScaleLabel {
                         text: root.per-day-top;
                     }
+                    TouchArea {
+                        function follow() {
+                            root.hover-day = self.has-hover
+                                ? Slots.at(self.mouse-x, self.width, root.days.length) : -1;
+                        }
+                        changed mouse-x => {
+                            self.follow();
+                        }
+                        changed has-hover => {
+                            self.follow();
+                        }
+                    }
                 }
                 if root.has-per-day: Secondary {
-                    text: root.per-day-summary;
+                    text: root.hover-day >= 0 ? root.days[root.hover-day].hover : root.per-day-summary;
                 }
 
                 if root.has-hours: SectionTitle {
@@ -421,19 +480,41 @@ export component HistoryWindow inherits Window {
                             overflow: elide;
                         }
                         for level[h] in row.levels: Rectangle {
+                            property <bool> pointed: r == root.hover-weekday && h == root.hover-hour;
                             x: grid.label-w + h * grid.cell + 1px;
                             y: 1px;
                             width: max(1px, grid.cell - 2px);
                             height: 14px;
                             border-radius: 2px;
                             background: level == 0 ? transparent : ChartColors.accent.with-alpha(level * 0.25);
-                            border-width: level == 0 ? 1px : 0;
-                            border-color: ChartColors.grid;
+                            border-width: self.pointed ? 1.5px : level == 0 ? 1px : 0;
+                            border-color: self.pointed ? ChartColors.pointer : ChartColors.grid;
+                        }
+                    }
+                    TouchArea {
+                        x: grid.label-w;
+                        y: 16px;
+                        width: grid.width - grid.label-w;
+                        height: 7 * 16px;
+                        function follow() {
+                            root.hover-weekday = self.has-hover
+                                ? Slots.at(self.mouse-y, self.height, root.hour-rows.length) : -1;
+                            root.hover-hour = self.has-hover ? Slots.at(self.mouse-x, self.width, 24) : -1;
+                        }
+                        changed mouse-x => {
+                            self.follow();
+                        }
+                        changed mouse-y => {
+                            self.follow();
+                        }
+                        changed has-hover => {
+                            self.follow();
                         }
                     }
                 }
                 if root.has-hours: Secondary {
-                    text: root.hours-summary;
+                    text: root.hover-weekday >= 0 && root.hover-hour >= 0
+                        ? root.hour-rows[root.hover-weekday].hover[root.hover-hour] : root.hours-summary;
                 }
 
                 if root.has-tokens: SectionTitle {
@@ -463,14 +544,28 @@ export component HistoryWindow inherits Window {
                         width: max(1px, tdays.slot - tdays.gap);
                         height: day.height > 0 ? max(1px, day.height * (tdays.height - 1px)) : 0;
                         y: tdays.height - 1px - self.height;
-                        background: day.today ? ChartColors.accent : ChartColors.past;
+                        background: i == root.hover-token-day ? ChartColors.pointer
+                            : day.today ? ChartColors.accent : ChartColors.past;
                     }
                     ScaleLabel {
                         text: root.tokens-top;
                     }
+                    TouchArea {
+                        function follow() {
+                            root.hover-token-day = self.has-hover
+                                ? Slots.at(self.mouse-x, self.width, root.token-days.length) : -1;
+                        }
+                        changed mouse-x => {
+                            self.follow();
+                        }
+                        changed has-hover => {
+                            self.follow();
+                        }
+                    }
                 }
                 if root.has-tokens && root.tokens-message == "": Secondary {
-                    text: root.tokens-summary;
+                    text: root.hover-token-day >= 0 ? root.token-days[root.hover-token-day].hover
+                        : root.tokens-summary;
                 }
                 if root.has-tokens && root.tokens-message == "": VerticalLayout {
                     spacing: 6px;

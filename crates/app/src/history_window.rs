@@ -188,6 +188,7 @@ pub fn fill_model(window: &ui::HistoryWindow, model: &HistoryModel) {
                         })
                         .collect(),
                 ),
+                hover: self::model(c.hover.iter().map(|t| t.as_str().into()).collect()),
                 filled: c.filled,
                 a11y: c.a11y.as_str().into(),
             })
@@ -209,9 +210,11 @@ pub fn fill_model(window: &ui::HistoryWindow, model: &HistoryModel) {
             window.set_days(self::model(
                 d.columns
                     .iter()
-                    .map(|c| ui::DayData {
+                    .zip(&d.hover)
+                    .map(|(c, hover)| ui::DayData {
                         height: c.height,
                         today: c.today,
+                        hover: hover.as_str().into(),
                     })
                     .collect(),
             ));
@@ -239,6 +242,14 @@ pub fn fill_model(window: &ui::HistoryWindow, model: &HistoryModel) {
                             .skip(r * 24)
                             .take(24)
                             .map(|l| i32::from(*l))
+                            .collect(),
+                    ),
+                    hover: self::model(
+                        h.hover
+                            .iter()
+                            .skip(r * 24)
+                            .take(24)
+                            .map(|t| t.as_str().into())
                             .collect(),
                     ),
                 })
@@ -288,9 +299,11 @@ pub fn fill_tokens(window: &ui::HistoryWindow, section: Option<&TokensModel>) {
         section
             .columns
             .iter()
-            .map(|c| ui::DayData {
+            .zip(&section.hover)
+            .map(|(c, hover)| ui::DayData {
                 height: c.height,
                 today: c.today,
+                hover: hover.as_str().into(),
             })
             .collect(),
     ));
