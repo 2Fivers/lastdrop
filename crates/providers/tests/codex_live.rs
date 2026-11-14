@@ -2,10 +2,10 @@
 //! by hand with
 //! `cargo test -p lastdrop-providers --test codex_live -- --ignored --nocapture --test-threads=1`.
 //!
-//! `live_app_server_smoke` prints only the plan type, window lengths, used percentages and reset
-//! times; `live_provider_pace_smoke` only the source chosen, the provider's INFO/WARN lines
-//! (sources, reasons, minutes), ages, durations, start counts and used percentages — never the
-//! path, account, e-mail address or anything else Codex returns. `LocalSpawner` is a minimal
+//! `live_app_server_smoke` prints only the plan type, window lengths, used percentages, reset
+//! times and the credit balance; `live_provider_pace_smoke` only the source chosen, the
+//! provider's INFO/WARN lines (sources, reasons, minutes), ages, durations, start counts and used
+//! percentages — never the path, account, e-mail address or anything else Codex returns. `LocalSpawner` is a minimal
 //! local stand-in for `real::RealSpawner` (test only, not shipped).
 #![cfg(windows)]
 #![expect(
@@ -275,6 +275,10 @@ fn live_app_server_smoke() {
                     ),
                     None => println!("{name}: (none)"),
                 }
+            }
+            match u.credits {
+                Some(c) => println!("credits: {c:.0}"),
+                None => println!("credits: (none)"),
             }
             let snap = to_snapshot(
                 u,

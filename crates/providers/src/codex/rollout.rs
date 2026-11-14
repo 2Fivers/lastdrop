@@ -4,13 +4,15 @@
 //!
 //! Line shape (Codex ≥ 0.48): `{"timestamp": RFC 3339, "type": "event_msg", "payload": {"type":
 //! "token_count", "info": …, "rate_limits": {"limit_id": "codex", "primary": {"used_percent",
-//! "window_minutes", "resets_at" (Unix s)} | null, "secondary": …, "plan_type": …} | null}}`.
+//! "window_minutes", "resets_at" (Unix s)} | null, "secondary": …, "credits": {"has_credits",
+//! "unlimited", "balance"} | null, "plan_type": …} | null}}`.
 //! Older shapes still read: 0.44–0.47 wrote `resets_in_seconds` (relative to the line's
 //! `timestamp`) instead of `resets_at`; ≤ 0.42 wrote a flat `{primary_used_percent,
 //! primary_window_minutes, secondary_used_percent, secondary_window_minutes}` without reset times.
 //! Events with `rate_limits: null` and other buckets (`limit_id: "premium"`, model-specific ones)
 //! are skipped. A `null` `plan_type` is not a plan change: the plan comes from the newest earlier
-//! event in the tail that names one.
+//! event in the tail that names one. Credits come from the event that gives the windows only: an
+//! older event's balance would be dated as new.
 //!
 //! Compressed rollouts (`.jsonl.zst`) are not read: Codex only compresses files older than a
 //! week, which never hold the newest event.
@@ -21,7 +23,7 @@ use jiff::Timestamp;
 use lastdrop_core::model::SourceKind;
 use serde_json::Value;
 
-use super::{CodexUsage, CodexWindow, plan_name, window_from};
+use super::{CodexUsage, CodexWindow, credits_from, plan_name, window_from};
 use crate::FetchContext;
 use crate::error::FetchError;
 use crate::io::DirEntry;
@@ -181,6 +183,9 @@ fn usage_of(event: &RateLimitsEvent) -> Result<Option<CodexUsage>, ()> {
         primary,
         secondary,
         plan: plan_of(rl),
+        credits: rl
+            .get("credits")
+            .and_then(|c| credits_from(c, ("has_credits", "unlimited", "balance"))),
         measured_at: event.at,
     }))
 }

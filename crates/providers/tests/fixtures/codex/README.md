@@ -36,6 +36,7 @@ first line of `rollout-tail-cut-first-line.jsonl`); Windows paths inside JSON st
 | `app-server-rate-limits-auth-error.jsonl` | `account/rateLimits/read` answers "authentication required" |
 | `app-server-rate-limits-server-error.jsonl` | `account/rateLimits/read` answers an internal error |
 | `app-server-api-key.jsonl` | an API-key sign-in (no plan windows) |
+| `app-server-credits.jsonl` | the 5-hour window used up and a credit balance (`credits.hasCredits`, `balance` as a string) |
 | `rollout-tail-two-windows.jsonl` | a session: `rate_limits: null`, two `codex` events, a `premium` bucket after them |
 | `rollout-tail-cut-first-line.jsonl` | a tail whose first line is cut |
 | `rollout-first-line-only.jsonl` | a whole (short) file whose only event is its first line |
@@ -44,3 +45,4 @@ first line of `rollout-tail-cut-first-line.jsonl`); Windows paths inside JSON st
 | `rollout-legacy-flat.jsonl` | Codex ≤ 0.42: flat `primary_used_percent` … without reset times |
 | `rollout-unknown-shape.jsonl` | a `codex` event whose windows have no readable used percent |
 | `rollout-session-start.jsonl` | a session that has started but has no `token_count` yet |
+| `rollout-credits.jsonl` | two `codex` events with a credit balance each (the newer one counts) |

@@ -56,6 +56,13 @@
 //!
 //! Windows are told apart by their length (`window_minutes`), never by their position: a plan
 //! without a 5-hour limit reports its weekly window as `primary` ([`meter`]).
+//!
+//! **Credits.** Codex credits (bought or granted, spent once the plan's windows are used up) come
+//! in the same answer as the windows, `credits {hasCredits, unlimited, balance}` (the rollout:
+//! `has_credits`, …), with the balance as a numeric string. While the account has credits, not
+//! unlimited, and the balance reads as a number, the snapshot carries it as the balance `credits`
+//! ([`credits_from`], [`CREDITS_ORDER`]); otherwise there is none. Codex reports no top-ups:
+//! they are detected from the history, as for Meshy (R§3.6).
 
 pub mod app_server;
 pub mod rollout;
@@ -69,8 +76,8 @@ use jiff::{SignedDuration, Timestamp};
 use lastdrop_core::grammar::English;
 use lastdrop_core::grammar::meters::length_names;
 use lastdrop_core::model::{
-    AccountRef, Health, Meter, MeterDef, MeterId, MeterKind, ProviderId, Snapshot, SourceKind,
-    WindowLen, catalog,
+    AccountRef, Balance, Health, Meter, MeterDef, MeterId, MeterKind, MeterNames, ProviderId,
+    Snapshot, SourceKind, Unit, WindowLen, catalog,
 };
 use lastdrop_core::refresh::CredentialFingerprint;
 use lastdrop_core::settings::CodexOptions;
@@ -102,6 +109,9 @@ pub struct CodexUsage {
     pub secondary: Option<CodexWindow>,
     /// Plan name when the source says (`Plus`, `Pro`).
     pub plan: Option<String>,
+    /// The credit balance while the account has credits ([`credits_from`]); `None` without
+    /// credits, with unlimited credits, or when the source does not say.
+    pub credits: Option<f64>,
     /// When the values were computed (the rollout event's timestamp; `None` from
     /// [`app_server::fetch`], which answers live: the provider dates the answer when it keeps it
     /// to stand in between starts).
@@ -687,6 +697,9 @@ fn length_of(window: &CodexWindow) -> Option<i64> {
         .filter(|m| (1..=MAX_WINDOW_MINUTES).contains(m))
 }
 
+/// Order of the `credits` balance: after every window meter.
+pub const CREDITS_ORDER: u16 = 100;
+
 fn catalog_def(id: &str) -> Option<&'static MeterDef> {
     catalog(ProviderId::Codex).iter().find(|d| d.id == id)
 }
@@ -767,8 +780,9 @@ pub fn meter(window: &CodexWindow, secondary: bool) -> Meter {
 /// Meters in meter order; a second window that maps to a meter already present is dropped,
 /// except that a window of unknown length takes the other catalogue meter when its own is taken.
 /// `measured_at` is the usage's time (never after `fetched_at`), else `fetched_at`. The plan
-/// replaces `account.plan` when the source names one. Health: `Ok` from the app-server, `Stale`
-/// from a rollout file (cached values).
+/// replaces `account.plan` when the source names one. The credit balance, when there is one, is
+/// the balance `credits` (`Cr` / `credits` / `Credits`, unit credits). Health: `Ok` from the
+/// app-server, `Stale` from a rollout file (cached values).
 pub fn to_snapshot(
     usage: &CodexUsage,
     source: SourceKind,
@@ -814,6 +828,18 @@ pub fn to_snapshot(
         SourceKind::CodexRollout => Health::Stale,
         _ => Health::Ok,
     };
+    let balances = usage
+        .credits
+        .map(|amount| Balance {
+            id: MeterId::new(MeterId::CREDITS),
+            names: MeterNames::new("Cr", "credits", "Credits"),
+            order: CREDITS_ORDER,
+            amount,
+            unit: Unit::Credits,
+            last_top_up: None,
+        })
+        .into_iter()
+        .collect();
     Snapshot {
         provider: ProviderId::Codex,
         account,
@@ -821,7 +847,7 @@ pub fn to_snapshot(
         measured_at,
         fetched_at,
         meters,
-        balances: Vec::new(),
+        balances,
         health,
     }
 }
@@ -879,6 +905,20 @@ pub(crate) fn number(v: &Value) -> Option<f64> {
         _ => None,
     }
     .filter(|f| f.is_finite())
+}
+
+/// The credit balance in a `credits` object from either source. `keys` = (has credits,
+/// unlimited, balance). `Some` only when "has credits" is `true`, "unlimited" is not `true` and
+/// the balance is a number, at least 0 (a numeric string, as Codex sends it, or a number); a
+/// missing or unreadable value is no balance, never 0.
+pub(crate) fn credits_from(v: &Value, keys: (&str, &str, &str)) -> Option<f64> {
+    let obj = v.as_object()?;
+    if obj.get(keys.0).and_then(Value::as_bool) != Some(true)
+        || obj.get(keys.1).and_then(Value::as_bool) == Some(true)
+    {
+        return None;
+    }
+    obj.get(keys.2).and_then(number).filter(|b| *b >= 0.0)
 }
 
 /// Whole minutes from a number (rounded).

@@ -129,7 +129,7 @@ pub fn localized(
         (ProviderId::Claude | ProviderId::Codex, MeterId::FIVE_HOUR) => fixed(FIVE_HOUR),
         (ProviderId::Claude, MeterId::WEEKLY) => fixed(WEEKLY_ALL),
         (ProviderId::Codex, MeterId::WEEKLY) => fixed(WEEKLY),
-        (ProviderId::Meshy, MeterId::CREDITS) => fixed(CREDITS),
+        (ProviderId::Meshy | ProviderId::Codex, MeterId::CREDITS) => fixed(CREDITS),
         (ProviderId::Copilot, MeterId::PREMIUM) => fixed(PREMIUM),
         (ProviderId::Copilot, MeterId::CHAT) => fixed(CHAT),
         (ProviderId::Copilot, MeterId::COMPLETIONS) => fixed(COMPLETIONS),
@@ -264,6 +264,10 @@ mod tests {
         assert_eq!(sv(ProviderId::Codex, MeterId::WEEKLY).name, "Vecka");
         assert_eq!(
             sv(ProviderId::Meshy, MeterId::CREDITS),
+            names("Kred", "krediterna", "Krediter")
+        );
+        assert_eq!(
+            sv(ProviderId::Codex, MeterId::CREDITS),
             names("Kred", "krediterna", "Krediter")
         );
         assert_eq!(
