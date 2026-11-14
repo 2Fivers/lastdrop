@@ -62,6 +62,7 @@ hover card and flyout), and its order within the service.
 | Claude | weekly, per model (e.g. Fable) | model name, e.g. `Fable` | Fable weekly | Weekly · Fable | 7 d | no |
 | Claude | extra usage (when turned on), share of its monthly spend limit | `Extra` | extra usage | Extra usage | calendar month, no reset time | no |
 | Codex | 5-hour / weekly | `5h` / `Wk` | 5-hour / weekly | 5-hour session / Weekly | 5 h / 7 d | yes / no |
+| Codex | credits (balance, while the account has credits and they are not unlimited) | `Cr` | credits | Credits | — | — |
 | Copilot | monthly premium requests (paid plans) | `Prem` | premium | Premium requests | calendar month | no |
 | Copilot | monthly chat messages (Copilot Free) | `Chat` | chat | Chat messages | calendar month | no |
 | Copilot | monthly code completions (Copilot Free) | `Code` | completions | Code completions | calendar month | no |

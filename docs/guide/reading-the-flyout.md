@@ -60,8 +60,8 @@ until it is back to 87 %.
 
 ### A balance
 
-A balance is an amount that goes down until you top it up, such as Meshy's credits or an
-OpenRouter or DeepSeek balance. Instead of a bar it shows:
+A balance is an amount that goes down until you top it up, such as Meshy's credits, Codex
+credits (shown while your account has some) or an OpenRouter or DeepSeek balance. Instead of a bar it shows:
 
 - the amount and its unit;
 - how long it lasts at your recent use: *≈ 3 weeks left*. Or *More than 8 weeks left*, *No use in

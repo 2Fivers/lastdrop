@@ -44,7 +44,7 @@ use serde::Deserialize;
 use serde::de::IgnoredAny;
 use serde_json::{Value, json};
 
-use super::{CodexUsage, plan_name, window_from};
+use super::{CodexUsage, credits_from, plan_name, window_from};
 use crate::FetchContext;
 use crate::error::FetchError;
 use crate::io::{ChildIo, SpawnSpec};
@@ -367,6 +367,9 @@ fn usage_from_result(result: &Value) -> Result<CodexUsage, FetchError> {
             .get("planType")
             .and_then(Value::as_str)
             .and_then(plan_name),
+        credits: snapshot
+            .get("credits")
+            .and_then(|c| credits_from(c, ("hasCredits", "unlimited", "balance"))),
         measured_at: None,
     };
     if usage.primary.is_none() && usage.secondary.is_none() {

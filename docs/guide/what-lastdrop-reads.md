@@ -67,6 +67,8 @@ for token counts. It keeps only the counts, never a prompt, an answer or a file 
    (`account/rateLimits/read`) and closes it. It looks for `codex.exe` in the Codex app's folder
    under `%LOCALAPPDATA%\OpenAI\Codex\bin`, then on your `PATH`.
 
+Both give the limits and, when your account has Codex credits, their balance.
+
 How often: the session files at most every minute; the app server at most every 15 minutes per
 folder, unless you refresh by hand or a limit has just reset.
 

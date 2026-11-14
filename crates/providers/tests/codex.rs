@@ -10,7 +10,7 @@ use jiff::{SignedDuration, Timestamp};
 use lastdrop_core::grammar::English;
 use lastdrop_core::grammar::meters::localized;
 use lastdrop_core::model::{
-    AccountKey, AccountRef, Health, MeterId, ProviderId, SourceKind, WindowLen,
+    AccountKey, AccountRef, Health, MeterId, ProviderId, SourceKind, Unit, WindowLen,
 };
 use lastdrop_core::refresh::CredentialFingerprint;
 use lastdrop_core::settings::CodexOptions;
@@ -30,6 +30,7 @@ const NOT_SIGNED_IN: &str = include_str!("fixtures/codex/app-server-not-signed-i
 const AUTH_ERROR: &str = include_str!("fixtures/codex/app-server-rate-limits-auth-error.jsonl");
 const SERVER_ERROR: &str = include_str!("fixtures/codex/app-server-rate-limits-server-error.jsonl");
 const API_KEY: &str = include_str!("fixtures/codex/app-server-api-key.jsonl");
+const CREDITS: &str = include_str!("fixtures/codex/app-server-credits.jsonl");
 
 const ROLLOUT_TWO_WINDOWS: &str = include_str!("fixtures/codex/rollout-tail-two-windows.jsonl");
 const ROLLOUT_CUT_FIRST_LINE: &str =
@@ -41,6 +42,7 @@ const ROLLOUT_RESETS_IN_SECONDS: &str =
 const ROLLOUT_FLAT: &str = include_str!("fixtures/codex/rollout-legacy-flat.jsonl");
 const ROLLOUT_UNKNOWN_SHAPE: &str = include_str!("fixtures/codex/rollout-unknown-shape.jsonl");
 const ROLLOUT_SESSION_START: &str = include_str!("fixtures/codex/rollout-session-start.jsonl");
+const ROLLOUT_CREDITS: &str = include_str!("fixtures/codex/rollout-credits.jsonl");
 
 const LOCAL_APP_DATA: &str = r"C:\Users\tester\AppData\Local";
 
@@ -639,6 +641,108 @@ fn the_codex_bucket_is_preferred_and_unreadable_results_are_parse_errors() {
 }
 
 #[test]
+fn app_server_credits_are_a_credits_balance_after_the_windows() {
+    let f = fakes();
+    f.spawner.script(script(CREDITS));
+    let snap = provider()
+        .fetch(&f.context(budget()), &account())
+        .expect("fetch");
+
+    assert_eq!(snap.meters.len(), 2, "the windows are unchanged");
+    assert_eq!(snap.balances.len(), 1);
+    let credits = &snap.balances[0];
+    assert_eq!(credits.id, MeterId::new(MeterId::CREDITS));
+    assert_eq!(
+        (
+            credits.names.short_label.as_str(),
+            credits.names.short_name.as_str(),
+            credits.names.name.as_str()
+        ),
+        ("Cr", "credits", "Credits")
+    );
+    assert_eq!(credits.order, codex::CREDITS_ORDER);
+    assert!(snap.meters.iter().all(|m| m.order < credits.order));
+    assert_close(credits.amount, 1240.0);
+    assert_eq!(credits.unit, Unit::Credits);
+    assert_eq!(credits.last_top_up, None, "Codex reports no top-ups");
+}
+
+#[test]
+fn credits_need_has_credits_not_unlimited_and_a_readable_balance() {
+    let credits = |obj: &str| {
+        let line = format!(
+            r#"{{"id":3,"result":{{"rateLimits":{{"primary":{{"usedPercent":10,"windowDurationMins":300}},"credits":{obj}}}}}}}"#
+        );
+        app_server::parse_rate_limits(&line, 3)
+            .expect("parse")
+            .expect("response")
+            .credits
+    };
+    for (obj, want, why) in [
+        (
+            r#"{"hasCredits":true,"unlimited":false,"balance":"1240"}"#,
+            1240.0,
+            "a numeric string, as Codex sends it",
+        ),
+        (
+            r#"{"hasCredits":true,"unlimited":false,"balance":" 12.5 "}"#,
+            12.5,
+            "a fraction, spaces trimmed",
+        ),
+        (
+            r#"{"hasCredits":true,"balance":40}"#,
+            40.0,
+            "a number; unlimited missing is not unlimited",
+        ),
+        (
+            r#"{"hasCredits":true,"unlimited":false,"balance":"0"}"#,
+            0.0,
+            "a used-up balance is 0",
+        ),
+    ] {
+        let got = credits(obj);
+        assert!(
+            got.is_some_and(|g| (g - want).abs() < 1e-9),
+            "{why}: {got:?}"
+        );
+    }
+    for (obj, why) in [
+        (
+            r#"{"hasCredits":false,"unlimited":false,"balance":"0"}"#,
+            "no credits",
+        ),
+        (
+            r#"{"unlimited":false,"balance":"50"}"#,
+            "hasCredits missing",
+        ),
+        (
+            r#"{"hasCredits":"true","unlimited":false,"balance":"50"}"#,
+            "hasCredits not a bool",
+        ),
+        (
+            r#"{"hasCredits":true,"unlimited":true,"balance":null}"#,
+            "unlimited: nothing to count down",
+        ),
+        (
+            r#"{"hasCredits":true,"unlimited":false,"balance":null}"#,
+            "no balance",
+        ),
+        (
+            r#"{"hasCredits":true,"unlimited":false,"balance":"lots"}"#,
+            "not a number",
+        ),
+        (
+            r#"{"hasCredits":true,"unlimited":false,"balance":"-5"}"#,
+            "negative",
+        ),
+        ("null", "credits null"),
+        (r#""1240""#, "not an object"),
+    ] {
+        assert_eq!(credits(obj), None, "{why}");
+    }
+}
+
+#[test]
 fn error_responses_are_classified_without_their_text() {
     let cases = [
         (
@@ -807,6 +911,7 @@ fn usage(primary: Option<CodexWindow>, secondary: Option<CodexWindow>) -> CodexU
         primary,
         secondary,
         plan: None,
+        credits: None,
         measured_at: None,
     }
 }
@@ -905,6 +1010,39 @@ fn rollout_tail_gives_the_newest_codex_event_skipping_nulls_and_other_buckets() 
     let secondary = usage.secondary.expect("secondary");
     assert_close(secondary.used_percent, 61.0);
     assert_eq!(secondary.resets_at, Some(ts("2026-10-15T07:00:00Z")));
+}
+
+#[test]
+fn rollout_credits_come_from_the_event_that_gives_the_windows() {
+    let usage = rollout::parse_tail(ROLLOUT_CREDITS.as_bytes())
+        .expect("parse")
+        .expect("event");
+    assert_eq!(usage.measured_at, Some(ts("2026-10-10T10:30:01Z")));
+    assert_eq!(usage.credits, Some(296.0));
+    let snap = to_snapshot(
+        &usage,
+        SourceKind::CodexRollout,
+        AccountRef::primary(),
+        now(),
+    );
+    assert_eq!(snap.balances.len(), 1);
+    assert_close(snap.balances[0].amount, 296.0);
+
+    // The newest event has `credits: null`, an older one a balance: not taken over, it would be
+    // dated as new.
+    let usage = rollout::parse_tail(ROLLOUT_TWO_WINDOWS.as_bytes())
+        .expect("parse")
+        .expect("event");
+    assert_eq!(usage.credits, None);
+    let null_after_balance = ROLLOUT_CREDITS.replace(
+        r#""credits":{"has_credits":true,"unlimited":false,"balance":"296"}"#,
+        r#""credits":null"#,
+    );
+    assert_ne!(null_after_balance, ROLLOUT_CREDITS);
+    let usage = rollout::parse_tail(null_after_balance.as_bytes())
+        .expect("parse")
+        .expect("event");
+    assert_eq!(usage.credits, None);
 }
 
 #[test]
