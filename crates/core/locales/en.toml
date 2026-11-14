@@ -333,6 +333,11 @@ lowercase_names = true
 "meter.on_demand.label" = "Extra"
 "meter.on_demand.short" = "on-demand"
 "meter.on_demand.name" = "On-demand spend"
+# Claude's extra usage: use past the plan's limits against a monthly spend limit (Claude's own
+# term).
+"meter.extra_usage.label" = "Extra"
+"meter.extra_usage.short" = "extra usage"
+"meter.extra_usage.name" = "Extra usage"
 # Grok's prepaid credit (a balance).
 "meter.prepaid.label" = "Pre"
 "meter.prepaid.short" = "prepaid credit"

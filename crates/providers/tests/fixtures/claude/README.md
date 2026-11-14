@@ -29,11 +29,14 @@ against these fixtures.
 ## Shapes (key names as observed; values invented)
 
 - `plan-usage-history.json` (Claude Desktop, `%APPDATA%\Claude`): `{version: 2, samples: [{t:
-  epoch ms, org, u: {fh, sd, so, sn, oa, cw, om, op, xu}}]}`, percentages, **no reset times**.
+  epoch ms, org, u: {fh, sd, so, sn, oa, cw, om, op, xu}}]}`, percentages, **no reset times**;
+  `xu` (extra usage) is absent while extra usage is off.
 - `GET /api/oauth/usage` body: `five_hour` / `seven_day` `{utilization, resets_at, …}` or null;
   `limits[] {kind: session | weekly_all | weekly_scoped, group, percent, severity, resets_at,
   scope: null | {model: {id, display_name}, surface}, is_active}`; legacy `seven_day_opus` /
-  `seven_day_sonnet`; plus keys Lastdrop ignores (`extra_usage`, `spend`, `iguana_necktie`,
+  `seven_day_sonnet`; `extra_usage {is_enabled, monthly_limit, used_credits, utilization,
+  currency, decimal_places, …}` (amounts in minor units) and `spend {enabled, percent, used
+  {amount_minor, currency, exponent}, limit {…}, …}`; plus keys Lastdrop ignores (`iguana_necktie`,
   `seven_day_omelette`, `seven_day_breakdown`, `weekly_scoped_shares`, codenames).
 - `.credentials.json`: `claudeAiOauth {accessToken, refreshToken, expiresAt (epoch ms),
   refreshTokenExpiresAt, scopes[], subscriptionType, rateLimitTier}`, `organizationUuid`,

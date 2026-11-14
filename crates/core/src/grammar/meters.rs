@@ -67,6 +67,11 @@ const ON_DEMAND: NameMsgs = (
     Msg::MeterOnDemandShort,
     Msg::MeterOnDemandName,
 );
+const EXTRA_USAGE: NameMsgs = (
+    Msg::MeterExtraUsageLabel,
+    Msg::MeterExtraUsageShort,
+    Msg::MeterExtraUsageName,
+);
 const PREPAID: NameMsgs = (
     Msg::MeterPrepaidLabel,
     Msg::MeterPrepaidShort,
@@ -152,6 +157,7 @@ pub fn localized(
         (ProviderId::Cursor, MeterId::API) => fixed(API),
         (ProviderId::Cursor, MeterId::INCLUDED) => fixed(INCLUDED),
         (ProviderId::Cursor | ProviderId::Grok, MeterId::ON_DEMAND) => fixed(ON_DEMAND),
+        (ProviderId::Claude, MeterId::ON_DEMAND) => fixed(EXTRA_USAGE),
         (ProviderId::Grok, MeterId::PREPAID) => fixed(PREPAID),
         (ProviderId::Antigravity, _) => match names.pool_of() {
             Some((pool, window)) => {
@@ -228,6 +234,18 @@ mod tests {
             names("30d", "30-day", "30-day window")
         );
         assert_eq!(length_names(10, &English).short_label, "1h");
+        // The provider's names of the meters that come from readings.
+        let on_demand = MeterId::new(MeterId::ON_DEMAND);
+        let extra = names("Extra", "extra usage", "Extra usage");
+        assert_eq!(
+            localized(ProviderId::Claude, &on_demand, &extra, &English),
+            extra,
+            "Claude's own term"
+        );
+        assert_eq!(
+            localized(ProviderId::Cursor, &on_demand, &extra, &English),
+            names("Extra", "on-demand", "On-demand spend")
+        );
     }
 
     #[test]
@@ -251,6 +269,10 @@ mod tests {
         assert_eq!(
             sv(ProviderId::Copilot, MeterId::PREMIUM).short_name,
             "premiumgränsen"
+        );
+        assert_eq!(
+            sv(ProviderId::Claude, MeterId::ON_DEMAND),
+            names("Extra", "extragränsen", "Extraanvändning")
         );
         // A quota this build does not know keeps the id as its name.
         assert_eq!(

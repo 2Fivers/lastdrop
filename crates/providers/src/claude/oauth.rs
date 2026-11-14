@@ -255,9 +255,10 @@ pub fn interpret(response: &HttpResponse, now: Timestamp) -> Result<ClaudeUsage,
 ///
 /// Per-model weekly windows come from `limits[]` entries of kind `weekly_scoped` with a
 /// `scope.model.display_name` (current bodies), else from the legacy `seven_day_opus` /
-/// `seven_day_sonnet` objects. `extra_usage`, `spend` and other windows have no R§2 meter and are
-/// skipped. A body with no R§2 window at all is a Parse error (a changed format must not read as
-/// "no limits"). `measured_at` is `None`: the body carries no time.
+/// `seven_day_sonnet` objects. Extra usage comes from `extra_usage`, else `spend`, while turned on
+/// and with a limit (`UsageBody::extra_usage`); other windows have no R§2 meter and are skipped.
+/// A body with no R§2 window at all is a Parse error (a changed format must not read as "no
+/// limits"), extra usage or not. `measured_at` is `None`: the body carries no time.
 pub fn parse(body: &[u8]) -> Result<ClaudeUsage, FetchError> {
     parse_from(body, FROM)
 }

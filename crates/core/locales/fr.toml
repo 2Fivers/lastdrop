@@ -346,6 +346,9 @@ lowercase_names = true
 # A cap on money spent: `budget` (masculine) rather than `quota`.
 "meter.on_demand.short" = "budget à la demande"
 "meter.on_demand.name" = "Dépenses à la demande"
+"meter.extra_usage.label" = "Extra"
+"meter.extra_usage.short" = "budget d'utilisation supplémentaire"
+"meter.extra_usage.name" = "Utilisation supplémentaire"
 "meter.prepaid.label" = "Pré"
 "meter.prepaid.short" = "crédit prépayé"
 "meter.prepaid.name" = "Crédit prépayé"

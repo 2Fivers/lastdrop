@@ -1003,7 +1003,10 @@ fn a_newer_cached_response_beats_the_desktop_history() {
     assert_eq!(snap.source, SourceKind::ClaudeDesktopCache);
     assert_eq!(snap.measured_at, now() - mins(9));
     assert_eq!(snap.health, Health::Ok, "no token needed");
-    assert_eq!(ids(&snap), ["five_hour", "weekly", "weekly:fable"]);
+    assert_eq!(
+        ids(&snap),
+        ["five_hour", "weekly", "weekly:fable", "on_demand"]
+    );
     assert_eq!(
         snap.meters[0].resets_at,
         Some(ts("2026-10-10T12:56:00.123456Z"))
