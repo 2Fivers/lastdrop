@@ -13,9 +13,11 @@
 //! ```
 //!
 //! `u` keys: `fh` five-hour, `sd` seven-day, `so` seven-day Opus, `sn` seven-day Sonnet (older
-//! plans); `oa`, `cw`, `om`, `op` (OAuth apps, Cowork, Claude Design and its promotion) and `xu`
-//! (extra usage) have no R§2 meter and are ignored. Samples are about 15 minutes apart, ascending,
-//! kept 30 days. **Samples carry utilization only, no reset times**: the readings this source gives
+//! plans), `xu` extra usage (percent of its monthly spend limit; absent while extra usage is off);
+//! `oa`, `cw`, `om`, `op` (OAuth apps, Cowork, Claude Design and its promotion) have no R§2 meter
+//! and are ignored. A sample with `xu` but no plan window is not usable: extra usage alone is no
+//! reading of the plan. Samples are about 15 minutes apart, ascending, kept 30 days.
+//! **Samples carry utilization only, no reset times**: the readings this source gives
 //! have `resets_at: None` (the provider fills them in from another source's reading of the same
 //! window instance when it has one). Desktop keeps the full usage response with `resets_at` in
 //! Chromium's HTTP cache (`Cache\Cache_Data`), which [`super::desktop_cache`] reads.
@@ -166,6 +168,7 @@ struct RawUsage {
     sd: Lenient<WindowValue>,
     so: Lenient<WindowValue>,
     sn: Lenient<WindowValue>,
+    xu: Lenient<WindowValue>,
 }
 
 impl RawUsage {
@@ -175,6 +178,7 @@ impl RawUsage {
         out.push(self.sd.0.and_then(|v| v.reading(ClaudeWindow::Weekly)));
         out.push_model("Opus", self.so.0);
         out.push_model("Sonnet", self.sn.0);
+        out.push_extra(self.xu.0.and_then(|v| v.reading(ClaudeWindow::ExtraUsage)));
         out.0
     }
 }

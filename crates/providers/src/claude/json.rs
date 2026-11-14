@@ -126,14 +126,20 @@ impl<'de> Deserialize<'de> for WindowValue {
     }
 }
 
-/// The body of `GET /api/oauth/usage`, which Claude Code also caches in `.claude.json`. Only the
-/// windows of R§2 are read; every other key (`extra_usage`, `spend`, `iguana_necktie`,
+/// The body of `GET /api/oauth/usage`, which Claude Code also caches in `.claude.json`. The
+/// windows of R§2 and extra usage are read; every other key (`iguana_necktie`,
 /// `seven_day_omelette`, `cedar_ember`, codenames that come and go) is ignored.
 ///
 /// Current shape: `five_hour` and `seven_day` objects, and `limits[]` with
 /// `{kind: "session" | "weekly_all" | "weekly_scoped", percent, resets_at, scope: {model:
 /// {display_name}}}` carrying the per-model weekly windows (`Fable`). Older bodies had the
 /// per-model windows as `seven_day_opus` / `seven_day_sonnet` objects and no `limits`.
+///
+/// Extra usage (pay-as-you-go use past the plan's limits, against a monthly spend limit) is
+/// `extra_usage {is_enabled, monthly_limit, used_credits, utilization, currency,
+/// decimal_places, …}` (`monthly_limit` and `used_credits` in minor units), and in newer bodies
+/// also `spend {enabled, percent, used {amount_minor}, limit {amount_minor}, …}`
+/// ([`UsageBody::extra_usage`]).
 #[derive(Debug, Default, Deserialize)]
 #[serde(default)]
 pub(crate) struct UsageBody {
@@ -142,6 +148,8 @@ pub(crate) struct UsageBody {
     seven_day_opus: Lenient<WindowValue>,
     seven_day_sonnet: Lenient<WindowValue>,
     limits: Lenient<Vec<Value>>,
+    extra_usage: Option<Value>,
+    spend: Option<Value>,
 }
 
 /// A `limits[]` entry, read field by field.
@@ -171,8 +179,10 @@ impl<'a> Limit<'a> {
 impl UsageBody {
     /// The R§2 windows in the service's order: 5-hour, weekly, then the per-model weekly windows
     /// (from `limits[]`, then the legacy `seven_day_opus` / `seven_day_sonnet` for models not
-    /// listed there). The top-level `five_hour` / `seven_day` objects win over the `limits[]`
-    /// `session` / `weekly_all` entries, whose percentages are rounded.
+    /// listed there), then extra usage ([`UsageBody::extra_usage`]). The top-level `five_hour` /
+    /// `seven_day` objects win over the `limits[]` `session` / `weekly_all` entries, whose
+    /// percentages are rounded. Extra usage alone is no reading of the plan: without a plan
+    /// window the list is empty.
     pub(crate) fn windows(&self) -> Vec<WindowReading> {
         let limits: Vec<Limit<'_>> = self
             .limits
@@ -216,7 +226,59 @@ impl UsageBody {
         }
         out.push_model("Opus", self.seven_day_opus.0);
         out.push_model("Sonnet", self.seven_day_sonnet.0);
+        out.push_extra(self.extra_usage());
         out.0
+    }
+
+    /// Extra usage as a share of its monthly spend limit, when it is turned on and has a limit:
+    /// `extra_usage.utilization`, else `used_credits / monthly_limit`, else `spend.percent`, else
+    /// `spend.used.amount_minor / spend.limit.amount_minor`. `None` when `extra_usage.is_enabled`
+    /// or `spend.enabled` is not `true` (the object that decides is `extra_usage` when the body
+    /// has one), or when no share can be computed (no limit set). The body has no reset time
+    /// for it: `resets_at` is `None`.
+    pub(crate) fn extra_usage(&self) -> Option<WindowReading> {
+        let extra = self.extra_usage.as_ref().and_then(Value::as_object);
+        let spend = self.spend.as_ref().and_then(Value::as_object);
+        let enabled = |map: &serde_json::Map<String, Value>, key: &str| {
+            map.get(key).and_then(Value::as_bool) == Some(true)
+        };
+        let on = match (extra, spend) {
+            (Some(extra), _) => enabled(extra, "is_enabled"),
+            (None, Some(spend)) => enabled(spend, "enabled"),
+            (None, None) => false,
+        };
+        if !on {
+            return None;
+        }
+        let number = |map: &serde_json::Map<String, Value>, key: &str| {
+            map.get(key)
+                .and_then(Value::as_f64)
+                .filter(|n| n.is_finite())
+        };
+        let ratio = |used: Option<f64>, limit: Option<f64>| {
+            let (used, limit) = (used?, limit?);
+            (limit > 0.0).then(|| (used / limit).max(0.0))
+        };
+        let minor = |map: &serde_json::Map<String, Value>, key: &str| {
+            map.get(key)
+                .and_then(|amount| amount.get("amount_minor"))
+                .and_then(Value::as_f64)
+                .filter(|n| n.is_finite())
+        };
+        let from_extra = extra.and_then(|e| {
+            share(number(e, "utilization"))
+                .or_else(|| ratio(number(e, "used_credits"), number(e, "monthly_limit")))
+        });
+        let used = from_extra.or_else(|| {
+            let spend = spend?;
+            share(number(spend, "percent"))
+                .or_else(|| ratio(minor(spend, "used"), minor(spend, "limit")))
+        })?;
+        Some(WindowReading {
+            window: ClaudeWindow::ExtraUsage,
+            used,
+            resets_at: None,
+        })
     }
 }
 
@@ -231,6 +293,14 @@ impl Windows {
             && !self.0.iter().any(|r| r.window == reading.window)
         {
             self.0.push(reading);
+        }
+    }
+
+    /// Adds extra usage when the collection already holds a plan window: extra usage alone is
+    /// no reading of the plan.
+    pub(crate) fn push_extra(&mut self, reading: Option<WindowReading>) {
+        if !self.0.is_empty() {
+            self.push(reading);
         }
     }
 

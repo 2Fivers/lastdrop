@@ -1,4 +1,5 @@
-//! Claude plans: 5-hour session, weekly all models, weekly per model (R§2 table).
+//! Claude plans: 5-hour session, weekly all models, weekly per model (R§2 table), and extra
+//! usage against its monthly spend limit when it is turned on.
 //!
 //! Sources, in order (ARCHITECTURE provider table):
 //! 1. [`oauth`]: the OAuth usage endpoint with Claude Code's token, when the file holds a usable
@@ -20,6 +21,10 @@
 //! skipped (file missing, no or expired or rejected token, resting, no usage response, a body that
 //! cannot be decoded, …) or how many windows it read and how old they are; then which reading is
 //! used.
+//!
+//! **Extra usage** (use past the plan's limits, billed against a monthly spend limit) is one more
+//! meter, `on_demand` ([`ClaudeWindow::ExtraUsage`]), when the reading has it: the usage body's
+//! `extra_usage` or `spend` while turned on, the history's `xu`. No source gives its reset time.
 //!
 //! **Reset times.** Claude Desktop's history has no reset times. When the freshest reading lacks
 //! a window's `resets_at`, the provider takes it from an older reading of this fetch (the cache,
@@ -90,6 +95,10 @@ pub enum ClaudeWindow {
     /// Weekly for one model (`weekly:<model>`): `<Model>` / `<Model> weekly` /
     /// `Weekly · <Model>`, L 7 d. The model's display name as the service gives it (`Fable`).
     WeeklyModel(String),
+    /// Extra usage (`on_demand`): the share of the monthly spend limit for use past the plan's
+    /// limits, `Extra` / `extra usage` / `Extra usage`, a calendar month. Only when extra usage
+    /// is turned on and has a limit; no source gives its reset time.
+    ExtraUsage,
 }
 
 /// One window reading from any Claude source.
@@ -123,6 +132,10 @@ pub const USAGE_PAGE: &str = "https://claude.ai/settings/usage";
 /// `min_interval` after the previous one is not skipped because the previous request went out a
 /// moment after its fetch started (**not from the spec**).
 pub const OAUTH_MIN_GAP_SLACK: Duration = Duration::from_secs(30);
+
+/// The order of the extra usage meter within the service: after every per-model weekly window
+/// (orders 2, 3, …).
+pub const EXTRA_USAGE_ORDER: u16 = 100;
 
 /// Usage slack when taking a reset time from an older reading of the same window: one percentage
 /// point, because the desktop history stores whole percentages (**not from the spec**).
@@ -743,9 +756,11 @@ fn model_names(model: &str) -> MeterNames {
 }
 
 /// The meter of a window reading with the R§2 definition (id, names, `L`, `starts_on_use`,
-/// order: 5-hour 0, weekly 1, per-model weekly 2… in the service's order). Names and windows of
-/// `five_hour` and `weekly` come from `lastdrop_core::model::catalog`, per-model names from
-/// `MeterNames::weekly_model`, so the readout's LOADING rows and widths match the readings.
+/// order: 5-hour 0, weekly 1, per-model weekly 2… in the service's order, extra usage
+/// [`EXTRA_USAGE_ORDER`]). Names and windows of `five_hour` and `weekly` come from
+/// `lastdrop_core::model::catalog`, per-model names from `MeterNames::weekly_model`, so the
+/// readout's LOADING rows and widths match the readings. Only extra usage reports `limited`, at
+/// its spend limit.
 pub fn meter(reading: &WindowReading, order: u16) -> Meter {
     let (id, names, window, starts_on_use) = match &reading.window {
         ClaudeWindow::FiveHour => {
@@ -779,17 +794,26 @@ pub fn meter(reading: &WindowReading, order: u16) -> Meter {
             WindowLen::Fixed(SignedDuration::from_hours(7 * 24)),
             false,
         ),
+        ClaudeWindow::ExtraUsage => (
+            MeterId::new(MeterId::ON_DEMAND),
+            MeterNames::new("Extra", "extra usage", "Extra usage"),
+            WindowLen::CalendarMonth,
+            false,
+        ),
+    };
+    let used = if reading.used.is_finite() {
+        reading.used.max(0.0)
+    } else {
+        0.0
     };
     Meter {
         id,
         names,
         order,
-        used: if reading.used.is_finite() {
-            reading.used.max(0.0)
-        } else {
-            0.0
-        },
-        limited: false,
+        used,
+        // Past its spend limit extra usage stops: the limit is reached. The plan windows say
+        // nothing more than their share.
+        limited: reading.window == ClaudeWindow::ExtraUsage && used >= 1.0,
         resets_at: reading.resets_at,
         window,
         starts_on_use,
@@ -799,9 +823,10 @@ pub fn meter(reading: &WindowReading, order: u16) -> Meter {
 /// The snapshot of a usage reading from `source`.
 ///
 /// `measured_at` is the reading's own time (never later than `fetched_at`), else `fetched_at`.
-/// Meters in R§2 order: 5-hour 0, weekly 1, per-model weekly 2, 3, … in the reading's order;
-/// a window that appears twice is kept once. The plan is the reading's when it names one, else
-/// `account`'s. Health is `Ok`; [`ClaudeProvider`] adjusts it.
+/// Meters in R§2 order: 5-hour 0, weekly 1, per-model weekly 2, 3, … in the reading's order,
+/// extra usage last ([`EXTRA_USAGE_ORDER`]); a window that appears twice is kept once. The plan
+/// is the reading's when it names one, else `account`'s. Health is `Ok`; [`ClaudeProvider`]
+/// adjusts it.
 pub fn to_snapshot(
     usage: &ClaudeUsage,
     source: SourceKind,
@@ -815,6 +840,7 @@ pub fn to_snapshot(
             ClaudeWindow::FiveHour => 0,
             ClaudeWindow::Weekly => 1,
             ClaudeWindow::WeeklyModel(_) => next_model_order,
+            ClaudeWindow::ExtraUsage => EXTRA_USAGE_ORDER,
         };
         let meter = meter(reading, order);
         if meters.iter().any(|m| m.id == meter.id) {

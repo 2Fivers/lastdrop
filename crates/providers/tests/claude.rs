@@ -205,6 +205,49 @@ fn readings_map_to_the_r2_meter_definitions() {
         "R§2: short_label ≤ 5 characters"
     );
     assert_eq!(long.names.name, "Weekly · Opus 4.5 Max");
+
+    let extra = claude::meter(
+        &WindowReading {
+            window: ClaudeWindow::ExtraUsage,
+            used: 0.25,
+            resets_at: None,
+        },
+        claude::EXTRA_USAGE_ORDER,
+    );
+    assert_eq!(extra.id, MeterId::new(MeterId::ON_DEMAND));
+    assert_eq!(
+        (
+            extra.names.short_label.as_str(),
+            extra.names.short_name.as_str(),
+            extra.names.name.as_str()
+        ),
+        ("Extra", "extra usage", "Extra usage")
+    );
+    assert_eq!(extra.window, WindowLen::CalendarMonth);
+    assert!(!extra.starts_on_use);
+    assert!(!extra.limited);
+    assert_eq!(extra.resets_at, None, "no source gives its reset time");
+    let spent = claude::meter(
+        &WindowReading {
+            window: ClaudeWindow::ExtraUsage,
+            used: 1.0,
+            resets_at: None,
+        },
+        claude::EXTRA_USAGE_ORDER,
+    );
+    assert!(spent.limited, "the spend limit is reached");
+    let full_week = claude::meter(
+        &WindowReading {
+            window: ClaudeWindow::Weekly,
+            used: 1.0,
+            resets_at: None,
+        },
+        1,
+    );
+    assert!(
+        !full_week.limited,
+        "the plan windows report only their share"
+    );
 }
 
 #[test]
@@ -285,7 +328,7 @@ fn snapshots_order_meters_and_keep_the_reading_time() {
 // ---- Source 2 parsing: the usage endpoint body -------------------------------------------------------
 
 #[test]
-fn usage_body_in_the_current_format_gives_three_windows() {
+fn usage_body_in_the_current_format_gives_three_windows_and_extra_usage() {
     let usage = oauth::parse(fixture!("usage-200-current.json").as_bytes()).expect("parse");
     assert_eq!(
         usage
@@ -293,9 +336,20 @@ fn usage_body_in_the_current_format_gives_three_windows() {
             .iter()
             .map(|w| w.window.clone())
             .collect::<Vec<_>>(),
-        [ClaudeWindow::FiveHour, ClaudeWindow::Weekly, fable()],
-        "extra usage, cloud credits, Claude Design, surface scopes and unknown keys are skipped"
+        [
+            ClaudeWindow::FiveHour,
+            ClaudeWindow::Weekly,
+            fable(),
+            ClaudeWindow::ExtraUsage
+        ],
+        "cloud credits, Claude Design, surface scopes and unknown keys are skipped"
     );
+    let extra = window(&usage, &ClaudeWindow::ExtraUsage);
+    assert!(
+        close(extra.used, 0.2468),
+        "extra_usage.utilization wins over spend.percent"
+    );
+    assert_eq!(extra.resets_at, None);
     let five = window(&usage, &ClaudeWindow::FiveHour);
     assert!(close(five.used, 0.42));
     assert_eq!(five.resets_at, Some(ts("2026-10-10T12:56:00.123456Z")));
@@ -312,7 +366,103 @@ fn usage_body_in_the_current_format_gives_three_windows() {
         AccountRef::primary(),
         now(),
     );
-    assert_eq!(ids(&snap), ["five_hour", "weekly", "weekly:fable"]);
+    assert_eq!(
+        ids(&snap),
+        ["five_hour", "weekly", "weekly:fable", "on_demand"]
+    );
+    assert_eq!(snap.meters[3].order, claude::EXTRA_USAGE_ORDER);
+}
+
+/// A body with the 5-hour window and the given extra usage keys.
+fn with_extra(keys: &str) -> String {
+    format!(r#"{{"five_hour": {{"utilization": 10.0, "resets_at": null}}{keys}}}"#)
+}
+
+#[test]
+fn extra_usage_reads_its_share_from_whatever_the_body_gives() {
+    let extra = |keys: &str| {
+        let usage = oauth::parse(with_extra(keys).as_bytes()).expect("parse");
+        usage
+            .windows
+            .iter()
+            .find(|w| w.window == ClaudeWindow::ExtraUsage)
+            .map(|w| w.used)
+    };
+    for (keys, want, why) in [
+        (
+            r#", "extra_usage": {"is_enabled": true, "monthly_limit": 5000, "used_credits": 1250.0, "utilization": null}"#,
+            0.25,
+            "used_credits / monthly_limit when utilization is missing",
+        ),
+        (
+            r#", "extra_usage": {"is_enabled": true, "utilization": 120.0}"#,
+            1.2,
+            "past the limit stays past it",
+        ),
+        (
+            r#", "spend": {"enabled": true, "percent": 40}"#,
+            0.4,
+            "spend.percent without extra_usage",
+        ),
+        (
+            r#", "spend": {"enabled": true, "used": {"amount_minor": 300}, "limit": {"amount_minor": 1200}}"#,
+            0.25,
+            "spend amounts without a percent",
+        ),
+        (
+            r#", "extra_usage": {"is_enabled": true, "monthly_limit": null}, "spend": {"percent": 30}"#,
+            0.3,
+            "spend fills in what extra_usage lacks",
+        ),
+    ] {
+        let got = extra(keys);
+        assert!(got.is_some_and(|g| close(g, want)), "{why}: {got:?}");
+    }
+
+    for (keys, why) in [
+        (
+            r#", "extra_usage": {"is_enabled": false, "utilization": 0.0}, "spend": {"enabled": true, "percent": 0}"#,
+            "turned off: extra_usage decides",
+        ),
+        (
+            r#", "extra_usage": {"utilization": 20.0}"#,
+            "is_enabled missing",
+        ),
+        (
+            r#", "extra_usage": {"is_enabled": "yes", "utilization": 20.0}"#,
+            "is_enabled not a bool",
+        ),
+        (
+            r#", "extra_usage": {"is_enabled": true, "monthly_limit": null, "used_credits": 900.0, "utilization": null}"#,
+            "no limit, no share",
+        ),
+        (
+            r#", "extra_usage": {"is_enabled": true, "monthly_limit": 0, "used_credits": 0.0}"#,
+            "a zero limit",
+        ),
+        (
+            r#", "extra_usage": null, "spend": {"enabled": false, "percent": 10}"#,
+            "spend turned off",
+        ),
+        (r#", "extra_usage": "on""#, "not an object"),
+        ("", "no extra usage keys"),
+    ] {
+        assert_eq!(extra(keys), None, "{why}");
+    }
+}
+
+#[test]
+fn extra_usage_alone_is_no_reading_of_the_plan() {
+    let body = r#"{"extra_usage": {"is_enabled": true, "utilization": 50.0}}"#;
+    assert!(matches!(
+        oauth::parse(body.as_bytes()),
+        Err(FetchError::Parse { .. })
+    ));
+    let history = r#"{"version": 2, "samples": [{"t": 1791628320000, "u": {"xu": 50}}]}"#;
+    assert!(matches!(
+        desktop::parse(history.as_bytes(), now()),
+        Err(FetchError::Unavailable { .. })
+    ));
 }
 
 #[test]
@@ -603,8 +753,13 @@ fn desktop_history_gives_the_newest_sample_without_reset_times() {
                 used: 0.58,
                 resets_at: None
             },
+            WindowReading {
+                window: ClaudeWindow::ExtraUsage,
+                used: 0.04,
+                resets_at: None
+            },
         ],
-        "xu (extra usage), oa, cw, om and op have no R§2 meter"
+        "xu is extra usage; oa, cw, om and op have no R§2 meter"
     );
     assert!(
         !format!("{usage:?}").contains("00000000-0000-4000-8000"),
@@ -940,7 +1095,10 @@ fn the_fresh_oauth_reading_wins_and_names_the_plan() {
     assert_eq!(snap.health, Health::Ok);
     assert_eq!(snap.account.plan.as_deref(), Some("Max"));
     assert_eq!(snap.account.key, AccountKey::primary());
-    assert_eq!(ids(&snap), ["five_hour", "weekly", "weekly:fable"]);
+    assert_eq!(
+        ids(&snap),
+        ["five_hour", "weekly", "weekly:fable", "on_demand"]
+    );
     assert_eq!(f.http.pending(), 0);
     let requests = f.http.requests();
     assert_eq!(requests.len(), 1);
@@ -1241,7 +1399,7 @@ fn the_freshest_reading_wins_and_borrows_reset_times_of_the_same_window() {
         "10:32 beats the cache's 07:42"
     );
     assert_eq!(snap.measured_at, ts("2026-10-10T10:32:00Z"));
-    assert_eq!(ids(&snap), ["five_hour", "weekly"]);
+    assert_eq!(ids(&snap), ["five_hour", "weekly", "on_demand"]);
     assert!(close(snap.meters[0].used, 0.37));
     assert_eq!(
         snap.meters[0].resets_at,
