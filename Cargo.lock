@@ -2446,7 +2446,7 @@ dependencies = [
 
 [[package]]
 name = "lastdrop"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "jiff",
  "lastdrop-core",
@@ -2464,7 +2464,7 @@ dependencies = [
 
 [[package]]
 name = "lastdrop-core"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "jiff",
  "serde",
@@ -2474,7 +2474,7 @@ dependencies = [
 
 [[package]]
 name = "lastdrop-providers"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "brotli-decompressor",
  "flate2",
@@ -2491,7 +2491,7 @@ dependencies = [
 
 [[package]]
 name = "lastdrop-win"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "lastdrop-core",
  "log",
