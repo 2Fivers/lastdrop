@@ -23,6 +23,11 @@ ignore = [
   # (`cargo tree -i pin-utils -e normal,no-proc-macro` prints nothing). Remove once Slint
   # drops spin_on or pin-utils has a maintained release.
   { id = "RUSTSEC-2026-0441", reason = "pin-utils is a compile-time-only dependency of Slint's build script and proc macro" },
+  # chrono is unmaintained (informational, no patched version; jiff or time recommended). It
+  # IS linked into lastdrop.exe, but only through i-slint-core 1.18.1, its sole dependent
+  # (`cargo tree -i chrono -e normal,no-proc-macro --target all`); Lastdrop's own code uses
+  # jiff. Slint 1.19.0 still depends on chrono. Remove once Slint drops it.
+  { id = "RUSTSEC-2026-0543", reason = "chrono comes only through Slint's i-slint-core; 1.19.0 keeps it" },
 ]
 
 [licenses]
